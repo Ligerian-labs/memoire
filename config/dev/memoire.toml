@@ -1,0 +1,33 @@
+# Local development gateway: loopback only, open registration, captured mail
+# (GET /v1/notifications/dev/captures). scripts/dev-run.sh creates the secret
+# files under .memoire-dev/ and sets MEMOIRE_DATABASE_URL. Synthetic data only.
+[app]
+id = "memoire"
+name = "memoire"
+
+[http]
+listen = "127.0.0.1:28960"
+
+[database]
+url = { env = "MEMOIRE_DATABASE_URL" }
+migrate = true
+
+[runtime]
+manifest = "runtime.toml"
+
+[modules.identity]
+app_origin = "http://localhost:4200"
+secret_key = { file = "../../.memoire-dev/secrets/identity.key" }
+registration = "open"
+
+[modules.identity.password]
+argon2_memory_kib = 19456
+
+[modules.notifications]
+secret_key = { file = "../../.memoire-dev/secrets/notifications.key" }
+
+[modules.notifications.templates]
+allow_http_links = true
+
+[modules.memoire]
+data_dir = "../../.memoire-dev/data"

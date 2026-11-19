@@ -1,0 +1,51 @@
+[workspace]
+members = ["crates/memoire-api", "crates/memoire-gateway", "crates/memoire-cli"]
+# The WASM guests are their own workspace (guests/Cargo.toml): they build for
+# wasm32-unknown-unknown with their own lockfile.
+exclude = ["guests"]
+resolver = "3"
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.98.0"
+license = "Apache-2.0"
+repository = "https://github.com/ligerian-labs/memoire"
+publish = false
+
+# Merezha is consumed from its public repository at one reviewed revision.
+# Moving the pin means rechecking the host contracts memoire relies on and
+# moving guests/Cargo.toml to the same revision.
+[workspace.dependencies]
+memoire-api = { path = "crates/memoire-api" }
+merezha-cli = { git = "https://github.com/MartianGreed/merezha", rev = "556b1887b529a2c67d0699782ef6698da9fd26e1" }
+merezha-domain = { git = "https://github.com/MartianGreed/merezha", rev = "556b1887b529a2c67d0699782ef6698da9fd26e1" }
+merezha-postgres = { git = "https://github.com/MartianGreed/merezha", rev = "556b1887b529a2c67d0699782ef6698da9fd26e1" }
+merezha-platform = { git = "https://github.com/MartianGreed/merezha", rev = "556b1887b529a2c67d0699782ef6698da9fd26e1" }
+merezha-telemetry = { git = "https://github.com/MartianGreed/merezha", rev = "556b1887b529a2c67d0699782ef6698da9fd26e1", features = ["pipeline"] }
+# Versions below match the Merezha workspace at that revision, so shared
+# types (axum routers, SQLite, timestamps) are the same crates. rusqlite must
+# stay exactly Merezha's pin: only one libsqlite3-sys may be linked.
+axum = { version = "0.8.9", default-features = false, features = ["http1", "tokio", "json", "query"] }
+base64 = { version = "0.23.1", default-features = false, features = ["alloc"] }
+clap = { version = "4.5", features = ["derive", "env"] }
+rusqlite = { version = "=0.40.2", default-features = false, features = ["bundled", "hooks", "limits", "fallible_uint"] }
+rustls = { version = "0.23.46", default-features = false, features = ["aws_lc_rs", "std", "tls12"] }
+serde = { version = "1.0.228", features = ["derive"] }
+serde_json = "1.0.150"
+tokio = { version = "1.53.3", features = ["macros", "rt-multi-thread", "net", "signal", "time", "sync"] }
+toml = "0.9.12"
+tempfile = "3.27.0"
+
+[profile.dev]
+debug = 0
+
+# Argon2id at its production floor is slow unoptimized; identity hashes
+# passwords on every sign-in in the process tests.
+[profile.dev.package.argon2]
+opt-level = 3
+[profile.dev.package.blake2]
+opt-level = 3
+
+[profile.test]
+debug = 0
