@@ -7,6 +7,7 @@
 //   pnpm e2e [playwright args…]
 //
 // MEMOIRE_GATEWAY_BIN   prebuilt memoire-gateway (default: cargo build)
+// MEMOIRE_E2E_REUSE_BUILD=1  test the existing dist/ instead of running pnpm build
 // MEMOIRE_E2E_DATABASE_URL  an empty disposable database (default: own cluster)
 // MEMOIRE_E2E_WEB_PORT / _PG_PORT / _GATEWAY_PORT  (default 28981 / 28982 / 28983)
 import { spawn, spawnSync } from 'node:child_process';
@@ -106,8 +107,8 @@ try {
     run('cargo', ['build', '--locked', '-p', 'memoire-gateway'], { cwd: repo });
     gateway = join(process.env.CARGO_TARGET_DIR ?? join(repo, 'target'), 'debug/memoire-gateway');
   }
-  if (!existsSync(join(web, 'dist/memoire-web/browser/index.html')))
-    run('pnpm', ['build'], { cwd: web });
+  // Always test the current sources; CI, which built in the step before, opts out.
+  if (process.env.MEMOIRE_E2E_REUSE_BUILD !== '1') run('pnpm', ['build'], { cwd: web });
 
   let databaseUrl = process.env.MEMOIRE_E2E_DATABASE_URL;
   if (!databaseUrl) {

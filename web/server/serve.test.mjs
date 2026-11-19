@@ -39,6 +39,16 @@ describe('parseConfig', () => {
     assert.deepEqual(config.listen, { host: '::1', port: 28981 });
   });
 
+  it('refuses to listen beyond loopback', () => {
+    for (const listen of ['0.0.0.0:28951', '[::]:28951', '192.168.1.4:28951']) {
+      assert.throws(() => parseConfig(['--listen', listen, '--root', root], {}), /loopback/);
+    }
+    assert.deepEqual(parseConfig(['--listen', '127.0.0.2:28951', '--root', root], {}).listen, {
+      host: '127.0.0.2',
+      port: 28951,
+    });
+  });
+
   it('reports every problem at once', () => {
     assert.throws(
       () =>

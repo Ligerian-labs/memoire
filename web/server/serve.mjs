@@ -5,7 +5,8 @@
 //
 // Environment (flags win): MEMOIRE_WEB_LISTEN (default 127.0.0.1:28951),
 // MEMOIRE_WEB_GATEWAY (default http://127.0.0.1:28950), MEMOIRE_WEB_ROOT
-// (default dist/memoire-web/browser next to this directory). The public
+// (default dist/memoire-web/browser next to this directory). It listens on
+// loopback only; a tailnet or reverse proxy in front exposes it. The public
 // origin is not configured here: the build uses relative URLs only, and the
 // gateway's modules.identity.app_origin names the origin browsers use.
 import { createReadStream, existsSync, statSync } from 'node:fs';
@@ -79,6 +80,9 @@ export function parseConfig(argv = process.argv.slice(2), env = process.env) {
   const port = Number(listenText.slice(at + 1));
   if (at <= 0 || !isIP(host) || !Number.isInteger(port) || port < 1 || port > 65535) {
     problems.push(`listen must be IP:PORT, got ${JSON.stringify(listenText)}`);
+  } else if (!isLoopback(host)) {
+    // Exposure beyond the host is a fronting proxy's job (a tailnet, a reverse proxy).
+    problems.push(`listen must be a loopback address (127.0.0.0/8 or ::1), got ${host}`);
   } else listen = { host, port };
 
   let gateway;
@@ -100,6 +104,10 @@ export function parseConfig(argv = process.argv.slice(2), env = process.env) {
     problems.push(`root ${root} has no index.html; run pnpm build`);
   if (problems.length) throw new Error(`invalid configuration:\n  ${problems.join('\n  ')}`);
   return { listen, gateway, root };
+}
+
+function isLoopback(host) {
+  return host === '::1' || (isIP(host) === 4 && host.split('.')[0] === '127');
 }
 
 function log(level, event, fields = {}) {

@@ -1,6 +1,6 @@
 import { TestBed } from '@angular/core/testing';
 import { Router } from '@angular/router';
-import { FETCH } from './api/api';
+import { Api, FETCH } from './api/api';
 import { SessionStore } from './session';
 
 const json = (data: unknown, status = 200) =>
@@ -102,6 +102,27 @@ describe('SessionStore', () => {
     await expect(session.refreshTeams()).rejects.toThrow('unauthenticated');
     expect(session.user()).toBeNull();
     expect(navigate).toHaveBeenCalledWith(['/sign-in'], { queryParams: { next: '/' } });
+  });
+
+  it('keeps the session when sign-out fails for another reason than an ended session', async () => {
+    const { session } = store(
+      json({ session: { id: 's', active_organization_id: 'org_a' }, user, csrf_token: 'c' }),
+      json({ items: [org('org_a', 'Alpha')], next_cursor: null }),
+      json({ error: { code: 'overloaded' } }, 503),
+    );
+    await session.restore();
+    await expect(session.signOut()).rejects.toThrow('overloaded');
+    expect(session.user()?.id).toBe('usr_1');
+    expect(TestBed.inject(Api).http.csrf).toBe('c');
+  });
+
+  it('names the active team in the memoire header', async () => {
+    const { session } = store(
+      json({ session: { id: 's', active_organization_id: 'org_a' }, user, csrf_token: 'c' }),
+      json({ items: [org('org_a', 'Alpha')], next_cursor: null }),
+    );
+    await session.restore();
+    expect(TestBed.inject(Api).http.team).toBe('org_a');
   });
 
   it('rethrows other failures so the page can show them, and retries next time', async () => {

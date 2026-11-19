@@ -64,6 +64,8 @@
               <div class="empty">
                 @if (loading()) {
                   <p>Loading…</p>
+                } @else if (error()) {
+                  <p>The list could not be loaded.</p>
                 } @else {
                   <p>No databases in this team yet.</p>
                   <button class="btn primary" type="button" (click)="creating.set(true)">

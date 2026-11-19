@@ -21,6 +21,11 @@ export class ApiError extends Error {
 }
 
 export type Query = Record<string, string | number | null | undefined>;
+
+/** A request body already serialized, sent as is (keeps number tokens JSON.parse would round). */
+export class JsonText {
+  constructor(readonly text: string) {}
+}
 const UNSAFE = new Set(['POST', 'PUT', 'PATCH', 'DELETE']);
 
 /**
@@ -30,6 +35,11 @@ const UNSAFE = new Set(['POST', 'PUT', 'PATCH', 'DELETE']);
  */
 export class Http {
   csrf: string | null = null;
+  /**
+   * The team the page shows, sent as `Merezha-Organization` on memoire routes.
+   * It wins over the session's active team, which another tab may have switched.
+   */
+  team: string | null = null;
   /** Called with every failure before it is thrown, for app-wide reactions such as an ended session. */
   onError: ((error: ApiError) => void) | null = null;
 
@@ -39,10 +49,16 @@ export class Http {
     const headers: Record<string, string> = { Accept: 'application/json' };
     if (body !== undefined) headers['Content-Type'] = 'application/json';
     if (UNSAFE.has(method) && this.csrf) headers['X-CSRF-Token'] = this.csrf;
+    if (this.team && path.startsWith('/v1/memoire/')) headers['Merezha-Organization'] = this.team;
     const response = await this.fetcher(path + search(query), {
       method,
       headers,
-      body: body === undefined ? undefined : JSON.stringify(body),
+      body:
+        body === undefined
+          ? undefined
+          : body instanceof JsonText
+            ? body.text
+            : JSON.stringify(body),
       credentials: 'same-origin',
       cache: 'no-store',
     });

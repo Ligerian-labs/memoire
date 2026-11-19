@@ -24,6 +24,8 @@ export class Databases implements OnDestroy {
   readonly creating = signal(false);
   readonly now = signal(Date.now());
   showExpired = false;
+  /** Only the latest request may fill the table: a team switch or filter change supersedes the rest. */
+  private generation = 0;
   private readonly tick = setInterval(() => this.now.set(Date.now()), 15_000);
   readonly bytes = bytes;
   readonly relative = relative;
@@ -42,6 +44,11 @@ export class Databases implements OnDestroy {
   }
 
   async load(more = false): Promise<void> {
+    const generation = ++this.generation;
+    if (!more) {
+      this.items.set([]);
+      this.next.set(null);
+    }
     this.loading.set(true);
     this.error.set('');
     try {
@@ -49,13 +56,14 @@ export class Databases implements OnDestroy {
         this.showExpired ? 'all' : 'active',
         more ? this.next() : null,
       );
+      if (generation !== this.generation) return;
       this.items.update((items) => (more ? [...items, ...page.items] : page.items));
       this.next.set(page.next_cursor);
       this.now.set(Date.now());
     } catch (error) {
-      this.error.set(describe(error));
+      if (generation === this.generation) this.error.set(describe(error));
     } finally {
-      this.loading.set(false);
+      if (generation === this.generation) this.loading.set(false);
     }
   }
 

@@ -105,8 +105,9 @@ export class Rows {
   readonly page = signal<RowPage | null>(null);
   readonly loading = signal(false);
   readonly error = signal('');
-  readonly offset = computed(() => (this.cursors().length - 1) * this.pageSize());
-  private readonly pageSize = signal(this.limit);
+  /** Rows before the shown page, fixed when that page arrives. */
+  readonly offset = signal(0);
+  private generation = 0;
   readonly kind = computed(() => {
     const schema = this.ctx.schema();
     if (!schema) return null;
@@ -124,39 +125,48 @@ export class Rows {
   }
 
   first(): Promise<void> {
-    this.cursors.set([null]);
-    return this.load();
+    this.page.set(null);
+    return this.load([null]);
   }
 
   reload(): Promise<void> {
-    return this.load();
+    return this.load(this.cursors());
   }
 
   nextPage(): Promise<void> {
     const after = this.page()?.next_after;
     if (!after) return Promise.resolve();
-    this.cursors.update((c) => [...c, after]);
-    return this.load();
+    return this.load([...this.cursors(), after]);
   }
 
   previous(): Promise<void> {
     if (this.cursors().length < 2) return Promise.resolve();
-    this.cursors.update((c) => c.slice(0, -1));
-    return this.load();
+    return this.load(this.cursors().slice(0, -1));
   }
 
-  private async load(): Promise<void> {
+  /** Loads the page at the end of `cursors`; the page, cursors and offset change together. */
+  private async load(cursors: (string | null)[]): Promise<void> {
+    const generation = ++this.generation;
+    const limit = this.limit;
     this.loading.set(true);
     this.error.set('');
-    this.pageSize.set(this.limit);
     try {
-      const after = this.cursors().at(-1) ?? null;
-      this.page.set(await this.api.memoire.rows(this.ctx.name(), this.table(), this.limit, after));
+      const page = await this.api.memoire.rows(
+        this.ctx.name(),
+        this.table(),
+        limit,
+        cursors.at(-1),
+      );
+      if (generation !== this.generation) return;
+      this.cursors.set(cursors);
+      this.offset.set((cursors.length - 1) * limit);
+      this.page.set(page);
     } catch (error) {
+      if (generation !== this.generation) return;
       this.page.set(null);
       this.error.set(describe(error));
     } finally {
-      this.loading.set(false);
+      if (generation === this.generation) this.loading.set(false);
     }
   }
 }

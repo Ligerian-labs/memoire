@@ -16,6 +16,8 @@ export class SessionStore {
   readonly user = signal<User | null>(null);
   readonly teams = signal<Organization[]>([]);
   readonly teamId = signal<string | null>(null);
+  /** Why the session could not be loaded (the gateway is down…), for the sign-in page. */
+  readonly restoreError = signal<unknown>(null);
   readonly team = computed(() => this.teams().find((t) => t.id === this.teamId()) ?? null);
   private restoring: Promise<void> | null = null;
 
@@ -39,9 +41,11 @@ export class SessionStore {
   private async load(): Promise<void> {
     try {
       await this.adopt(await this.api.identity.session());
+      this.restoreError.set(null);
     } catch (error) {
       if (!(error instanceof ApiError && error.status === 401)) {
         this.restoring = null;
+        this.restoreError.set(error);
         throw error;
       }
       this.clear();
@@ -58,13 +62,19 @@ export class SessionStore {
     this.restoring = Promise.resolve();
   }
 
+  /** Signs out; on any failure but an already-ended session it keeps the session and throws. */
   async signOut(): Promise<void> {
+    const csrf = this.api.http.csrf;
     try {
       await this.api.identity.signOut();
-    } finally {
-      this.clear();
-      this.restoring = Promise.resolve();
+    } catch (error) {
+      if (!(error instanceof ApiError && error.status === 401)) {
+        this.api.http.csrf = csrf;
+        throw error;
+      }
     }
+    this.clear();
+    this.restoring = Promise.resolve();
   }
 
   async refreshTeams(): Promise<void> {
@@ -76,7 +86,7 @@ export class SessionStore {
 
   async selectTeam(id: string): Promise<void> {
     const answer = await this.api.identity.selectOrganization(id);
-    this.teamId.set(answer.session.active_organization_id);
+    this.setTeam(answer.session.active_organization_id);
     remember(this.teamId());
   }
 
@@ -87,20 +97,25 @@ export class SessionStore {
     return created.organization;
   }
 
+  private setTeam(id: string | null): void {
+    this.teamId.set(id);
+    this.api.http.team = id;
+  }
+
   /** Forgets the session locally, for a 401 met anywhere. */
   clear(): void {
     this.user.set(null);
     this.teams.set([]);
-    this.teamId.set(null);
+    this.setTeam(null);
     this.api.http.csrf = null;
   }
 
   private async adopt(signedIn: SignedIn): Promise<void> {
     this.user.set(signedIn.user);
-    this.teamId.set(signedIn.session.active_organization_id);
+    this.setTeam(signedIn.session.active_organization_id);
     await this.refreshTeams();
     // A session can point at a team the member has since left.
-    if (this.teamId() && !this.team()) this.teamId.set(null);
+    if (this.teamId() && !this.team()) this.setTeam(null);
     // A new session has no team yet: reopen the last one used here, else the first.
     if (!this.teamId() && this.teams().length) {
       const last = recalled();

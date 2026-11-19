@@ -1,6 +1,6 @@
 import { ApiError, Http } from './http';
 import { IdentityApi } from './identity';
-import { MemoireApi } from './memoire';
+import { MemoireApi, queryBody } from './memoire';
 
 const json = (data: unknown, status = 200, headers: Record<string, string> = {}) =>
   new Response(JSON.stringify(data), {
@@ -118,6 +118,45 @@ describe('Http', () => {
     const { fetcher, identity } = make(json({ items: [] }));
     await identity.apiKeys('org_1');
     expect(fetcher.mock.calls[0][0]).toBe('/v1/identity/organizations/org_1/api-keys');
+  });
+
+  it('names the shown team on memoire routes only', async () => {
+    const { http, fetcher, identity, memoire } = make(
+      json({ items: [], next_cursor: null }),
+      json({ items: [] }),
+    );
+    http.team = 'org_shown';
+    await memoire.list('active');
+    await identity.apiKeys('org_shown');
+    const headers = (i: number) => fetcher.mock.calls[i][1]!.headers as Record<string, string>;
+    expect(headers(0)['Merezha-Organization']).toBe('org_shown');
+    expect(headers(1)['Merezha-Organization']).toBeUndefined();
+  });
+
+  it('sends console parameters verbatim, so big integers and reals keep their type', async () => {
+    const { fetcher, memoire } = make(json({ results: [] }));
+    const request = {
+      mode: 'read' as const,
+      transaction: false,
+      statements: [{ sql: 'SELECT ?, ?' }],
+    };
+    await memoire.query('scratch', request, ' [9007199254740993, 1.0] ');
+    expect(fetcher.mock.calls[0][1]!.body).toBe(
+      '{"mode":"read","transaction":false,"statements":[{"sql":"SELECT ?, ?","params":[9007199254740993, 1.0]}]}',
+    );
+  });
+
+  it('refuses parameter text that is not one array or object', () => {
+    const request = {
+      mode: 'read' as const,
+      transaction: false,
+      statements: [{ sql: 'SELECT ?' }],
+    };
+    expect(() => queryBody(request, '[1]}],"mode":"write","x":[{')).toThrow();
+    expect(() => queryBody(request, '7')).toThrow();
+    expect(() =>
+      queryBody({ ...request, statements: [{ sql: 'a' }, { sql: 'b' }] }, '[1]'),
+    ).toThrow();
   });
 
   it('selects a team with PUT /v1/identity/session/organization', async () => {

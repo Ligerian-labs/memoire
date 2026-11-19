@@ -148,7 +148,7 @@
 }
 
 @if (dialog() === 'key') {
-  <dialog appModal (closed)="closeDialog()" aria-labelledby="key-title">
+  <dialog appModal [locked]="busy()" (closed)="closeDialog()" aria-labelledby="key-title">
     @if (minted(); as minted) {
       <div class="body">
         <header>
@@ -208,7 +208,9 @@
           <p class="alert" role="alert">{{ formError() }}</p>
         }
         <footer>
-          <button class="btn" type="button" (click)="closeDialog()">Cancel</button>
+          <button class="btn" type="button" (click)="closeDialog()" [disabled]="busy()">
+            Cancel
+          </button>
           <button class="btn primary" type="submit" [disabled]="busy() || !keyName.trim()">
             Create key
           </button>

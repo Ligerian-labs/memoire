@@ -13,16 +13,18 @@ import { SessionStore } from '../../session';
       <label class="team">
         <span>Team</span>
         <select
-          [value]="session.teamId() ?? ''"
-          (change)="switchTeam($any($event.target).value)"
+          #picker
+          (change)="switchTeam(picker)"
           [disabled]="switching()"
           data-testid="team-switch"
         >
           @if (!session.teamId()) {
-            <option value="" disabled>No team selected</option>
+            <option value="" disabled selected>No team selected</option>
           }
           @for (team of session.teams(); track team.id) {
-            <option [value]="team.id">{{ team.name }}</option>
+            <option [value]="team.id" [selected]="team.id === session.teamId()">
+              {{ team.name }}
+            </option>
           }
         </select>
       </label>
@@ -48,7 +50,8 @@ export class Shell {
   readonly switching = signal(false);
   readonly error = signal('');
 
-  async switchTeam(id: string): Promise<void> {
+  async switchTeam(picker: HTMLSelectElement): Promise<void> {
+    const id = picker.value;
     if (!id || id === this.session.teamId()) return;
     this.switching.set(true);
     this.error.set('');
@@ -57,13 +60,19 @@ export class Shell {
       await this.router.navigateByUrl('/databases');
     } catch (error) {
       this.error.set(describe(error));
+      picker.value = this.session.teamId() ?? '';
     } finally {
       this.switching.set(false);
     }
   }
 
   async signOut(): Promise<void> {
-    await this.session.signOut().catch(() => undefined);
-    await this.router.navigateByUrl('/sign-in');
+    this.error.set('');
+    try {
+      await this.session.signOut();
+      await this.router.navigateByUrl('/sign-in');
+    } catch (error) {
+      this.error.set(`Not signed out: ${describe(error)}`);
+    }
   }
 }

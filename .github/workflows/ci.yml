@@ -114,6 +114,7 @@ jobs:
         env:
           MEMOIRE_GATEWAY_BIN: ${{ github.workspace }}/target/debug/memoire-gateway
           MEMOIRE_E2E_DATABASE_URL: postgres://postgres:postgres@127.0.0.1:5432/postgres
+          MEMOIRE_E2E_REUSE_BUILD: "1"
         run: pnpm e2e
       - uses: actions/upload-artifact@v4
         if: always()

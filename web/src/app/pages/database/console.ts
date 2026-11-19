@@ -1,7 +1,6 @@
 import { Component, inject, signal } from '@angular/core';
 import { FormsModule } from '@angular/forms';
 import { Api } from '../../api/api';
-import { ApiError } from '../../api/http';
 import { Mode, Statement } from '../../api/memoire';
 import { cell, parseParams, ParamsError } from '../../api/values';
 import { describe } from '../../messages';
@@ -20,7 +19,6 @@ export class Console {
   readonly ctx = inject(DatabaseContext);
   readonly running = signal(false);
   readonly error = signal('');
-  readonly failedAt = signal<number | null>(null);
   readonly showParams = signal(this.ctx.params !== '');
   readonly cell = cell;
 
@@ -39,7 +37,6 @@ export class Console {
     const statements = splitStatements(this.ctx.sql);
     if (!statements.length || this.running()) return;
     this.error.set('');
-    this.failedAt.set(null);
     let params;
     try {
       params = parseParams(this.ctx.params);
@@ -51,18 +48,16 @@ export class Console {
       this.error.set('Parameters apply to a single statement. Run the statements one at a time.');
       return;
     }
-    const body: Statement[] = statements.map((sql) =>
-      params === undefined ? { sql } : { sql, params },
-    );
+    const body: Statement[] = statements.map((sql) => ({ sql }));
     const mode = this.ctx.mode();
     this.running.set(true);
     const started = performance.now();
     try {
-      const answer = await this.api.memoire.query(this.ctx.name(), {
-        mode,
-        transaction: this.ctx.transaction,
-        statements: body,
-      });
+      const answer = await this.api.memoire.query(
+        this.ctx.name(),
+        { mode, transaction: this.ctx.transaction, statements: body },
+        params === undefined ? undefined : this.ctx.params,
+      );
       this.ctx.lastRun.set({
         statements,
         results: answer.results,
@@ -73,7 +68,6 @@ export class Console {
     } catch (error) {
       this.ctx.lastRun.set(null);
       this.error.set(describe(error));
-      if (error instanceof ApiError && error.body.sql) this.failedAt.set(error.body.sql.statement);
       if (mode === 'write') await this.ctx.refresh();
     } finally {
       this.running.set(false);

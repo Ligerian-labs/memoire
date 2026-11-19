@@ -37,7 +37,8 @@ a throwaway PostgreSQL 17 (`scripts/dev-postgres.sh`, port 28982), the
 gateway with `config/dev/memoire.toml` and test overrides (port 28983), and
 the production build behind `server/serve.mjs` (port 28981). It builds the
 gateway with Cargo unless `MEMOIRE_GATEWAY_BIN` names one, and uses
-`MEMOIRE_E2E_DATABASE_URL` instead of its own cluster when set (CI). Each step
+`MEMOIRE_E2E_DATABASE_URL` instead of its own cluster when set (CI). It runs
+`pnpm build` first unless `MEMOIRE_E2E_REUSE_BUILD=1`. Each step
 of the journey saves a screenshot in `test-results/screenshots/`. On failure
 the logs stay in `test-results/e2e-runtime/`.
 
@@ -58,7 +59,11 @@ CSRF checks work unchanged. It has no dependencies beyond Node.
 | Gateway origin | `--gateway` | `MEMOIRE_WEB_GATEWAY` | `http://127.0.0.1:28950` |
 | Build directory | `--root` | `MEMOIRE_WEB_ROOT` | `dist/memoire-web/browser` |
 
-Flags win over the environment. Invalid settings stop the server before it
+Flags win over the environment. The listen address must be loopback
+(`127.0.0.0/8` or `::1`): exposing the debugger is the job of whatever fronts
+it. The listen address must be loopback
+(`127.0.0.0/8` or `::1`): exposing the debugger is the job of whatever fronts
+it. Invalid settings stop the server before it
 listens, with every problem listed. It logs one JSON line per request
 (method, path without the query, status, duration) and drains for up to ten
 seconds on `SIGTERM`.

@@ -1,4 +1,4 @@
-import { Http } from './http';
+import { Http, JsonText } from './http';
 import { Params, Value } from './values';
 
 export type Kind = 'burstable' | 'persistent';
@@ -133,8 +133,17 @@ export class MemoireApi {
     return this.http.request('POST', `${db(name)}/extend`, body);
   }
 
-  query(name: string, request: QueryRequest): Promise<{ results: StatementResult[] }> {
-    return this.http.request('POST', `${db(name)}/query`, request);
+  /**
+   * Runs a batch. `paramsJson`, the console's parameter text, goes into the
+   * body verbatim for a single statement, so `9007199254740993` and `1.0`
+   * reach SQLite as typed instead of as JavaScript numbers.
+   */
+  query(
+    name: string,
+    request: QueryRequest,
+    paramsJson?: string,
+  ): Promise<{ results: StatementResult[] }> {
+    return this.http.request('POST', `${db(name)}/query`, queryBody(request, paramsJson));
   }
 
   schema(name: string): Promise<Schema> {
@@ -164,6 +173,22 @@ export class MemoireApi {
   exportUrl(name: string): string {
     return `${db(name)}/export`;
   }
+}
+
+/** The query body, with raw parameter JSON spliced into its only statement. */
+export function queryBody(request: QueryRequest, paramsJson?: string): QueryRequest | JsonText {
+  if (paramsJson === undefined) return request;
+  if (request.statements.length !== 1) throw new Error('raw parameters need exactly one statement');
+  // Only a whole JSON array or object may be spliced in, never a fragment of the body.
+  const parsed: unknown = JSON.parse(paramsJson);
+  if (parsed === null || typeof parsed !== 'object')
+    throw new Error('parameters must be an array or object');
+  const marker = '"\\u0000params\\u0000"';
+  const text = JSON.stringify({
+    ...request,
+    statements: [{ sql: request.statements[0].sql, params: '\u0000params\u0000' }],
+  });
+  return new JsonText(text.replace(marker, () => paramsJson.trim()));
 }
 
 function db(name: string): string {
