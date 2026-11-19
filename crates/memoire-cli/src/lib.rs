@@ -13,8 +13,10 @@ pub mod config;
 pub mod duration;
 pub mod error;
 pub mod input;
+pub mod memory;
 pub mod output;
 pub mod shell;
+pub mod skill;
 
 /// Runs a parsed command line; the process exit code.
 pub fn main(cli: cli::Cli, env: &config::Env) -> u8 {

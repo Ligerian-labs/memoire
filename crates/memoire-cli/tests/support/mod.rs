@@ -41,6 +41,7 @@ impl Run {
 pub struct Memoire {
     pub config: tempfile::TempDir,
     env: Vec<(String, String)>,
+    dir: Option<std::path::PathBuf>,
 }
 
 impl Memoire {
@@ -48,7 +49,14 @@ impl Memoire {
         Self {
             config: tempfile::tempdir().unwrap(),
             env: Vec::new(),
+            dir: None,
         }
+    }
+
+    /// The working directory of the runs (default: this process's).
+    pub fn dir(mut self, path: impl Into<std::path::PathBuf>) -> Self {
+        self.dir = Some(path.into());
+        self
     }
 
     pub fn env(mut self, name: &str, value: &str) -> Self {
@@ -62,6 +70,12 @@ impl Memoire {
 
     /// `memoire ARGS` with `stdin` piped in.
     pub fn run(&self, args: &[&str], stdin: &str) -> Run {
+        let args: Vec<&std::ffi::OsStr> = args.iter().map(|a| a.as_ref()).collect();
+        self.run_os(&args, stdin)
+    }
+
+    /// [`Memoire::run`] with arguments that need not be UTF-8.
+    pub fn run_os(&self, args: &[&std::ffi::OsStr], stdin: &str) -> Run {
         let mut command = Command::new(env!("CARGO_BIN_EXE_memoire"));
         command
             .args(args)
@@ -75,6 +89,9 @@ impl Memoire {
         for (name, value) in &self.env {
             command.env(name, value);
         }
+        if let Some(dir) = &self.dir {
+            command.current_dir(dir);
+        }
         let mut child = command.spawn().unwrap();
         let mut pipe = child.stdin.take().unwrap();
         let input = stdin.to_owned();
@@ -84,7 +101,10 @@ impl Memoire {
         let output = child.wait_with_output().unwrap();
         writer.join().unwrap();
         Run {
-            args: args.iter().map(|a| (*a).to_owned()).collect(),
+            args: args
+                .iter()
+                .map(|a| a.to_string_lossy().into_owned())
+                .collect(),
             code: output.status.code().unwrap_or(-1),
             stdout: String::from_utf8(output.stdout).unwrap(),
             stderr: String::from_utf8(output.stderr).unwrap(),

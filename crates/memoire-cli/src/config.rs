@@ -38,7 +38,7 @@ impl Env {
         }
     }
 
-    fn dir(&self) -> Result<&Path> {
+    pub(crate) fn dir(&self) -> Result<&Path> {
         self.config_dir.as_deref().ok_or_else(|| {
             Error::local(
                 "no_config_dir",
@@ -114,19 +114,27 @@ impl Env {
     /// Writes the credentials atomically: a private temporary file in the
     /// same directory, then a rename over the old one.
     pub fn store(&self, credentials: &Credentials) -> Result<PathBuf> {
-        let dir = self.dir()?;
-        create_private_dir(dir).map_err(|e| io_error(dir, &e))?;
-        let path = dir.join(FILE);
-        // tempfile creates the file with mode 0600 on Unix.
-        let mut file = tempfile::NamedTempFile::new_in(dir).map_err(|e| io_error(dir, &e))?;
+        let path = self.dir()?.join(FILE);
         let text = serde_json::to_string_pretty(credentials).expect("credentials serialize");
-        file.write_all(text.as_bytes())
-            .and_then(|()| file.write_all(b"\n"))
-            .and_then(|()| file.as_file().sync_all())
-            .map_err(|e| io_error(&path, &e))?;
-        file.persist(&path).map_err(|e| io_error(&path, &e.error))?;
+        write_private(&path, &text)?;
         Ok(path)
     }
+}
+
+/// Writes `text` and a newline to `path` atomically and privately: the
+/// directory is made 0700, a 0600 temporary file beside the target is
+/// written, then renamed over it.
+pub(crate) fn write_private(path: &Path, text: &str) -> Result<()> {
+    let dir = path.parent().unwrap_or(Path::new("."));
+    create_private_dir(dir).map_err(|e| io_error(dir, &e))?;
+    // tempfile creates the file with mode 0600 on Unix.
+    let mut file = tempfile::NamedTempFile::new_in(dir).map_err(|e| io_error(dir, &e))?;
+    file.write_all(text.as_bytes())
+        .and_then(|()| file.write_all(b"\n"))
+        .and_then(|()| file.as_file().sync_all())
+        .map_err(|e| io_error(path, &e))?;
+    file.persist(path).map_err(|e| io_error(path, &e.error))?;
+    Ok(())
 }
 
 fn not_logged_in() -> Error {
@@ -175,7 +183,7 @@ impl fmt::Debug for Secret {
 }
 
 #[cfg(unix)]
-fn create_private_dir(dir: &Path) -> std::io::Result<()> {
+pub(crate) fn create_private_dir(dir: &Path) -> std::io::Result<()> {
     use std::os::unix::fs::{DirBuilderExt as _, PermissionsExt as _};
     std::fs::DirBuilder::new()
         .recursive(true)
@@ -190,35 +198,39 @@ fn create_private_dir(dir: &Path) -> std::io::Result<()> {
 }
 
 #[cfg(not(unix))]
-fn create_private_dir(dir: &Path) -> std::io::Result<()> {
+pub(crate) fn create_private_dir(dir: &Path) -> std::io::Result<()> {
     std::fs::create_dir_all(dir)
 }
 
-#[cfg(unix)]
 fn check_private(path: &Path) -> Result<()> {
+    match shared_mode(path)? {
+        None => Ok(()),
+        Some(mode) => Err(Error::local(
+            "insecure_credentials",
+            exit::AUTH,
+            format!(
+                "{} is readable by others (mode {mode:o}); run `chmod 600` on it or log in again",
+                path.display(),
+            ),
+        )),
+    }
+}
+
+/// The permission bits of `path` when others than its owner may use it;
+/// `None` when it is private.
+#[cfg(unix)]
+pub(crate) fn shared_mode(path: &Path) -> Result<Option<u32>> {
     use std::os::unix::fs::PermissionsExt as _;
     let mode = std::fs::metadata(path)
         .map_err(|e| io_error(path, &e))?
         .permissions()
         .mode();
-    if mode & 0o077 == 0 {
-        Ok(())
-    } else {
-        Err(Error::local(
-            "insecure_credentials",
-            exit::AUTH,
-            format!(
-                "{} is readable by others (mode {:o}); run `chmod 600` on it or log in again",
-                path.display(),
-                mode & 0o777
-            ),
-        ))
-    }
+    Ok((mode & 0o077 != 0).then_some(mode & 0o777))
 }
 
 #[cfg(not(unix))]
-fn check_private(_path: &Path) -> Result<()> {
-    Ok(())
+pub(crate) fn shared_mode(_path: &Path) -> Result<Option<u32>> {
+    Ok(None)
 }
 
 #[cfg(test)]

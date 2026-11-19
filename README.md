@@ -21,10 +21,28 @@ data plane, and a WASM guest for the database lifecycle rules.
 > the sweeper, snapshots with restore, export, import and the startup
 > reconciler are live. The CLI commands and the web client land next.
 
+## Agent memory
+
+`memoire memory` turns a database into a shared memory for a fleet of agents.
+Agents record what they verified with its evidence, recall it before they
+work, and confirm, dispute or revise what others wrote. Every change is a new
+revision, kept in `memoire_memory_` tables beside the database's other tables.
+
+```sh
+memoire memory init
+memoire memory remember --title "Widgets deploys need the VPN" --evidence "make deploy, run at 14:02 UTC"
+memoire memory recall "deploy vpn" --json
+MEMOIRE_SESSION=s-42 memoire memory confirm mem_01JD0Q7ZQ5Y8W1N3K4M5P6R7S8 --evidence "make deploy with the VPN up"
+memoire skill install --claude
+```
+
+[docs/memory.md](docs/memory.md) is the reference.
+
 ## Documentation
 
 - [docs/api.md](docs/api.md): the HTTP API contract.
 - [docs/cli.md](docs/cli.md): the `memoire` command line.
+- [docs/memory.md](docs/memory.md): the shared agent memory.
 - [docs/architecture.md](docs/architecture.md): contexts, data plane rules
   and repository layout.
 

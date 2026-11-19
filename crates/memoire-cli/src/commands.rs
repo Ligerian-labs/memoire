@@ -46,6 +46,10 @@ pub fn run(cli: Cli, env: &Env) -> Result<()> {
             expires,
             read_only,
         }) => create_key(&out, env, &name, team, expires, read_only),
+        Command::Memory(args) => crate::memory::run(&out, env, *args),
+        Command::Skill(crate::cli::SkillCommand::Install(args)) => {
+            crate::skill::install(&out, &crate::skill::Homes::from_process(), &args)
+        }
     }
 }
 

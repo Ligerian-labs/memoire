@@ -15,7 +15,12 @@ use memoire_api::{
     QueryMode, QueryRequest, Schema, SchemaColumn, Snapshot, SnapshotReason, SqlValue,
     StatementResult, Table, View,
 };
-use rusqlite::{Connection, OpenFlags, types::ValueRef};
+use rusqlite::{
+    Connection, OpenFlags,
+    config::DbConfig,
+    hooks::{AuthAction, AuthContext, Authorization},
+    types::ValueRef,
+};
 use serde_json::{Value, json};
 use std::{
     collections::{BTreeMap, HashMap},
@@ -68,6 +73,7 @@ struct Inner {
     page_size: usize,
     requests: Vec<Seen>,
     fail_next: Option<(u16, Value, Option<u64>)>,
+    before_write: Option<Box<dyn FnOnce() + Send>>,
 }
 
 #[derive(Clone)]
@@ -98,6 +104,7 @@ impl Fake {
             page_size: 2,
             requests: Vec::new(),
             fail_next: None,
+            before_write: None,
         }));
         let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
         listener.set_nonblocking(true).unwrap();
@@ -118,15 +125,33 @@ impl Fake {
 
     /// A key of `team` (`None`: an application key) holding `permissions`.
     pub fn add_key(&self, key: &str, team: Option<&str>, permissions: &[&str]) {
+        self.add_key_as(key, &format!("key_{}", key.len()), team, permissions);
+    }
+
+    /// [`Fake::add_key`] with the `subject` whoami reports for it.
+    pub fn add_key_as(&self, key: &str, subject: &str, team: Option<&str>, permissions: &[&str]) {
         self.inner.lock().unwrap().keys.insert(
             key.into(),
             Key {
-                subject: format!("key_{}", key.len()),
+                subject: subject.into(),
                 team: team.map(str::to_owned),
                 permissions: permissions.iter().map(|p| (*p).to_owned()).collect(),
                 machine: None,
             },
         );
+    }
+
+    /// Runs `hook` once, just before the fake handles the next write
+    /// query, without holding the fake's lock: the hook may drive the CLI
+    /// against this fake, to slip a second writer in between another
+    /// writer's read and its write.
+    pub fn before_next_write(&self, hook: impl FnOnce() + Send + 'static) {
+        self.inner.lock().unwrap().before_write = Some(Box::new(hook));
+    }
+
+    /// The SQLite file of database `name`.
+    pub fn database_path(&self, name: &str) -> PathBuf {
+        self.inner.lock().unwrap().databases[name].path.clone()
     }
 
     pub fn requests(&self) -> Vec<Seen> {
@@ -258,6 +283,16 @@ async fn handle(
         content_type: header("content-type"),
         body: body.to_vec(),
     };
+    let write_query = method == Method::POST
+        && uri.path().ends_with("/query")
+        && serde_json::from_slice::<Value>(&body).is_ok_and(|b| b["mode"] == "write");
+    if write_query {
+        let hook = inner.lock().unwrap().before_write.take();
+        if let Some(hook) = hook {
+            // Off the server's thread, so the hook's own requests are served.
+            tokio::task::spawn_blocking(hook).await.unwrap();
+        }
+    }
     let mut inner = inner.lock().unwrap();
     inner.requests.push(seen.clone());
     if let Some((status, body, retry)) = inner.fail_next.take() {
@@ -741,38 +776,147 @@ fn sql_error(statement: usize, error: &rusqlite::Error) -> Response {
     response
 }
 
-fn run_query(
-    path: &std::path::Path,
-    body: &QueryRequest,
-) -> Result<Vec<StatementResult>, Response> {
-    let conn = match body.mode {
+/// A statement SQLite refused to prepare: the authorizer's denial, or an
+/// SQL error.
+fn prepare_error(statement: usize, error: &rusqlite::Error) -> Response {
+    match error {
+        rusqlite::Error::SqliteFailure(e, _)
+            if e.code == rusqlite::ErrorCode::AuthorizationForStatementDenied =>
+        {
+            fail(403, "statement_denied")
+        }
+        other => sql_error(statement, other),
+    }
+}
+
+/// The pragmas a client statement may use: none that touches a file or the
+/// connection's safety settings.
+const PRAGMAS: [&str; 34] = [
+    "analysis_limit",
+    "application_id",
+    "case_sensitive_like",
+    "cell_size_check",
+    "collation_list",
+    "compile_options",
+    "data_version",
+    "defer_foreign_keys",
+    "encoding",
+    "foreign_key_check",
+    "foreign_key_list",
+    "foreign_keys",
+    "freelist_count",
+    "function_list",
+    "ignore_check_constraints",
+    "index_info",
+    "index_list",
+    "index_xinfo",
+    "integrity_check",
+    "legacy_alter_table",
+    "module_list",
+    "optimize",
+    "page_count",
+    "page_size",
+    "pragma_list",
+    "quick_check",
+    "recursive_triggers",
+    "reverse_unordered_selects",
+    "schema_version",
+    "table_info",
+    "table_list",
+    "table_xinfo",
+    "trusted_schema",
+    "user_version",
+];
+
+/// The data plane's authorizer, active while a client statement is
+/// prepared.
+fn authorize(context: AuthContext<'_>) -> Authorization {
+    match context.action {
+        AuthAction::Attach { .. }
+        | AuthAction::Detach { .. }
+        | AuthAction::Transaction { .. }
+        | AuthAction::Savepoint { .. } => Authorization::Deny,
+        AuthAction::Function { function_name }
+            if ["load_extension", "fts3_tokenizer"]
+                .contains(&function_name.to_ascii_lowercase().as_str()) =>
+        {
+            Authorization::Deny
+        }
+        AuthAction::Pragma { pragma_name, .. }
+            if !PRAGMAS.contains(&pragma_name.to_ascii_lowercase().as_str()) =>
+        {
+            Authorization::Deny
+        }
+        _ => Authorization::Allow,
+    }
+}
+
+/// A connection configured as the data plane's: defensive, no trust in
+/// the schema, and `query_only` on the read-only connection.
+fn connect(path: &std::path::Path, mode: QueryMode) -> Connection {
+    let conn = match mode {
         QueryMode::Read => Connection::open_with_flags(path, OpenFlags::SQLITE_OPEN_READ_ONLY),
         QueryMode::Write => Connection::open(path),
     }
     .unwrap();
+    conn.set_db_config(DbConfig::SQLITE_DBCONFIG_DEFENSIVE, true)
+        .unwrap();
+    conn.set_db_config(DbConfig::SQLITE_DBCONFIG_TRUSTED_SCHEMA, false)
+        .unwrap();
+    if mode == QueryMode::Read {
+        conn.pragma_update(None, "query_only", 1).unwrap();
+    }
+    conn
+}
+
+/// Prepares a client statement under the authorizer.
+fn prepare<'c>(conn: &'c Connection, sql: &str) -> rusqlite::Result<rusqlite::Statement<'c>> {
+    conn.authorizer(Some(authorize))?;
+    let prepared = conn.prepare(sql);
+    conn.authorizer(None::<fn(AuthContext<'_>) -> Authorization>)?;
+    prepared
+}
+
+fn run_query(
+    path: &std::path::Path,
+    body: &QueryRequest,
+) -> Result<Vec<StatementResult>, Response> {
+    let conn = connect(path, body.mode);
+    if !body.transaction {
+        // Each statement commits on its own; SQLite undoes a failing one.
+        return run_statements(&conn, body);
+    }
+    conn.execute_batch(match body.mode {
+        QueryMode::Read => "BEGIN",
+        QueryMode::Write => "BEGIN IMMEDIATE",
+    })
+    .unwrap();
+    let results = run_statements(&conn, body);
+    if results.is_ok() {
+        conn.execute_batch("COMMIT").unwrap();
+    } else if !conn.is_autocommit() {
+        conn.execute_batch("ROLLBACK").unwrap();
+    }
+    results
+}
+
+fn run_statements(
+    conn: &Connection,
+    body: &QueryRequest,
+) -> Result<Vec<StatementResult>, Response> {
     let mut results = Vec::new();
     for (i, statement) in body.statements.iter().enumerate() {
-        let first = statement
+        // The authorizer has no action for VACUUM, which can write a file.
+        let words: Vec<String> = statement
             .sql
             .split_whitespace()
-            .next()
-            .unwrap_or_default()
-            .to_ascii_uppercase();
-        if [
-            "BEGIN",
-            "COMMIT",
-            "END",
-            "ROLLBACK",
-            "SAVEPOINT",
-            "RELEASE",
-            "ATTACH",
-            "DETACH",
-        ]
-        .contains(&first.as_str())
-        {
+            .take(3)
+            .map(str::to_ascii_uppercase)
+            .collect();
+        if words.first().is_some_and(|w| w == "VACUUM") && words.iter().any(|w| w == "INTO") {
             return Err(fail(403, "statement_denied"));
         }
-        let mut stmt = conn.prepare(&statement.sql).map_err(|e| sql_error(i, &e))?;
+        let mut stmt = prepare(conn, &statement.sql).map_err(|e| prepare_error(i, &e))?;
         if body.mode == QueryMode::Read && !stmt.readonly() {
             return Err(fail(422, "read_only"));
         }

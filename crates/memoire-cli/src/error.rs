@@ -3,7 +3,7 @@
 //! The exit code depends only on the failure's class, so scripts can branch
 //! on it without parsing output; `--json` adds the exact `code`.
 use memoire_api::{ErrorDetail, SqlErrorDetail};
-use serde_json::{Value, json};
+use serde_json::{Map, Value, json};
 
 /// The exit codes. Stable: scripts and agents rely on them.
 pub mod exit {
@@ -49,6 +49,9 @@ pub enum Error {
         code: &'static str,
         message: String,
         exit: u8,
+        /// Members added to the JSON error object beside `code`, so an
+        /// agent can act on a failure without parsing the message.
+        extra: Map<String, Value>,
     },
 }
 
@@ -60,7 +63,21 @@ impl Error {
             code,
             message: message.into(),
             exit,
+            extra: Map::new(),
         }
+    }
+
+    /// Adds `name: value` to a local failure's JSON error object. The
+    /// envelope's own members (`code`, `classification`, `message`) cannot
+    /// be replaced; a gateway error is returned unchanged.
+    #[must_use]
+    pub fn with(mut self, name: &'static str, value: impl Into<Value>) -> Self {
+        if let Self::Local { extra, .. } = &mut self
+            && !matches!(name, "code" | "classification" | "message")
+        {
+            extra.insert(name.to_owned(), value.into());
+        }
+        self
     }
 
     /// The `code` of the failure, the gateway's or the CLI's own.
@@ -133,11 +150,19 @@ impl Error {
                 code,
                 message,
                 exit,
-            } => json!({"error": {
-                "code": code,
-                "classification": if *exit == exit::UNAVAILABLE { "transient" } else { "permanent" },
-                "message": message,
-            }}),
+                extra,
+            } => {
+                let classification = match *exit {
+                    exit::UNAVAILABLE => "transient",
+                    exit::CONFLICT => "conflict",
+                    _ => "permanent",
+                };
+                let mut body = extra.clone();
+                body.insert("code".into(), json!(code));
+                body.insert("classification".into(), json!(classification));
+                body.insert("message".into(), json!(message));
+                json!({ "error": body })
+            }
         }
     }
 }
@@ -306,5 +331,28 @@ mod tests {
             failure.to_json(),
             json!({"error": {"code": "connection_failed", "classification": "transient", "message": "no route"}})
         );
+    }
+
+    #[test]
+    fn local_failures_carry_extra_members_and_a_conflict_class() {
+        let failure = Error::local("memory_conflict", exit::CONFLICT, "stale")
+            .with("id", "mem_x")
+            .with("current_rev", 2)
+            .with("code", "overridden");
+        assert_eq!(failure.code(), "memory_conflict");
+        assert_eq!(failure.exit_code(), exit::CONFLICT);
+        assert_eq!(
+            failure.to_json(),
+            json!({"error": {"code": "memory_conflict", "classification": "conflict",
+                             "message": "stale", "id": "mem_x", "current_rev": 2}})
+        );
+        let refused = Error::local("memory_too_large", exit::REJECTED, "long")
+            .with("field", "title")
+            .with("limit", 120);
+        assert_eq!(refused.to_json()["error"]["classification"], "permanent");
+        assert_eq!(refused.to_json()["error"]["limit"], 120);
+        // A gateway error keeps the body it came with.
+        let api = api(409, "database_exists", "conflict").with("id", "x");
+        assert!(api.to_json()["error"].get("id").is_none());
     }
 }
