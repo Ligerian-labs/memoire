@@ -51,6 +51,19 @@ as well.
 | `snapshots ls DB` | List a persistent database's snapshots |
 | `snapshots restore DB SNAPSHOT_ID` | Restore one, after a `pre_restore` snapshot of the current contents |
 | `keys create --name MACHINE [--team org_…] [--expires 90d] [--read-only]` | Create a machine and an API key for it |
+| `memory init [--burstable [--ttl 24h] \| --persistent]` | Create a memory store's database and tables; persistent is the default |
+| `memory remember --title TITLE [--body BODY \| --body-file FILE] [--kind KIND] [--scope SCOPE] [--tag TAG]... [--evidence TEXT]... [--force]` | Record a memory |
+| `memory recall [QUERY] [--scope SCOPE... \| --all-scopes] [--kind KIND]... [--tag TAG]... [--status STATUS]... [--limit 10]` | Search memories, best first; without QUERY, the newest |
+| `memory show ID [--history]` | Show a memory, its confirmations and disputes |
+| `memory revise ID --reason REASON [--title TITLE] [--body BODY] [--tag TAG \| --add-tag TAG]...` | Write a new revision; only the given fields change |
+| `memory confirm ID --evidence TEXT... [--rev N]` | Confirm a memory's current text |
+| `memory dispute ID --reason REASON [--evidence TEXT]... [--rev N]` | Dispute a memory |
+| `memory resolve ID --reason REASON` | Close a memory's open disputes |
+| `memory supersede ID --by NEW_ID --reason REASON` | Replace a memory by another |
+| `memory forget ID --reason REASON [--purge]` | Leave a tombstone, or erase the memory and its history |
+| `memory log [--since 24h \| --unseen] [--scope SCOPE]... [--limit 50]` | List the store's events, newest first |
+| `memory export [--scope SCOPE]... -o FILE` | Write the memories as JSON Lines |
+| `skill install --claude \| --codex \| --dir PATH [--force]` | Install the memoire skill for coding agents |
 
 Durations are a whole number and a unit: `90s`, `30m`, `24h`, `7d`.
 
@@ -103,6 +116,23 @@ straight to a file:
 memoire keys create --name ci-runner > ci-runner.key
 ```
 
+### Memory
+
+`memory` keeps a shared memory for agents in a database, `memory` unless
+`--db NAME` or `MEMOIRE_MEMORY_DB` names another. Writes record the key's
+principal with `--agent` (`MEMOIRE_AGENT`) and `--session`
+(`MEMOIRE_SESSION`). [memory.md](memory.md) is the reference: records,
+statuses, ranking, concurrency and the error codes.
+
+```sh
+memoire memory init
+memoire memory remember --title "Widgets deploys need the VPN" --evidence "make deploy"
+memoire memory recall "deploy vpn" --json
+```
+
+`skill install` writes the skill that teaches an agent these commands. It
+needs no login.
+
 ## Output and errors
 
 Results go to standard output. Notes and errors go to standard error. With
@@ -122,6 +152,10 @@ the gateway sends in the `Memoire-Sql-Message` header.
 
 The CLI's own failures use the same envelope, with codes such as
 `not_logged_in`, `connection_failed`, `timeout` and `invalid_param`.
+The memory commands add codes such as `memory_conflict`,
+`memory_duplicate`, `memory_not_initialized`, `memory_self_confirm`,
+`memory_secret_detected` and `memory_too_large`, some with extra members;
+[memory.md](memory.md#errors) lists them all.
 
 The exit code gives the class of the failure and never changes:
 
@@ -133,6 +167,6 @@ The exit code gives the class of the failure and never changes:
 | 3 | No credential, or the gateway refused it (`401`) |
 | 4 | Permission, team or statement denied (`403`) |
 | 5 | No such database, table or snapshot (`404`) |
-| 6 | The database's state forbids it: exists, not empty, wrong kind, expired (`409`, `410`) |
-| 7 | Request refused as is: invalid input, an SQL error, a limit (`400`, `413`, `415`, `422`) |
+| 6 | The database's state forbids it: exists, not empty, wrong kind, expired (`409`, `410`). Or a memory's: changed meanwhile, a near-duplicate, superseded |
+| 7 | Request refused as is: invalid input, an SQL error, a limit (`400`, `413`, `415`, `422`), or a memory that looks like it holds a secret |
 | 8 | Try again later: busy, starting, rate limited or unreachable (`429`, `503`, connection failures) |
