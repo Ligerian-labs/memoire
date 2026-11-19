@@ -2,7 +2,7 @@
 //!
 //! The exit code depends only on the failure's class, so scripts can branch
 //! on it without parsing output; `--json` adds the exact `code`.
-use memoire_api::ErrorDetail;
+use memoire_api::{ErrorDetail, SqlErrorDetail};
 use serde_json::{Value, json};
 
 /// The exit codes. Stable: scripts and agents rely on them.
@@ -41,6 +41,8 @@ pub enum Error {
         error: Box<ErrorDetail>,
         /// `Retry-After` in seconds, sent with `429` and `503`.
         retry_after: Option<u64>,
+        /// A `sql_error`'s statement, code and SQLite message.
+        sql: Option<Box<SqlErrorDetail>>,
     },
     /// A failure on this side, with a stable snake_case code.
     Local {
@@ -90,9 +92,12 @@ impl Error {
         match self {
             Self::Local { message, .. } => message.clone(),
             Self::Api {
-                error, retry_after, ..
+                error,
+                retry_after,
+                sql,
+                ..
             } => {
-                let mut text = describe(error);
+                let mut text = describe(error, sql.as_deref());
                 if let Some(seconds) = retry_after {
                     text.push_str(&format!("; retry in {seconds}s"));
                 }
@@ -109,6 +114,7 @@ impl Error {
                 status,
                 error,
                 retry_after,
+                sql,
             } => {
                 let mut body = serde_json::to_value(error).unwrap_or(Value::Null);
                 if let Some(object) = body.as_object_mut() {
@@ -116,6 +122,9 @@ impl Error {
                     object.insert("message".into(), json!(self.message()));
                     if let Some(seconds) = retry_after {
                         object.insert("retry_after_seconds".into(), json!(seconds));
+                    }
+                    if let Some(sql) = sql {
+                        object.insert("sql".into(), json!(sql));
                     }
                 }
                 json!({ "error": body })
@@ -134,7 +143,7 @@ impl Error {
 }
 
 /// A sentence for a gateway error code.
-fn describe(error: &ErrorDetail) -> String {
+fn describe(error: &ErrorDetail, sql: Option<&SqlErrorDetail>) -> String {
     let fixed = match error.code.as_str() {
         "unauthenticated" => {
             "the gateway refused the credential (missing, unknown, revoked or expired); run `memoire login`"
@@ -174,7 +183,7 @@ fn describe(error: &ErrorDetail) -> String {
     if !fixed.is_empty() {
         return fixed.to_owned();
     }
-    if let Some(sql) = &error.sql {
+    if let Some(sql) = sql {
         return format!(
             "SQLite refused statement {}: {} ({})",
             sql.statement + 1,
@@ -202,7 +211,7 @@ fn describe(error: &ErrorDetail) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use memoire_api::{FieldError, SqlErrorDetail};
+    use memoire_api::FieldError;
 
     fn api(status: u16, code: &str, classification: &str) -> Error {
         Error::Api {
@@ -211,9 +220,9 @@ mod tests {
                 code: code.into(),
                 classification: classification.into(),
                 details: Vec::new(),
-                sql: None,
             }),
             retry_after: None,
+            sql: None,
         }
     }
 
@@ -248,18 +257,18 @@ mod tests {
 
     #[test]
     fn messages_carry_sql_and_field_details() {
-        let Error::Api { mut error, .. } = api(422, "sql_error", "permanent") else {
+        let Error::Api { error, .. } = api(422, "sql_error", "permanent") else {
             unreachable!()
         };
-        error.sql = Some(SqlErrorDetail {
-            statement: 0,
-            sqlite_code: "SQLITE_ERROR".into(),
-            message: "no such table: t".into(),
-        });
         let failure = Error::Api {
             status: 422,
             error,
             retry_after: None,
+            sql: Some(Box::new(SqlErrorDetail {
+                statement: 0,
+                sqlite_code: "SQLITE_ERROR".into(),
+                message: "no such table: t".into(),
+            })),
         };
         assert_eq!(
             failure.message(),
@@ -281,6 +290,7 @@ mod tests {
             status: 422,
             error,
             retry_after: Some(3),
+            sql: None,
         };
         assert_eq!(
             failure.message(),

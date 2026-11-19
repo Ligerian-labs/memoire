@@ -725,25 +725,19 @@ fn sql_error(statement: usize, error: &rusqlite::Error) -> Response {
     };
     // Merezha's edge carries only code, classification and details; the
     // message travels percent-encoded in a header.
+    let (detail, header) = memoire_api::SqlErrorDetail {
+        statement,
+        sqlite_code: code.into(),
+        message,
+    }
+    .to_wire();
     let mut response = reply(
         422,
-        &json!({"error": {"code": "sql_error", "classification": "permanent",
-                          "details": [{"path": format!("/statements/{statement}/sql"),
-                                       "code": code.to_ascii_lowercase()}]}}),
+        &json!({"error": {"code": "sql_error", "classification": "permanent", "details": [detail]}}),
     );
-    let encoded: String = message
-        .bytes()
-        .map(|b| {
-            if b.is_ascii_alphanumeric() || b"-._~".contains(&b) {
-                (b as char).to_string()
-            } else {
-                format!("%{b:02X}")
-            }
-        })
-        .collect();
     response
         .headers_mut()
-        .insert("memoire-sql-message", encoded.parse().unwrap());
+        .insert(memoire_api::SQL_MESSAGE_HEADER, header.parse().unwrap());
     response
 }
 
