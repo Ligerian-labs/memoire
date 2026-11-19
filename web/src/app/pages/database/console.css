@@ -114,3 +114,11 @@
   font-size: 12px;
   font-variant-numeric: tabular-nums;
 }
+.failed {
+  display: block;
+  margin-top: 4px;
+  overflow: hidden;
+  color: #5c140c;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}

@@ -3,7 +3,16 @@ export interface ErrorBody {
   code: string;
   classification?: 'permanent' | 'transient' | 'conflict';
   details?: { path: string; code: string }[];
-  sql?: { statement: number; sqlite_code: string; message: string };
+}
+
+/** What a `422 sql_error` tells about the statement SQLite refused. */
+export interface SqlFailure {
+  /** 0-based index in the batch. */
+  statement: number;
+  /** SQLite's primary result code, e.g. `sqlite_constraint`. */
+  code: string;
+  /** SQLite's message, from the `Memoire-Sql-Message` header; null when absent. */
+  message: string | null;
 }
 
 export class ApiError extends Error {
@@ -11,12 +20,24 @@ export class ApiError extends Error {
     readonly status: number,
     readonly body: ErrorBody,
     readonly retryAfter: number | null = null,
+    readonly sqlMessage: string | null = null,
   ) {
     super(body.code);
     this.name = 'ApiError';
   }
   get code(): string {
     return this.body.code;
+  }
+
+  /** The refused statement of a `sql_error`: its `details` entry and the message header. */
+  get sql(): SqlFailure | null {
+    if (this.body.code !== 'sql_error') return null;
+    for (const detail of this.body.details ?? []) {
+      const match = /^\/statements\/(\d+)\/sql$/.exec(detail.path);
+      if (match)
+        return { statement: Number(match[1]), code: detail.code, message: this.sqlMessage };
+    }
+    return null;
   }
 }
 
@@ -91,11 +112,22 @@ function search(query?: Query): string {
 async function toError(response: Response): Promise<ApiError> {
   const retry = Number(response.headers.get('Retry-After'));
   const retryAfter = Number.isFinite(retry) && retry > 0 ? retry : null;
+  const sqlMessage = decode(response.headers.get('Memoire-Sql-Message'));
   try {
     const parsed = (await response.json()) as { error?: ErrorBody };
-    if (parsed?.error?.code) return new ApiError(response.status, parsed.error, retryAfter);
+    if (parsed?.error?.code)
+      return new ApiError(response.status, parsed.error, retryAfter, sqlMessage);
   } catch {
     /* not an error envelope: a proxy failure or an HTML page */
   }
   return new ApiError(response.status, { code: `http_${response.status}` }, retryAfter);
+}
+
+function decode(header: string | null): string | null {
+  if (!header) return null;
+  try {
+    return decodeURIComponent(header);
+  } catch {
+    return header;
+  }
 }

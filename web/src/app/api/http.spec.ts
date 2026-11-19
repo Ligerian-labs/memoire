@@ -74,14 +74,12 @@ describe('Http', () => {
     expect(fetcher.mock.calls[1][0]).toBe('/v1/memoire/databases?state=all&limit=100');
   });
 
-  it('parses the error envelope, including sql details and Retry-After', async () => {
-    const sql = {
-      statement: 1,
-      sqlite_code: 'SQLITE_CONSTRAINT',
-      message: 'UNIQUE constraint failed: t.a',
-    };
+  it('parses the error envelope, the percent-encoded SQL message and Retry-After', async () => {
+    const details = [{ path: '/statements/0/sql', code: 'sqlite_error' }];
     const { memoire } = make(
-      json({ error: { code: 'sql_error', classification: 'permanent', sql } }, 422),
+      json({ error: { code: 'sql_error', classification: 'permanent', details } }, 422, {
+        'Memoire-Sql-Message': encodeURIComponent('near "SELEC": syntax error'),
+      }),
       json({ error: { code: 'sqlite_busy', classification: 'transient' } }, 503, {
         'Retry-After': '2',
       }),
@@ -89,9 +87,13 @@ describe('Http', () => {
     const request = { mode: 'write' as const, transaction: false, statements: [{ sql: 'x' }] };
     const first = await failure(memoire.query('scratch', request));
     expect(first.status).toBe(422);
-    expect(first.code).toBe('sql_error');
-    expect(first.body.sql).toEqual(sql);
+    expect(first.sql).toEqual({
+      statement: 0,
+      code: 'sqlite_error',
+      message: 'near "SELEC": syntax error',
+    });
     const second = await failure(memoire.query('scratch', request));
+    expect(second.sql).toBeNull();
     expect(second.retryAfter).toBe(2);
   });
 

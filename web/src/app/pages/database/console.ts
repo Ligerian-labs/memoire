@@ -1,5 +1,6 @@
 import { Component, inject, signal } from '@angular/core';
 import { FormsModule } from '@angular/forms';
+import { ApiError } from '../../api/http';
 import { Mode, Statement } from '../../api/memoire';
 import { cell, parseParams, ParamsError } from '../../api/values';
 import { describe } from '../../messages';
@@ -17,6 +18,8 @@ export class Console {
   readonly ctx = inject(DatabaseContext);
   readonly running = signal(false);
   readonly error = signal('');
+  /** The text of the statement SQLite refused, shown under the error. */
+  readonly failedSql = signal<string | null>(null);
   readonly showParams = signal(this.ctx.params !== '');
   readonly cell = cell;
 
@@ -35,6 +38,7 @@ export class Console {
     const statements = splitStatements(this.ctx.sql);
     if (!statements.length || this.running()) return;
     this.error.set('');
+    this.failedSql.set(null);
     let params;
     try {
       params = parseParams(this.ctx.params);
@@ -66,6 +70,8 @@ export class Console {
     } catch (error) {
       this.ctx.lastRun.set(null);
       this.error.set(describe(error));
+      const failed = error instanceof ApiError ? error.sql : null;
+      if (failed) this.failedSql.set(statements[failed.statement] ?? null);
       if (mode === 'write') await this.ctx.refresh();
     } finally {
       this.running.set(false);

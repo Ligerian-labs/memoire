@@ -118,6 +118,21 @@ INSERT INTO notes (body, score) SELECT 'note ' || i, i * 0.5 FROM n;`,
     await screenshot(page, 'console-write');
   });
 
+  await test.step('a refused statement names itself, its SQLite code and message', async () => {
+    await runSql(
+      page,
+      `INSERT INTO notes (body) VALUES ('ok');\nINSERT INTO notes (body) VALUES (NULL);`,
+    );
+    const error = page.getByTestId('console-error');
+    await expect(error).toContainText('Statement 2');
+    await expect(error).toContainText('NOT NULL constraint failed: notes.body');
+    await expect(error).toContainText('SQLITE_CONSTRAINT');
+    await expect(error.locator('code')).toHaveText('INSERT INTO notes (body) VALUES (NULL);');
+    // Without a transaction the statement before the failing one stays.
+    await runSql(page, `DELETE FROM notes WHERE body = 'ok'`);
+    await expect(page.getByTestId('results').locator('.result').first()).toContainText('1 changed');
+  });
+
   await test.step('a write in read mode is refused', async () => {
     await page.getByRole('button', { name: 'Read', exact: true }).click();
     await runSql(page, `DELETE FROM notes`);

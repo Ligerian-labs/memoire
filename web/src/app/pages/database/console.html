@@ -78,7 +78,12 @@
 </div>
 
 @if (error()) {
-  <p class="alert" role="alert" data-testid="console-error">{{ error() }}</p>
+  <div class="alert" role="alert" data-testid="console-error">
+    {{ error() }}
+    @if (failedSql(); as sql) {
+      <code class="failed">{{ sql }}</code>
+    }
+  </div>
 }
 
 @if (ctx.lastRun(); as run) {

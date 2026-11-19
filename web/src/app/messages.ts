@@ -62,9 +62,12 @@ const FIELDS: Record<string, string> = {
 export function describe(error: unknown): string {
   if (error instanceof ApiError) {
     const { body } = error;
-    if (body.code === 'sql_error' && body.sql) {
-      return `Statement ${body.sql.statement + 1}: ${body.sql.message} (${body.sql.sqlite_code})`;
+    const sql = error.sql;
+    if (sql) {
+      const code = sql.code.toUpperCase();
+      return `Statement ${sql.statement + 1}: ${sql.message ? `${sql.message} (${code})` : code}`;
     }
+    if (body.code === 'sql_error') return 'SQLite refused a statement.';
     if (body.code === 'validation_failed' && body.details?.length) {
       return body.details
         .map((d) => `${field(d.path)} ${FIELDS[d.code] ?? `is ${d.code.replace(/_/g, ' ')}`}`)

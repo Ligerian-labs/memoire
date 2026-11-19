@@ -78,6 +78,7 @@ describe('web server', () => {
         res.writeHead(201, {
           'Content-Type': 'application/json',
           'Set-Cookie': 'merezha_session=s; HttpOnly',
+          'Memoire-Sql-Message': 'UNIQUE%20constraint%20failed%3A%20t.a',
         });
         res.end('{"ok":true}');
       });
@@ -104,6 +105,10 @@ describe('web server', () => {
     });
     assert.equal(response.status, 201);
     assert.equal(response.headers.get('set-cookie'), 'merezha_session=s; HttpOnly');
+    assert.equal(
+      response.headers.get('memoire-sql-message'),
+      'UNIQUE%20constraint%20failed%3A%20t.a',
+    );
     assert.deepEqual(await response.json(), { ok: true });
     const last = seen.at(-1);
     assert.equal(last.method, 'POST');
