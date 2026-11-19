@@ -1032,6 +1032,94 @@ fn memory_is_shared_between_machines_on_a_real_gateway() {
         (json!(true), json!("burstable"), json!(3600))
     );
 
+    // Writers racing on one rev: the guard fails in a real write batch,
+    // and its SQLITE_CONSTRAINT travels back through the client.
+    let target = json_of(
+        &a,
+        &[
+            "memory",
+            "remember",
+            "--title",
+            "Burst target on the real gateway",
+        ],
+    );
+    let target = target["id"].as_str().unwrap().to_owned();
+    let mut conflicts = 0;
+    for round in 0..5 {
+        conflicts += burst(&gateway, work.path(), [&key_a, &key_b], &target, round);
+        if conflicts > 0 {
+            break;
+        }
+    }
+    assert!(conflicts > 0, "no burst ever made a writer conflict");
+
     let logs = gateway.logs.lock().unwrap().join("\n");
     assert!(!logs.contains(&key_a) && !logs.contains(&key_b) && !logs.contains(&secret));
+}
+
+/// Six writers of two machines, each in its own session, `revise` memory
+/// `id` at once. Every one succeeds or conflicts, the rev grows by the
+/// successes and the history stays dense. The number of conflicts.
+fn burst(gateway: &Gateway, dir: &Path, keys: [&str; 2], id: &str, round: usize) -> usize {
+    const WRITERS: usize = 6;
+    let reader = machine(gateway, dir, keys[0], "burst", "burst-reader");
+    let before = json_of(&reader, &["memory", "show", id])["memory"]["rev"]
+        .as_i64()
+        .unwrap();
+    let writers: Vec<Memoire> = (0..WRITERS)
+        .map(|i| {
+            machine(
+                gateway,
+                dir,
+                keys[i % 2],
+                &format!("burst-{}", i % 2),
+                &format!("burst-{round}-{i}"),
+            )
+        })
+        .collect();
+    let runs: Vec<support::Run> = std::thread::scope(|scope| {
+        let handles: Vec<_> = writers
+            .iter()
+            .enumerate()
+            .map(|(i, writer)| {
+                scope.spawn(move || {
+                    let title = format!("Burst target, round {round}, writer {i}");
+                    writer.run(
+                        &[
+                            "memory", "revise", id, "--title", &title, "--reason", "burst",
+                            "--json",
+                        ],
+                        "",
+                    )
+                })
+            })
+            .collect();
+        handles.into_iter().map(|h| h.join().unwrap()).collect()
+    });
+    let mut successes = 0;
+    let mut conflicts = 0;
+    for run in &runs {
+        match run.code {
+            0 => successes += 1,
+            6 => {
+                let error = &run.error()["error"];
+                assert_eq!(error["code"], "memory_conflict", "{}", run.stderr);
+                assert!(error["current_rev"].as_i64().unwrap() > before, "{error}");
+                conflicts += 1;
+            }
+            other => panic!("a burst writer exited {other}: {}", run.stderr),
+        }
+    }
+    assert!(successes >= 1);
+    let shown = json_of(&reader, &["memory", "show", id, "--history"]);
+    let rev = shown["memory"]["rev"].as_i64().unwrap();
+    assert_eq!(rev, before + successes);
+    let revs: Vec<i64> = shown["revisions"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|r| r["rev"].as_i64().unwrap())
+        .collect();
+    assert_eq!(revs, (1..=rev).collect::<Vec<_>>(), "a dense history");
+    conflicts
 }
