@@ -4,6 +4,7 @@ import { Router, RouterLink, RouterLinkActive, RouterOutlet } from '@angular/rou
 import { Api } from '../../api/api';
 import { bytes, duration, relative, timestamp } from '../../format';
 import { describe } from '../../messages';
+import { SessionStore } from '../../session';
 import { Modal } from '../../ui/modal';
 import { TTL_CHOICES } from '../databases/create-dialog';
 import { DatabaseContext } from './context';
@@ -19,6 +20,7 @@ export class DatabasePage implements OnDestroy {
   private readonly api = inject(Api);
   private readonly router = inject(Router);
   readonly ctx = inject(DatabaseContext);
+  private readonly session = inject(SessionStore);
   readonly name = input.required<string>();
   readonly now = signal(Date.now());
   readonly dialog = signal<'extend' | 'delete' | null>(null);
@@ -44,8 +46,23 @@ export class DatabasePage implements OnDestroy {
     clearInterval(this.tick);
   }
 
-  exportUrl(): string {
-    return this.api.memoire.exportUrl(this.ctx.name());
+  /**
+   * A download cannot carry Merezha-Organization, so it follows the session's
+   * team: point the session at the team this page shows (another tab may have
+   * switched it), then let the browser download.
+   */
+  async exportFile(): Promise<void> {
+    this.actionError.set('');
+    const team = this.session.teamId();
+    try {
+      if (team) await this.api.identity.selectOrganization(team);
+      const link = document.createElement('a');
+      link.href = this.api.memoire.exportUrl(this.ctx.name());
+      link.download = `${this.ctx.name()}.sqlite`;
+      link.click();
+    } catch (error) {
+      this.ctx.error.set(describe(error));
+    }
   }
 
   openDialog(which: 'extend' | 'delete'): void {

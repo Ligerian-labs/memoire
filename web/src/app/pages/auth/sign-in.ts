@@ -1,6 +1,7 @@
 import { Component, inject, input, signal } from '@angular/core';
 import { FormsModule } from '@angular/forms';
 import { Router, RouterLink } from '@angular/router';
+import { safeNext } from '../../guards';
 import { describe } from '../../messages';
 import { SessionStore } from '../../session';
 
@@ -15,7 +16,9 @@ import { SessionStore } from '../../session';
       @if (session.restoreError(); as failure) {
         <p class="alert" role="alert">
           Could not reach your session: {{ explain(failure) }}
-          <button class="btn small" type="button" (click)="retry()">Retry</button>
+          <button class="btn small" type="button" (click)="retry()" [disabled]="busy()">
+            Retry
+          </button>
         </p>
       }
       <form (ngSubmit)="submit()">
@@ -55,15 +58,21 @@ export class SignIn {
   readonly error = signal('');
 
   async retry(): Promise<void> {
+    // One request at a time: a late answer to Retry must not undo a sign-in.
+    if (this.busy()) return;
+    this.busy.set(true);
     try {
       await this.session.restore();
       if (this.session.user()) await this.router.navigateByUrl(safeNext(this.next()));
     } catch {
       /* restoreError shows it */
+    } finally {
+      this.busy.set(false);
     }
   }
 
   async submit(): Promise<void> {
+    if (this.busy()) return;
     this.busy.set(true);
     this.error.set('');
     try {
@@ -76,9 +85,4 @@ export class SignIn {
       this.busy.set(false);
     }
   }
-}
-
-/** Only same-app paths, never another origin. */
-export function safeNext(next: string | undefined): string {
-  return next && next.startsWith('/') && !next.startsWith('//') ? next : '/databases';
 }

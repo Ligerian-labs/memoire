@@ -126,6 +126,8 @@ export class Rows {
 
   first(): Promise<void> {
     this.page.set(null);
+    this.cursors.set([null]);
+    this.offset.set(0);
     return this.load([null]);
   }
 

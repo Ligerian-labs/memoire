@@ -61,10 +61,8 @@ CSRF checks work unchanged. It has no dependencies beyond Node.
 
 Flags win over the environment. The listen address must be loopback
 (`127.0.0.0/8` or `::1`): exposing the debugger is the job of whatever fronts
-it. The listen address must be loopback
-(`127.0.0.0/8` or `::1`): exposing the debugger is the job of whatever fronts
-it. Invalid settings stop the server before it
-listens, with every problem listed. It logs one JSON line per request
+it. Invalid settings stop the server before it listens, with every problem
+listed. It logs one JSON line per request
 (method, path without the query, status, duration) and drains for up to ten
 seconds on `SIGTERM`.
 

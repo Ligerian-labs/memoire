@@ -16,7 +16,7 @@ export const signedIn: CanActivateFn = async (_, state) => {
   return router.createUrlTree(['/sign-in'], { queryParams: { next: state.url } });
 };
 
-export const signedOut: CanActivateFn = async () => {
+export const signedOut: CanActivateFn = async (route) => {
   const session = inject(SessionStore);
   const router = inject(Router);
   try {
@@ -24,8 +24,13 @@ export const signedOut: CanActivateFn = async () => {
   } catch {
     return true;
   }
-  return session.user() ? router.createUrlTree(['/databases']) : true;
+  return session.user() ? router.parseUrl(safeNext(route.queryParamMap.get('next'))) : true;
 };
+
+/** Only same-app paths, never another origin. */
+export function safeNext(next: string | null | undefined): string {
+  return next && next.startsWith('/') && !next.startsWith('//') ? next : '/databases';
+}
 
 export const hasTeam: CanActivateFn = () => {
   const session = inject(SessionStore);

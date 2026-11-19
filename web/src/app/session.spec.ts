@@ -125,6 +125,17 @@ describe('SessionStore', () => {
     expect(TestBed.inject(Api).http.team).toBe('org_a');
   });
 
+  it('clears the restore error once the session is known, signed out included', async () => {
+    const { session } = store(
+      json({ error: { code: 'overloaded' } }, 503),
+      json({ error: { code: 'unauthenticated' } }, 401),
+    );
+    await expect(session.restore()).rejects.toThrow('overloaded');
+    expect(session.restoreError()).not.toBeNull();
+    await session.restore();
+    expect(session.restoreError()).toBeNull();
+  });
+
   it('rethrows other failures so the page can show them, and retries next time', async () => {
     const { session } = store(
       json({ error: { code: 'overloaded' } }, 503),

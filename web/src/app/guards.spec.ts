@@ -1,5 +1,11 @@
 import { TestBed } from '@angular/core/testing';
-import { ActivatedRouteSnapshot, Router, RouterStateSnapshot, UrlTree } from '@angular/router';
+import {
+  ActivatedRouteSnapshot,
+  Router,
+  RouterStateSnapshot,
+  UrlTree,
+  convertToParamMap,
+} from '@angular/router';
 import { FETCH } from './api/api';
 import { signedIn, signedOut } from './guards';
 
@@ -13,10 +19,10 @@ function setup(...responses: Response[]) {
   );
   TestBed.configureTestingModule({ providers: [{ provide: FETCH, useValue: fetcher }] });
 }
-const route = {} as ActivatedRouteSnapshot;
+const route = { queryParamMap: convertToParamMap({}) } as ActivatedRouteSnapshot;
 const state = { url: '/databases/scratch' } as RouterStateSnapshot;
-const run = (guard: typeof signedIn) =>
-  TestBed.runInInjectionContext(() => guard(route, state)) as Promise<boolean | UrlTree>;
+const run = (guard: typeof signedIn, at = route) =>
+  TestBed.runInInjectionContext(() => guard(at, state)) as Promise<boolean | UrlTree>;
 const url = (result: boolean | UrlTree) => TestBed.inject(Router).serializeUrl(result as UrlTree);
 
 describe('guards', () => {
@@ -29,6 +35,25 @@ describe('guards', () => {
       }),
     );
     expect(url(await run(signedOut))).toBe('/databases');
+  });
+
+  it('keeps a same-app deep link, never another origin', async () => {
+    const signedInAnswers = () => [
+      json({ session: { id: 's', active_organization_id: 'org_a' }, user, csrf_token: 'c' }),
+      json({
+        items: [{ organization: { id: 'org_a', name: 'A', slug: 'a', created_at: '' } }],
+        next_cursor: null,
+      }),
+    ];
+    setup(...signedInAnswers());
+    const deep = {
+      queryParamMap: convertToParamMap({ next: '/databases/scratch/schema' }),
+    } as ActivatedRouteSnapshot;
+    expect(url(await run(signedOut, deep))).toBe('/databases/scratch/schema');
+    const away = {
+      queryParamMap: convertToParamMap({ next: '//evil.example/x' }),
+    } as ActivatedRouteSnapshot;
+    expect(url(await run(signedOut, away))).toBe('/databases');
   });
 
   it('sends a signed-out person to sign in, keeping where they were going', async () => {

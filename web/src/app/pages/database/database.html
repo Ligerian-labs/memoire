@@ -13,7 +13,7 @@
         <button class="btn" type="button" (click)="openDialog('extend')">Extend</button>
       }
       @if (db.state === 'active') {
-        <a class="btn" [href]="exportUrl()" download>Export</a>
+        <button class="btn" type="button" (click)="exportFile()">Export</button>
       }
       <button class="btn danger" type="button" (click)="openDialog('delete')">Delete</button>
     }

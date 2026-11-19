@@ -48,6 +48,7 @@ export class SessionStore {
         this.restoreError.set(error);
         throw error;
       }
+      this.restoreError.set(null);
       this.clear();
     }
   }
@@ -111,6 +112,7 @@ export class SessionStore {
   }
 
   private async adopt(signedIn: SignedIn): Promise<void> {
+    this.restoreError.set(null);
     this.user.set(signedIn.user);
     this.setTeam(signedIn.session.active_organization_id);
     await this.refreshTeams();
