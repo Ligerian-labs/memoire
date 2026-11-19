@@ -87,8 +87,11 @@ memoire shell scratch --write < migrate.sql
 `keys create` signs in as a member, because creating a machine needs a
 recent sign-in, which an API key is not. It reads the email and password
 from the terminal (the password without echo), or as two lines of standard
-input. Then it creates the machine and its key with the five memoire
-permissions, or only `memoire.databases.read` with `--read-only`. It prints
+input. Then it creates the machine, gives it the team role `member` (a
+machine holds no permission without a role), and creates its key with the
+five memoire permissions, or only `memoire.databases.read` with
+`--read-only`. Creating machines and assigning roles takes a team admin or
+owner; a plain member cannot run it. It prints
 the key once and signs the temporary session out. The team is `--team`,
 else the stored key's team. `--expires` is at most `365d`, identity's limit. The `--server` URL must be the gateway's
 application origin, because the sign-in carries it as `Origin`.
