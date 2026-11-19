@@ -1,6 +1,8 @@
 //! An in-process gateway that follows `docs/api.md`: the memoire routes on
 //! real SQLite files, and the identity routes `keys create` uses. Its clock
 //! stands still; tests move state with the hooks on [`Fake`].
+// Handlers fail with the HTTP reply itself.
+#![allow(clippy::result_large_err)]
 use axum::{
     Router,
     body::Bytes,
@@ -264,7 +266,7 @@ async fn handle(
         .path()
         .trim_start_matches('/')
         .split('/')
-        .map(|s| percent_decode(s))
+        .map(percent_decode)
         .collect();
     let segments: Vec<&str> = segments.iter().map(String::as_str).collect();
     let result = match segments.as_slice() {
@@ -280,12 +282,13 @@ fn percent_decode(segment: &str) -> String {
     let mut out = Vec::new();
     let mut i = 0;
     while i < bytes.len() {
-        if bytes[i] == b'%' && i + 2 < bytes.len() {
-            if let Ok(b) = u8::from_str_radix(&segment[i + 1..i + 3], 16) {
-                out.push(b);
-                i += 3;
-                continue;
-            }
+        if bytes[i] == b'%'
+            && i + 2 < bytes.len()
+            && let Ok(b) = u8::from_str_radix(&segment[i + 1..i + 3], 16)
+        {
+            out.push(b);
+            i += 3;
+            continue;
         }
         out.push(bytes[i]);
         i += 1;
