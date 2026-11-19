@@ -154,13 +154,11 @@ export class CreateDatabaseDialog {
     this.error.set('');
     try {
       const kind = this.kind();
-      const database = await this.api.memoire
-        .forTeam(this.session.teamId())
-        .create(
-          kind === 'burstable'
-            ? { name: this.name, kind, idle_ttl_seconds: this.ttl }
-            : { name: this.name, kind },
-        );
+      const database = await this.memoire.create(
+        kind === 'burstable'
+          ? { name: this.name, kind, idle_ttl_seconds: this.ttl }
+          : { name: this.name, kind },
+      );
       this.created.emit({ database, team: this.memoire.team });
     } catch (error) {
       this.error.set(describe(error));
