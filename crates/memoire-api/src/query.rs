@@ -19,10 +19,10 @@ pub enum QueryMode {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct QueryRequest {
-    #[serde(default)]
+    #[serde(default, deserialize_with = "null_as_default")]
     pub mode: QueryMode,
     /// Run the batch as one transaction: all statements apply or none.
-    #[serde(default)]
+    #[serde(default, deserialize_with = "null_as_default")]
     pub transaction: bool,
     /// Per-statement deadline, at most 30 000; defaults to 5 000.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -37,7 +37,11 @@ pub struct QueryRequest {
 pub struct Statement {
     /// Exactly one SQL statement; a trailing `;` is allowed.
     pub sql: String,
-    #[serde(default, skip_serializing_if = "Params::is_empty")]
+    #[serde(
+        default,
+        deserialize_with = "null_as_default",
+        skip_serializing_if = "Params::is_empty"
+    )]
     pub params: Params,
 }
 
@@ -57,6 +61,44 @@ impl Default for Params {
     }
 }
 
+/// `null` reads as the field's default, the same as omitting it.
+fn null_as_default<'de, D, T>(deserializer: D) -> Result<T, D::Error>
+where
+    D: Deserializer<'de>,
+    T: Deserialize<'de> + Default,
+{
+    Option::<T>::deserialize(deserializer).map(Option::unwrap_or_default)
+}
+
+/// A named-parameter object that refuses a repeated key instead of keeping
+/// the last value.
+struct UniqueNames(BTreeMap<String, SqlValue>);
+
+impl<'de> Deserialize<'de> for UniqueNames {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        struct Names;
+        impl<'de> serde::de::Visitor<'de> for Names {
+            type Value = UniqueNames;
+            fn expecting(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                f.write_str("an object of named parameters")
+            }
+            fn visit_map<A: serde::de::MapAccess<'de>>(
+                self,
+                mut map: A,
+            ) -> Result<UniqueNames, A::Error> {
+                let mut names = BTreeMap::new();
+                while let Some((name, value)) = map.next_entry::<String, SqlValue>()? {
+                    if names.insert(name, value).is_some() {
+                        return Err(A::Error::custom("a parameter name appears twice"));
+                    }
+                }
+                Ok(UniqueNames(names))
+            }
+        }
+        deserializer.deserialize_map(Names)
+    }
+}
+
 impl<'de> Deserialize<'de> for Params {
     // Not `untagged`: serde buffers untagged input, which loses the number
     // tokens `SqlValue` reads.
@@ -69,7 +111,7 @@ impl<'de> Deserialize<'de> for Params {
                 .map_err(D::Error::custom)
         } else if text.starts_with('{') {
             serde_json::from_str(text)
-                .map(Self::Named)
+                .map(|UniqueNames(names)| Self::Named(names))
                 .map_err(D::Error::custom)
         } else {
             Err(D::Error::custom("params is an array or an object"))
@@ -169,6 +211,29 @@ mod tests {
                 .is_err()
         );
         assert!(serde_json::from_str::<Statement>(r#"{"sql": "select 1", "params": 1}"#).is_err());
+    }
+
+    #[test]
+    fn null_is_the_same_as_omitting() {
+        let request = request(json!({
+            "mode": null, "transaction": null, "timeout_ms": null,
+            "statements": [{"sql": "select 1", "params": null}],
+        }))
+        .unwrap();
+        assert_eq!(request.mode, QueryMode::Read);
+        assert!(!request.transaction);
+        assert_eq!(request.timeout_ms, None);
+        assert!(request.statements[0].params.is_empty());
+    }
+
+    #[test]
+    fn named_params_refuse_a_repeated_key() {
+        assert!(
+            serde_json::from_str::<Statement>(
+                r#"{"sql": "select :a", "params": {"a": 1, "a": 2}}"#
+            )
+            .is_err()
+        );
     }
 
     #[test]

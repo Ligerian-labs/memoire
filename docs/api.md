@@ -336,11 +336,14 @@ Answers `200` with one result per statement:
   for an expression.
 - `rows_affected` is SQLite's change count (`sqlite3_changes`) for INSERT,
   UPDATE and DELETE, 0 otherwise.
-- `last_insert_rowid` is set only for an INSERT or REPLACE into a rowid
-  table with `rows_affected` > 0: `sqlite3_last_insert_rowid` read right
-  after the statement, the rowid of its last inserted row, in the value
-  encoding. It is `null` otherwise, including inserts into `WITHOUT ROWID`
-  tables and inserts that `OR IGNORE` skipped.
+- `last_insert_rowid` is the rowid of the last row the statement itself
+  inserted into a rowid table, in the value encoding. It is `null` when the
+  statement inserted no such row: not an INSERT or REPLACE, a `WITHOUT
+  ROWID` table, a row `OR IGNORE` skipped, or an UPSERT that only updated.
+  The gateway resets SQLite's value to 0 before the statement
+  (`sqlite3_set_last_insert_rowid`) and reads it after, so a value left by
+  an earlier statement never shows; a row inserted with the explicit rowid
+  0 therefore also reports `null`.
 
 On failure the batch stops at the failing statement and the response is the
 error alone (`sql_error`, `read_only`, `statement_denied`,
@@ -461,7 +464,7 @@ clients need:
 
 `transport: "bearer"` returns the session token once, in `session.token`;
 send it as `Authorization: Bearer mzs_…`. The default `cookie` transport
-sets `__Host-merezha_session` instead.
+sets the session cookie named in the authentication table instead.
 
 Requests without a credential to identity's routes (register, sign in,
 verify, accept an invitation) must carry an `Origin` header equal to the

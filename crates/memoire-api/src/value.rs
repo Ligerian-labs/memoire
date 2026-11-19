@@ -65,10 +65,15 @@ impl SqlValue {
     /// real token beyond f64 on either side.
     pub fn from_json_text(text: &str) -> Result<Self, &'static str> {
         let text = text.trim();
-        if text.starts_with(|c: char| c == '-' || c.is_ascii_digit()) {
+        // Parsing first rejects what JSON does not allow (`01`, `1.`, `+1`).
+        let value: Value = match serde_json::from_str(text) {
+            Ok(value) => value,
+            Err(_) if valid_number_token(text) => return number_token(text),
+            Err(_) => return Err("invalid JSON"),
+        };
+        if value.is_number() {
             return number_token(text);
         }
-        let value: Value = serde_json::from_str(text).map_err(|_| "invalid JSON")?;
         Self::from_json(&value)
     }
 
@@ -90,6 +95,44 @@ impl SqlValue {
             Value::Object(object) => tagged(object),
         }
     }
+}
+
+/// Whether `token` has JSON number syntax:
+/// `-?(0|[1-9][0-9]*)(\.[0-9]+)?([eE][+-]?[0-9]+)?`. serde_json refuses a
+/// syntactically valid number only when it overflows f64 (`1e400`).
+fn valid_number_token(token: &str) -> bool {
+    let b = token.as_bytes();
+    let mut i = usize::from(b.first() == Some(&b'-'));
+    let digits = |i: &mut usize| {
+        let start = *i;
+        while b.get(*i).is_some_and(u8::is_ascii_digit) {
+            *i += 1;
+        }
+        *i > start
+    };
+    match b.get(i) {
+        Some(b'0') => i += 1,
+        Some(b'1'..=b'9') => {
+            digits(&mut i);
+        }
+        _ => return false,
+    }
+    if b.get(i) == Some(&b'.') {
+        i += 1;
+        if !digits(&mut i) {
+            return false;
+        }
+    }
+    if matches!(b.get(i), Some(b'e' | b'E')) {
+        i += 1;
+        if matches!(b.get(i), Some(b'+' | b'-')) {
+            i += 1;
+        }
+        if !digits(&mut i) {
+            return false;
+        }
+    }
+    i == b.len()
 }
 
 /// A bare JSON number token: REAL with a fraction or exponent, otherwise
@@ -288,6 +331,15 @@ mod tests {
         ] {
             assert!(parse(bad).is_err(), "{bad}");
         }
+    }
+
+    #[test]
+    fn from_json_text_refuses_non_json_numbers() {
+        for bad in ["01", "1.", "+1", ".5", "1e", "0x10", "--1"] {
+            assert!(SqlValue::from_json_text(bad).is_err(), "{bad}");
+        }
+        assert_eq!(SqlValue::from_json_text("-0.5e1"), Ok(SqlValue::Real(-5.0)));
+        assert!(SqlValue::from_json_text("1e400").is_err());
     }
 
     #[test]
