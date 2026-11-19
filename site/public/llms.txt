@@ -14,3 +14,4 @@ One always-on gateway handles every request, and the SQLite files live on its ho
 - [Repository](https://github.com/ligerian-labs/memoire): source, README and status
 - [HTTP API](https://github.com/ligerian-labs/memoire/blob/main/docs/api.md): the contract between the gateway and its clients
 - [Architecture](https://github.com/ligerian-labs/memoire/blob/main/docs/architecture.md): contexts, data plane rules and limits
+- [Agent memory](https://github.com/ligerian-labs/memoire/blob/main/docs/memory.md): `memoire memory` keeps a shared memory for a fleet of agents in a memoire database; agents recall, record, confirm and dispute what they verified

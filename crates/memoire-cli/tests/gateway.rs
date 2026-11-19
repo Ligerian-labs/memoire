@@ -24,6 +24,7 @@ use support::Memoire;
 /// Each test runs its own gateway on its own port of the lane's band.
 const CATALOG_AND_DATA_PORT: u16 = 28971;
 const FILES_PORT: u16 = 28973;
+const MEMORY_PORT: u16 = 28975;
 const EMAIL: &str = "member@memoire.test";
 const PASSWORD: &str = "correct horse battery staple 42";
 
@@ -535,4 +536,502 @@ fn files_and_snapshots_work_against_a_real_gateway() {
     let run = memoire.run(&["snapshots", "ls", "scratch", "--json"], "");
     assert_eq!(run.code, 6, "{}", run.stderr);
     assert_eq!(run.error()["error"]["code"], "not_persistent");
+}
+
+/// A CLI for one machine of the team: its key and its agent and session
+/// in the environment, run in `dir`, outside any git checkout.
+fn machine(gateway: &Gateway, dir: &Path, key: &str, agent: &str, session: &str) -> Memoire {
+    Memoire::new()
+        .dir(dir)
+        .env("MEMOIRE_SERVER", &gateway.server)
+        .env("MEMOIRE_API_KEY", key)
+        .env("MEMOIRE_AGENT", agent)
+        .env("MEMOIRE_SESSION", session)
+}
+
+/// `memoire ARGS --json`, which must succeed; its JSON.
+fn json_of(memoire: &Memoire, args: &[&str]) -> Value {
+    let mut args = args.to_vec();
+    args.push("--json");
+    memoire.run(&args, "").ok().json()
+}
+
+/// `memoire ARGS --json`, which must exit `code`; its error object.
+fn failing(memoire: &Memoire, args: &[&str], code: i32) -> Value {
+    let mut args = args.to_vec();
+    args.push("--json");
+    let run = memoire.run(&args, "");
+    assert_eq!(
+        run.code, code,
+        "{args:?}\nstdout: {}\nstderr: {}",
+        run.stdout, run.stderr
+    );
+    run.error()["error"].clone()
+}
+
+fn ids(value: &Value) -> Vec<String> {
+    value["memories"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|m| m["id"].as_str().unwrap().to_owned())
+        .collect()
+}
+
+/// The memory store on the real data plane: two machines of one team share
+/// it, a read-only machine reads it, and every verb's SQL runs as the
+/// gateway runs it (defensive connections, the authorizer, transactions).
+#[test]
+fn memory_is_shared_between_machines_on_a_real_gateway() {
+    let Some(db) = TestDatabase::create() else {
+        eprintln!("skipped: MEREZHA_TEST_DATABASE_URL is unset");
+        return;
+    };
+    let dir = tempfile::tempdir().unwrap();
+    let gateway = Gateway::start(dir.path(), &db, MEMORY_PORT);
+    let (_team, key_a, member) = signed_in(&gateway);
+    let sign_in = format!("{EMAIL}\n{PASSWORD}\n");
+    let key_b = member
+        .run(&["keys", "create", "--name", "machine-b"], &sign_in)
+        .ok()
+        .stdout
+        .trim()
+        .to_owned();
+    let key_reader = member
+        .run(
+            &["keys", "create", "--name", "reader", "--read-only"],
+            &sign_in,
+        )
+        .ok()
+        .stdout
+        .trim()
+        .to_owned();
+    assert!(key_b.starts_with("mzk_") && key_reader.starts_with("mzk_"));
+    let work = tempfile::tempdir().unwrap();
+    let a = machine(&gateway, work.path(), &key_a, "agent-a", "run-a");
+    let b = machine(&gateway, work.path(), &key_b, "agent-b", "run-b");
+    let reader = machine(&gateway, work.path(), &key_reader, "reader", "run-r");
+
+    // A sets the store up and records a pitfall.
+    let init = json_of(&a, &["memory", "init"]);
+    assert_eq!(init["created"], true);
+    assert_eq!(init["database"]["kind"], "persistent");
+    assert_eq!(
+        (
+            init["schema_version"].clone(),
+            init["migrated_from"].clone()
+        ),
+        (json!(1), json!(0))
+    );
+    let again = json_of(&a, &["memory", "init"]);
+    assert_eq!(
+        (again["created"].clone(), again["store_id"].clone()),
+        (json!(false), init["store_id"].clone())
+    );
+    let pitfall = json_of(
+        &a,
+        &[
+            "memory",
+            "remember",
+            "--title",
+            "Migrations lock the orders table",
+            "--kind",
+            "pitfall",
+            "--body",
+            "Run them outside business hours.",
+            "--tag",
+            "migrations",
+            "--evidence",
+            "incident 2026-11-03",
+        ],
+    );
+    let id = pitfall["id"].as_str().unwrap().to_owned();
+    assert_eq!(
+        (
+            pitfall["rev"].clone(),
+            pitfall["status"].clone(),
+            pitfall["scope"].clone()
+        ),
+        (json!(1), json!("inferred"), json!("global"))
+    );
+    let principal_a = pitfall["author"]["principal"].as_str().unwrap().to_owned();
+    assert!(principal_a.starts_with("key_"), "{pitfall}");
+
+    // B finds it, checks it and confirms the revision it read.
+    let found = json_of(&b, &["memory", "recall", "orders table migrations"]);
+    assert_eq!(found["scopes"], json!(["global"]));
+    assert_eq!(found["memories"][0]["id"], id);
+    assert_eq!(found["memories"][0]["status"], "inferred");
+    assert!(found["memories"][0]["score"].as_f64().unwrap() > 0.0);
+    let confirmed = json_of(
+        &b,
+        &[
+            "memory",
+            "confirm",
+            &id,
+            "--evidence",
+            "reproduced on staging",
+            "--rev",
+            "1",
+        ],
+    );
+    assert_eq!(
+        (confirmed["status"].clone(), confirmed["confirmers"].clone()),
+        (json!("confirmed"), json!(1))
+    );
+    let shown = json_of(&b, &["memory", "show", &id]);
+    let confirmation = &shown["confirmations"][0];
+    assert_ne!(confirmation["principal"], principal_a.as_str());
+    assert!(
+        confirmation["principal"]
+            .as_str()
+            .unwrap()
+            .starts_with("key_")
+    );
+    assert_eq!(
+        (
+            confirmation["counts"].clone(),
+            confirmation["agent"].clone()
+        ),
+        (json!(true), json!("agent-b"))
+    );
+
+    // A hears of it once.
+    let news = json_of(&a, &["memory", "log", "--unseen"]);
+    let verbs: Vec<&str> = news["events"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|e| e["verb"].as_str().unwrap())
+        .collect();
+    assert_eq!(verbs, ["confirm", "remember"]);
+    assert_eq!(news["events"][0]["agent"], "agent-b");
+    assert_eq!(
+        json_of(&a, &["memory", "log", "--unseen"])["events"],
+        json!([])
+    );
+
+    // The read-only machine reads, and only reads.
+    assert_eq!(
+        ids(&json_of(&reader, &["memory", "recall", "migrations"])),
+        [id.as_str()]
+    );
+    assert_eq!(
+        json_of(&reader, &["memory", "show", &id, "--history"])["revisions"]
+            .as_array()
+            .unwrap()
+            .len(),
+        1
+    );
+    assert_eq!(
+        json_of(&reader, &["memory", "log"])["events"]
+            .as_array()
+            .unwrap()
+            .len(),
+        2
+    );
+    let reader_export = work.path().join("reader.jsonl");
+    assert_eq!(
+        json_of(
+            &reader,
+            &["memory", "export", "-o", reader_export.to_str().unwrap()]
+        )["count"],
+        1
+    );
+    assert_eq!(
+        failing(
+            &reader,
+            &["memory", "remember", "--title", "Readers cannot write"],
+            4
+        )["code"],
+        "unauthorized"
+    );
+    assert_eq!(
+        failing(&reader, &["memory", "confirm", &id, "--evidence", "e"], 4)["code"],
+        "unauthorized"
+    );
+
+    // Every other verb once, on the real data plane.
+    let revised = json_of(
+        &a,
+        &[
+            "memory",
+            "revise",
+            &id,
+            "--body",
+            "Run them after 20:00.",
+            "--add-tag",
+            "ops",
+            "--reason",
+            "clearer",
+        ],
+    );
+    assert_eq!(
+        (
+            revised["rev"].clone(),
+            revised["status"].clone(),
+            revised["tags"].clone()
+        ),
+        (json!(2), json!("inferred"), json!(["migrations", "ops"]))
+    );
+    let tagged = json_of(
+        &b,
+        &[
+            "memory",
+            "revise",
+            &id,
+            "--add-tag",
+            "db",
+            "--reason",
+            "tag",
+        ],
+    );
+    assert_eq!(tagged["rev"], 3);
+    let stale = failing(
+        &b,
+        &[
+            "memory",
+            "confirm",
+            &id,
+            "--evidence",
+            "old check",
+            "--rev",
+            "1",
+        ],
+        6,
+    );
+    assert_eq!(
+        (stale["code"].clone(), stale["current_rev"].clone()),
+        (json!("memory_conflict"), json!(3))
+    );
+    let duplicate = failing(
+        &b,
+        &[
+            "memory",
+            "remember",
+            "--title",
+            "Migration locks the orders table",
+        ],
+        6,
+    );
+    assert_eq!(duplicate["code"], "memory_duplicate");
+    assert_eq!(duplicate["candidates"][0]["id"], id);
+    let forced = json_of(
+        &b,
+        &[
+            "memory",
+            "remember",
+            "--title",
+            "Migration locks the orders table",
+            "--force",
+        ],
+    );
+    let second = forced["id"].as_str().unwrap().to_owned();
+
+    let disputed = json_of(
+        &b,
+        &["memory", "dispute", &id, "--reason", "only on large tables"],
+    );
+    assert_eq!(
+        (
+            disputed["status"].clone(),
+            disputed["open_disputes"].clone()
+        ),
+        (json!("disputed"), json!(1))
+    );
+    let resolved = json_of(
+        &a,
+        &["memory", "resolve", &id, "--reason", "true for every table"],
+    );
+    assert_eq!(resolved["status"], "inferred");
+    assert_eq!(
+        failing(&a, &["memory", "resolve", &id, "--reason", "again"], 6)["code"],
+        "memory_no_open_dispute"
+    );
+
+    let superseded = json_of(
+        &a,
+        &[
+            "memory",
+            "supersede",
+            &second,
+            "--by",
+            &id,
+            "--reason",
+            "duplicate",
+        ],
+    );
+    assert_eq!(superseded["superseded"]["status"], "superseded");
+    assert_eq!(superseded["by"]["supersedes"], second.as_str());
+    assert_eq!(
+        failing(
+            &a,
+            &[
+                "memory",
+                "supersede",
+                &id,
+                "--by",
+                &second,
+                "--reason",
+                "back"
+            ],
+            6
+        )["code"],
+        "memory_cycle"
+    );
+
+    let note = json_of(
+        &a,
+        &[
+            "memory",
+            "remember",
+            "--title",
+            "Build cache lives in the bucket",
+            "--kind",
+            "fact",
+            "--scope",
+            "client:acme",
+        ],
+    );
+    let note_id = note["id"].as_str().unwrap().to_owned();
+    assert_eq!(
+        json_of(
+            &a,
+            &["memory", "forget", &note_id, "--reason", "bucket gone"]
+        )["status"],
+        "forgotten"
+    );
+    let leak = json_of(
+        &a,
+        &[
+            "memory",
+            "remember",
+            "--title",
+            "Scratch note to purge",
+            "--body",
+            "nothing secret",
+        ],
+    );
+    let leak_id = leak["id"].as_str().unwrap().to_owned();
+    assert_eq!(
+        json_of(
+            &a,
+            &[
+                "memory",
+                "forget",
+                &leak_id,
+                "--reason",
+                "test purge",
+                "--purge"
+            ]
+        ),
+        json!({"id": leak_id, "purged": true})
+    );
+    let gone = failing(&a, &["memory", "show", &leak_id], 5);
+    assert!(
+        gone["message"].as_str().unwrap().contains("was purged at"),
+        "{gone}"
+    );
+
+    assert_eq!(
+        ids(&json_of(
+            &a,
+            &["memory", "recall", "orders", "--kind", "pitfall"]
+        )),
+        [id.as_str()]
+    );
+    assert_eq!(
+        ids(&json_of(
+            &a,
+            &[
+                "memory",
+                "recall",
+                "orders",
+                "--tag",
+                "migrations",
+                "--tag",
+                "ops"
+            ]
+        )),
+        [id.as_str()]
+    );
+    assert_eq!(
+        ids(&json_of(
+            &a,
+            &["memory", "recall", "orders", "--status", "superseded"]
+        )),
+        [second.as_str()]
+    );
+    assert_eq!(
+        ids(&json_of(
+            &a,
+            &[
+                "memory",
+                "recall",
+                "bucket",
+                "--all-scopes",
+                "--status",
+                "forgotten"
+            ]
+        )),
+        [note_id.as_str()]
+    );
+    let listed = json_of(&a, &["memory", "recall", "--all-scopes"]);
+    assert_eq!(listed["scopes"], Value::Null);
+    assert_eq!(
+        ids(&listed),
+        [id.as_str()],
+        "superseded and forgotten are hidden"
+    );
+
+    let export = work.path().join("memories.jsonl");
+    let exported = json_of(&a, &["memory", "export", "-o", export.to_str().unwrap()]);
+    assert_eq!(exported["count"], 2);
+    let lines: Vec<Value> = std::fs::read_to_string(&export)
+        .unwrap()
+        .lines()
+        .map(|l| serde_json::from_str(l).unwrap())
+        .collect();
+    let exported_ids: Vec<&str> = lines.iter().map(|m| m["id"].as_str().unwrap()).collect();
+    assert_eq!(exported_ids, [id.as_str(), second.as_str()]);
+
+    let secret = format!("{}{}", ["mz", "k_"].concat(), "q7Rx".repeat(6));
+    let refused = failing(
+        &a,
+        &["memory", "remember", "--title", "t", "--body", &secret],
+        7,
+    );
+    assert_eq!(
+        (refused["code"].clone(), refused["field"].clone()),
+        (json!("memory_secret_detected"), json!("body"))
+    );
+
+    a.run(&["db", "create", "plain"], "").ok();
+    assert_eq!(
+        failing(&a, &["memory", "recall", "--db", "plain"], 6)["code"],
+        "memory_not_initialized"
+    );
+    let run = json_of(
+        &a,
+        &[
+            "memory",
+            "init",
+            "--db",
+            "run-1",
+            "--burstable",
+            "--ttl",
+            "1h",
+        ],
+    );
+    assert_eq!(
+        (
+            run["created"].clone(),
+            run["database"]["kind"].clone(),
+            run["database"]["idle_ttl_seconds"].clone()
+        ),
+        (json!(true), json!("burstable"), json!(3600))
+    );
+
+    let logs = gateway.logs.lock().unwrap().join("\n");
+    assert!(!logs.contains(&key_a) && !logs.contains(&key_b) && !logs.contains(&secret));
 }
