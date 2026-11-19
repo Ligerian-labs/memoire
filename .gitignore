@@ -1,0 +1,4 @@
+/target
+/guests/target
+/guests/components/*.wasm
+/.memoire-dev
