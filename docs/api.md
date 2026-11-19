@@ -22,7 +22,8 @@ gateway, CLI and web owners.
 - `{name}` in a path is a database name. `{name}` of another team answers
   `404 database_not_found`, the same as a name that does not exist, so
   names cannot be probed across teams.
-- Unknown fields in a request body fail `422 validation_failed`.
+- Unknown fields in a request body fail `422 validation_failed`. An
+  optional field sent as `null` is the same as omitting it.
 - Every response carries `Cache-Control: no-store`.
 
 ## Authentication and the team
@@ -31,22 +32,35 @@ Every memoire route needs a credential.
 
 | Client | Credential | Team |
 | --- | --- | --- |
-| CLI, agents, machines | `Authorization: Bearer mzk_…` (a Merezha API key) | The key's own team |
-| Web | The `__Host-merezha_session` cookie from identity's sign-in | The session's active team, set with `PUT /v1/identity/session/organization` `{"organization_id": "org_…"}`, or the `Merezha-Organization: org_…` header, which wins |
+| CLI, agents, machines | `Authorization: Bearer mzk_…`, a team API key (a member's own or a machine's) | The key's own team |
+| Web | The session cookie from identity's sign-in: `__Host-merezha_session`, or `merezha_session` when the gateway runs on loopback with an `http://localhost` application origin (development) | The session's active team |
+| Scripts signed in as a member | `Authorization: Bearer mzs_…`, a session from a sign-in with `"transport": "bearer"` | The session's active team |
 
+- A session's active team is set with `PUT /v1/identity/session/organization`
+  `{"organization_id": "org_…"}`, or per request with the
+  `Merezha-Organization: org_…` header, which wins. Either must name a team
+  the member belongs to, otherwise `404 not_found`. A team key is active in
+  its own team only: a header naming another team answers `404 not_found`.
 - A missing, malformed, unknown, revoked or expired credential answers
   `401 unauthenticated`. A cookie and an `Authorization` header together
   answer `400 ambiguous_credentials`.
-- A session with no active team answers `403 tenant_required` on every
-  route except `whoami`.
-- Cookie requests that change state (`POST`, `PUT`, `PATCH`, `DELETE`) send
-  the `X-CSRF-Token` header with the `csrf_token` identity returned at
-  sign-in. Bearer requests skip the CSRF and Origin checks.
+- A caller with no active team (a session without one, or an
+  application-scoped API key) answers `403 tenant_required` on every route
+  except `whoami`.
+- Cookie requests that change state (`POST`, `PUT`, `PATCH`, `DELETE`) pass
+  identity's two checks: `Origin` equals the application origin (or is
+  absent with `Sec-Fetch-Site: same-origin`), else `403 origin_rejected`;
+  and `X-CSRF-Token` carries the `csrf_token` returned at sign-in (also by
+  `GET /v1/identity/session`), else `403 csrf_failed`. The web, served from
+  the application origin and proxying `/v1` to the gateway, meets both.
+  Bearer requests skip both checks.
 - A route answers `403 unauthorized` when the caller lacks its permission at
-  the team. Permissions are registered by memoire in identity's catalog; the
-  team roles `admin` and `member` hold all five by default, and an API key
-  may carry a subset (a read-only agent key holds only
-  `memoire.databases.read`).
+  the team. memoire adds the five permissions below to identity's catalog;
+  the team roles `admin` and `member` hold all five by default, and an API
+  key may carry a subset (a read-only agent key holds only
+  `memoire.databases.read`). The permissions are registered together with
+  the database routes; until they are, identity refuses them in a key
+  request (`422 unknown_permission`).
 
 | Permission | Allows |
 | --- | --- |
@@ -79,7 +93,9 @@ the same status.
   ```
 
 - `sql_error` adds `sql`: which statement SQLite refused and SQLite's
-  message about it (at most 512 bytes, never a file path).
+  message about it (at most 512 bytes, never a file path). Merezha's shared
+  error builder has no such member, so the gateway writes this body itself,
+  with the same envelope, status and headers as every other error.
 
   ```json
   {"error": {"code": "sql_error", "classification": "permanent",
@@ -131,8 +147,12 @@ and row pages.
 | TEXT | string |
 | BLOB | `{"type": "blob", "value": "<standard base64 with padding>"}` |
 
-A JavaScript client must parse numbers with that rule in mind: an integer
-that comes back as a number is always exact.
+An integer that comes back as a number is always exact, even in
+JavaScript. `JSON.parse` turns `1.0` and `1` into the same `Number`, so a
+JavaScript client that must tell REAL from INTEGER reads the response with
+a parser that keeps number tokens; a client that only displays values, or
+writes them back into a column with REAL affinity (where SQLite stores 1 as
+1.0), needs nothing more.
 
 Parameters accept every form above and also:
 
@@ -141,9 +161,10 @@ Parameters accept every form above and also:
 - `{"type": "integer", "value": 12}` or `"12"`, `{"type": "real", "value":
   2.5}` or `"2.5"`, and `{"type": "text", "value": "…"}`.
 
-A JSON number with a fraction or exponent binds as REAL, without one as
-INTEGER. Arrays, other objects, NaN and integers beyond the 64-bit range fail
-`422 validation_failed` with the parameter's path.
+A bare JSON number's kind comes from its token: with a fraction or exponent
+it binds as REAL, without one as INTEGER. Arrays, other objects, NaN,
+integers beyond the 64-bit signed range (either sign) and reals beyond the
+double range fail `422 validation_failed` with the parameter's path.
 
 ## The database object
 
@@ -177,9 +198,11 @@ Every database route returns databases in this shape.
 
 A burstable database expires at `expires_at`; the sweeper runs every minute,
 so it can still answer for up to a minute past that. Expiry removes the file
-and leaves the entry listed with `state: "expired"` until it is deleted or a
-new database takes its name. A database of a new kind or after expiry is a
-new database with a new id.
+and leaves the entry listed with `state: "expired"` until it is deleted, a
+new database takes its name, or it is among more than 50 expired entries of
+the team, when the oldest expired entries are dropped. The 50-database quota
+counts active databases only. A database created again under a used name is
+a new database with a new id.
 
 ## Routes
 
@@ -194,7 +217,8 @@ Any credential, with or without a team. Answers `200`:
 ```
 
 `kind` is `user` for a session and `api_key` for an API key (a member's or a
-machine's). `team_id` is `null` for a session with no active team. The CLI's
+machine's). `team_id` is `null` for a session with no active team and for an
+application-scoped API key, which no memoire database route accepts. The CLI's
 `whoami` and `login` use it to check a key.
 
 ### `GET /v1/memoire/databases`
@@ -278,7 +302,22 @@ capped. Answers `200` with the database. Errors: `not_burstable`,
 | `transaction` | `false` | `true` runs the batch in one transaction: all statements apply or none. |
 | `timeout_ms` | 5 000 | Per-statement deadline, 1 to 30 000. |
 | `statements` | | 1 to 100, run in order. Each `sql` is exactly one statement (a trailing `;` is fine), at most 100 KiB. |
-| `params` | `[]` | An array for `?` and `?NNN`, or an object for named parameters, at most 999. An object key without a sigil matches `:key`, `@key` and `$key`; a key with a sigil matches only that one. A missing parameter binds NULL; an extra one fails `validation_failed`. |
+| `params` | `[]` | An array or an object, at most 999 values; see binding below. |
+
+Binding follows SQLite's parameter numbering:
+
+- An array binds by index: element *i* (0-based) is parameter *i + 1*, so
+  it is `?` in order, `?NNN` when NNN = *i + 1*, or the named parameter
+  SQLite numbered *i + 1*. Its length must equal the statement's parameter
+  count (`sqlite3_bind_parameter_count`, the highest index used).
+- An object binds by name and suits statements whose parameters are all
+  named (`:a`, `@a`, `$a`). A key without a sigil matches `:key`, `@key` and
+  `$key`; a key with a sigil matches only that parameter. Every named
+  parameter needs exactly one value.
+- Anything else fails `422 validation_failed` with the path of the
+  statement's `params`: a count mismatch, a missing or unknown name, two
+  keys for one parameter (`a` and `:a`), or an object for a statement with
+  `?` or `?NNN` parameters.
 
 Answers `200` with one result per statement:
 
@@ -295,17 +334,24 @@ Answers `200` with one result per statement:
 
 - `columns[].decltype` is the declared type as written in the schema, `null`
   for an expression.
-- `rows_affected` is SQLite's change count for INSERT, UPDATE and DELETE, 0
-  otherwise. `last_insert_rowid` is the rowid this statement inserted, in
-  the value encoding, `null` when it inserted nothing.
+- `rows_affected` is SQLite's change count (`sqlite3_changes`) for INSERT,
+  UPDATE and DELETE, 0 otherwise.
+- `last_insert_rowid` is set only for an INSERT or REPLACE into a rowid
+  table with `rows_affected` > 0: `sqlite3_last_insert_rowid` read right
+  after the statement, the rowid of its last inserted row, in the value
+  encoding. It is `null` otherwise, including inserts into `WITHOUT ROWID`
+  tables and inserts that `OR IGNORE` skipped.
 
 On failure the batch stops at the failing statement and the response is the
 error alone (`sql_error`, `read_only`, `statement_denied`,
 `statement_timeout`, `result_too_large`, `database_too_large`,
-`sqlite_busy`). With `transaction: true` nothing applied; with `false` the
-statements before the failing one (index `error.sql.statement` for
-`sql_error`) stay applied. `BEGIN`, `COMMIT`, `ROLLBACK` and `SAVEPOINT` in
-statements fail `statement_denied` when `transaction` is `true`.
+`sqlite_busy`). A failing statement never leaves its own changes, whatever
+failed, a result limit included: with `transaction: false` each statement
+runs in its own savepoint, so the statements before the failing one stay
+committed and the failing one is rolled back; with `transaction: true`
+nothing applies. Transaction control in statements (`BEGIN`, `COMMIT`,
+`END`, `ROLLBACK`, `SAVEPOINT`, `RELEASE`) fails `statement_denied` in
+every mode: use `transaction` instead.
 
 ### `GET {name}/schema`
 
@@ -338,9 +384,11 @@ View `columns` carry the same fields; `not_null`, `default` and
 
 ### `GET {name}/tables/{table}/rows`
 
-`memoire.databases.read`. The row browser: a table or view's rows in a
-stable order. Query: `limit` (1 to 1 000, default 100) and `after` (the
-`next_after` of the previous page). Answers `200`:
+`memoire.databases.read`. The row browser: a table or view's rows, page by
+page. `{table}` is the object's exact name, percent-encoded as one path
+segment (a name with spaces, `/` or `%` included). Query: `limit` (1 to
+1 000, default 100) and `after` (the `next_after` of the previous page).
+Answers `200`:
 
 ```json
 {"columns": [{"name": "id", "decltype": "INTEGER"}, {"name": "body", "decltype": "TEXT"}],
@@ -348,10 +396,13 @@ stable order. Query: `limit` (1 to 1 000, default 100) and `after` (the
  "next_after": "cm93aWQ6Mg"}
 ```
 
-`next_after` is opaque and `null` on the last page. Tables page by rowid,
-`WITHOUT ROWID` tables by primary key, views by their own order with an
-offset cursor (a view page can repeat or skip rows when the data changes
-between pages). Errors: `table_not_found`, `invalid_page`.
+`next_after` is opaque, `null` on the last page, and valid only for the same
+database and object (`422 invalid_page` otherwise). Rows come in a
+deterministic order: tables by rowid, `WITHOUT ROWID` tables by primary key.
+Views, and tables whose columns shadow all three rowid aliases (`rowid`,
+`oid`, `_rowid_`), page by offset in the order SQLite returns, which is not
+guaranteed stable: such a page can repeat or skip rows when the data or the
+plan changes between pages. Errors: `table_not_found`, `invalid_page`.
 
 ### `GET {name}/export`
 
@@ -404,7 +455,7 @@ clients need:
 | Current user | `GET /v1/identity/me` |
 | Teams | `POST /v1/identity/organizations` `{name, slug}`, `GET /v1/identity/organizations` |
 | Switch team | `PUT /v1/identity/session/organization` `{organization_id}` |
-| Invite and join | `POST /v1/identity/organizations/{org}/invitations` `{email, role_ids}`, `POST /v1/identity/invitations/accept` `{token}` |
+| Invite and join | `POST /v1/identity/organizations/{org}/invitations` `{email, role_ids}`; the invitee opens the mailed token and the client calls `POST /v1/identity/invitations/inspect` `{token}`, then `POST /v1/identity/invitations/accept` `{token, transport?}`. Signed in with the invited address, accept adds the membership. Anonymous, it creates a verified account with a session when the address has none (or only an unverified one), and answers `401 sign_in_required` when a verified account exists: sign in, then retry with the same token. Signed in with another address it answers `403 email_mismatch`. |
 | Machines | `GET`, `POST /v1/identity/organizations/{org}/service-accounts` `{name, description?}` |
 | API keys | `GET`, `POST /v1/identity/organizations/{org}/api-keys` `{name, permissions, expires_at, service_account_id?}` → `201 {api_key, key}`; `DELETE …/api-keys/{key_id}` |
 
@@ -414,20 +465,28 @@ sets `__Host-merezha_session` instead.
 
 Requests without a credential to identity's routes (register, sign in,
 verify, accept an invitation) must carry an `Origin` header equal to the
-gateway's configured application origin (`modules.identity.app_origin`),
-otherwise they fail `403 origin_rejected`. The web sends it on its own. The
-CLI sends `Origin` set to the origin of its `--server` URL, so
-`memoire login --server` takes the public origin the web is served from,
-which is the application origin in a deployment. Bearer requests are not
-Origin-checked.
+gateway's application origin (`modules.identity.app_origin`), otherwise
+they fail `403 origin_rejected`. Browsers send it on their own. Bearer
+requests are not Origin-checked.
 
 Creating a machine and its key needs `identity.service_accounts.manage` and a
-recent sign-in, which an API key is not. `memoire keys create --name
-MACHINE` therefore signs in with the member's email and password (read from
-the terminal, never argv) using `transport: "bearer"`, creates the service
-account and the key with the five memoire permissions unless narrowed,
-prints the key once, and signs the temporary session out. The key value is
-returned only in that `201` response.
+recent sign-in, which an API key is not. `memoire keys create --name MACHINE
+[--team org_…] [--expires 90d] [--read-only]` therefore:
+
+1. Picks the team: `--team`, else the `team_id` of the stored login key
+   (`whoami`), else fails asking for `--team`.
+2. Signs in with the member's email and password, read from the terminal,
+   never argv: `POST /v1/identity/sessions` with `transport: "bearer"` and
+   `Origin` set to the origin of the stored `--server` URL. That URL is
+   therefore the public origin the web is served from, which is the
+   application origin in a deployment.
+3. Sends `Merezha-Organization` for that team, creates the service account,
+   then the key: the five memoire permissions (only
+   `memoire.databases.read` with `--read-only`) and `expires_at` = now plus
+   `--expires` (default 90 days; identity refuses more than 365 days with
+   `422 validation_failed`, path `/expires_at`).
+4. Prints the key once (it is returned only in that `201` response) and
+   signs the temporary session out (`DELETE /v1/identity/session`).
 
 In development the gateway captures mail instead of sending it:
 `GET /v1/notifications/dev/captures` lists verification and invitation

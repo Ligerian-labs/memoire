@@ -48,7 +48,8 @@ PostgreSQL, migrations, jobs, health and telemetry.
 
 1. **Catalog** (core, WASM guest `guests/catalog`). Decides which databases
    exist. Its aggregate is `Catalog/{team}`: one stream per team holding at
-   most 50 entries, so name uniqueness and the quota are one transaction.
+   most 50 active and 50 expired entries, so name uniqueness and the quota are
+   one transaction.
    Commands `CreateDatabase`, `ExtendDatabase`, `DeleteDatabase` and
    `ExpireDatabase` (system only: the host supplies `now` and `last_used_at`
    in the payload because guests are deterministic, and the guest checks the

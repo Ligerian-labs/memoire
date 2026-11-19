@@ -139,10 +139,20 @@ pub enum SnapshotsCommand {
 
 #[derive(Debug, Subcommand)]
 pub enum KeysCommand {
-    /// Create a machine (service account) and an API key for it.
+    /// Create a machine (service account) and an API key for it. Signs in
+    /// with the member's email and password, read from the terminal.
     Create {
         #[arg(long, value_name = "MACHINE")]
         name: String,
+        /// The team (`org_…`); defaults to the login key's team.
+        #[arg(long, value_name = "TEAM")]
+        team: Option<String>,
+        /// Key lifetime, at most 365d.
+        #[arg(long, value_name = "DURATION", value_parser = parse_seconds, default_value = "90d")]
+        expires: u64,
+        /// Grant only `memoire.databases.read`.
+        #[arg(long)]
+        read_only: bool,
     },
 }
 
@@ -216,6 +226,22 @@ mod tests {
         };
         assert_eq!(args.params, ["1", "a"]);
         assert!(!args.write);
+    }
+
+    #[test]
+    fn keys_create_defaults_to_ninety_days() {
+        let Command::Keys(KeysCommand::Create {
+            expires,
+            read_only,
+            team,
+            ..
+        }) = parse(&["keys", "create", "--name", "ci"]).unwrap().command
+        else {
+            panic!("keys create");
+        };
+        assert_eq!(expires, 90 * 86_400);
+        assert!(!read_only);
+        assert_eq!(team, None);
     }
 
     #[test]

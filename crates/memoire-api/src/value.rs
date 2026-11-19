@@ -15,10 +15,16 @@
 //! `{"type":"integer","value":<number or string>}`,
 //! `{"type":"real","value":<number or string>}` and
 //! `{"type":"text","value":"…"}`.
+//!
+//! A bare number's kind comes from its JSON token: with a fraction or
+//! exponent it is REAL, without one an INTEGER that must fit i64. So
+//! [`SqlValue`] (and [`crate::Params`]) deserialize from JSON text
+//! (`serde_json::from_str`, `from_slice`, axum's `Json`), not from an
+//! already parsed `serde_json::Value`, which has lost the token.
 use base64::Engine as _;
 use base64::engine::general_purpose::STANDARD;
 use serde::{Deserialize, Deserializer, Serialize, Serializer, de::Error as _};
-use serde_json::{Map, Value, json};
+use serde_json::{Map, Value, json, value::RawValue};
 
 /// Largest integer a JSON number carries exactly in an IEEE 754 double.
 pub const MAX_SAFE_INTEGER: i64 = (1 << 53) - 1;
@@ -51,7 +57,24 @@ impl SqlValue {
         }
     }
 
-    /// Reads a value in any accepted parameter form.
+    /// Reads a value in any accepted parameter form from its JSON text.
+    ///
+    /// # Errors
+    ///
+    /// As [`SqlValue::from_json`], and an integer token beyond i64 or a
+    /// real token beyond f64 on either side.
+    pub fn from_json_text(text: &str) -> Result<Self, &'static str> {
+        let text = text.trim();
+        if text.starts_with(|c: char| c == '-' || c.is_ascii_digit()) {
+            return number_token(text);
+        }
+        let value: Value = serde_json::from_str(text).map_err(|_| "invalid JSON")?;
+        Self::from_json(&value)
+    }
+
+    /// Reads a value in any accepted parameter form. Prefer
+    /// [`SqlValue::from_json_text`]: a parsed `Value` holds an integer
+    /// beyond i64 as a float, which this reads as REAL.
     ///
     /// # Errors
     ///
@@ -66,6 +89,24 @@ impl SqlValue {
             Value::Array(_) => Err("arrays are not SQLite values"),
             Value::Object(object) => tagged(object),
         }
+    }
+}
+
+/// A bare JSON number token: REAL with a fraction or exponent, otherwise
+/// an INTEGER within i64.
+fn number_token(token: &str) -> Result<SqlValue, &'static str> {
+    if token.contains(['.', 'e', 'E']) {
+        token
+            .parse::<f64>()
+            .ok()
+            .filter(|x| x.is_finite())
+            .map(SqlValue::Real)
+            .ok_or("real out of range")
+    } else {
+        token
+            .parse::<i64>()
+            .map(SqlValue::Integer)
+            .map_err(|_| "integer out of range")
     }
 }
 
@@ -125,8 +166,8 @@ impl Serialize for SqlValue {
 
 impl<'de> Deserialize<'de> for SqlValue {
     fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
-        let value = Value::deserialize(deserializer)?;
-        Self::from_json(&value).map_err(D::Error::custom)
+        let raw = Box::<RawValue>::deserialize(deserializer)?;
+        Self::from_json_text(raw.get()).map_err(D::Error::custom)
     }
 }
 
@@ -169,6 +210,8 @@ mod tests {
         assert_eq!(parse("1.0"), Ok(SqlValue::Real(1.0)));
         assert_eq!(parse("1e3"), Ok(SqlValue::Real(1000.0)));
         assert_eq!(parse("1"), Ok(SqlValue::Integer(1)));
+        assert_eq!(parse("-0"), Ok(SqlValue::Integer(0)));
+        assert_eq!(parse("1E2"), Ok(SqlValue::Real(100.0)));
     }
 
     #[test]
@@ -211,6 +254,10 @@ mod tests {
             Ok(SqlValue::Integer(i64::MAX))
         );
         assert_eq!(
+            parse("-9223372036854775808"),
+            Ok(SqlValue::Integer(i64::MIN))
+        );
+        assert_eq!(
             parse(r#"{"type":"integer","value":12}"#),
             Ok(SqlValue::Integer(12))
         );
@@ -229,6 +276,9 @@ mod tests {
         for bad in [
             "[1]",
             "9223372036854775808",
+            "-9223372036854775809",
+            "1e400",
+            "-1e400",
             r#"{"value":"1"}"#,
             r#"{"type":"integer","value":"1.5"}"#,
             r#"{"type":"integer","value":1.5}"#,

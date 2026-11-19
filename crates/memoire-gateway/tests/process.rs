@@ -86,9 +86,15 @@ impl Gateway {
                 sink.lock().unwrap().push(line);
             }
         });
+        // Owned from here, so a failed assertion still stops the process.
+        let mut gateway = Self {
+            child,
+            address: String::new(),
+            logs,
+        };
         let started = Instant::now();
-        let address = loop {
-            let found = logs.lock().unwrap().iter().find_map(|line| {
+        gateway.address = loop {
+            let found = gateway.logs.lock().unwrap().iter().find_map(|line| {
                 let event: Value = serde_json::from_str(line).ok()?;
                 (event["event"] == "listener.ready")
                     .then(|| event["address"].as_str().map(str::to_owned))?
@@ -96,20 +102,18 @@ impl Gateway {
             if let Some(address) = found {
                 break address;
             }
-            if let Ok(Some(status)) = child.try_wait() {
-                panic!("gateway exited {status}: {:?}", logs.lock().unwrap());
+            if let Ok(Some(status)) = gateway.child.try_wait() {
+                panic!(
+                    "gateway exited {status}: {:?}",
+                    gateway.logs.lock().unwrap()
+                );
             }
             assert!(
                 started.elapsed() < Duration::from_secs(60),
                 "no listener.ready: {:?}",
-                logs.lock().unwrap()
+                gateway.logs.lock().unwrap()
             );
             std::thread::sleep(Duration::from_millis(50));
-        };
-        let gateway = Self {
-            child,
-            address,
-            logs,
         };
         gateway.wait_ready();
         gateway
@@ -213,6 +217,7 @@ fn dechunk(mut body: &str) -> String {
 impl Drop for Gateway {
     fn drop(&mut self) {
         let _ = self.child.kill();
+        let _ = self.child.wait();
     }
 }
 
@@ -262,14 +267,25 @@ fn refuses_to_start_without_a_data_dir() {
     };
     let dir = tempfile::tempdir().unwrap();
     let mut child = Gateway::spawn(&config(dir.path(), ""), &db);
-    let mut stderr = String::new();
-    child
-        .stderr
-        .take()
-        .unwrap()
-        .read_to_string(&mut stderr)
-        .unwrap();
-    let status = child.wait().unwrap();
+    let mut pipe = child.stderr.take().unwrap();
+    let reader = std::thread::spawn(move || {
+        let mut text = String::new();
+        let _ = pipe.read_to_string(&mut text);
+        text
+    });
+    let started = Instant::now();
+    let status = loop {
+        if let Some(status) = child.try_wait().unwrap() {
+            break status;
+        }
+        if started.elapsed() > Duration::from_secs(60) {
+            let _ = child.kill();
+            let _ = child.wait();
+            panic!("the gateway started without a data_dir");
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    };
+    let stderr = reader.join().unwrap();
     assert_eq!(status.code(), Some(2), "{stderr}");
     assert!(stderr.contains("invalid_config"), "{stderr}");
     assert!(stderr.contains("modules.memoire.data_dir"), "{stderr}");

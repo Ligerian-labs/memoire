@@ -1,6 +1,7 @@
 //! `POST /v1/memoire/databases/{name}/query`.
 use crate::SqlValue;
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize, de::Error as _};
+use serde_json::value::RawValue;
 use std::collections::BTreeMap;
 
 /// Which connection runs the batch.
@@ -41,7 +42,7 @@ pub struct Statement {
 }
 
 /// Positional (`?`, `?NNN`) or named (`:name`, `@name`, `$name`) parameters.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize)]
 #[serde(untagged)]
 pub enum Params {
     Positional(Vec<SqlValue>),
@@ -53,6 +54,26 @@ pub enum Params {
 impl Default for Params {
     fn default() -> Self {
         Self::Positional(Vec::new())
+    }
+}
+
+impl<'de> Deserialize<'de> for Params {
+    // Not `untagged`: serde buffers untagged input, which loses the number
+    // tokens `SqlValue` reads.
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let raw = Box::<RawValue>::deserialize(deserializer)?;
+        let text = raw.get().trim_start();
+        if text.starts_with('[') {
+            serde_json::from_str(text)
+                .map(Self::Positional)
+                .map_err(D::Error::custom)
+        } else if text.starts_with('{') {
+            serde_json::from_str(text)
+                .map(Self::Named)
+                .map_err(D::Error::custom)
+        } else {
+            Err(D::Error::custom("params is an array or an object"))
+        }
     }
 }
 
@@ -102,10 +123,14 @@ mod tests {
     use super::*;
     use serde_json::json;
 
+    /// From JSON text, as the gateway receives it.
+    fn request(value: serde_json::Value) -> Result<QueryRequest, serde_json::Error> {
+        serde_json::from_str(&value.to_string())
+    }
+
     #[test]
     fn request_defaults_to_read_without_transaction() {
-        let request: QueryRequest =
-            serde_json::from_value(json!({"statements": [{"sql": "select 1"}]})).unwrap();
+        let request = request(json!({"statements": [{"sql": "select 1"}]})).unwrap();
         assert_eq!(request.mode, QueryMode::Read);
         assert!(!request.transaction);
         assert_eq!(request.statements[0].params, Params::Positional(Vec::new()));
@@ -113,7 +138,7 @@ mod tests {
 
     #[test]
     fn params_are_positional_or_named() {
-        let request: QueryRequest = serde_json::from_value(json!({
+        let request = request(json!({
             "mode": "write", "transaction": true,
             "statements": [
                 {"sql": "insert into t values (?, ?)", "params": [1, "a"]},
@@ -132,17 +157,24 @@ mod tests {
     }
 
     #[test]
-    fn request_rejects_unknown_fields() {
+    fn params_keep_integer_overflow_an_error() {
         assert!(
-            serde_json::from_value::<QueryRequest>(
-                json!({"statements": [], "mode": "read", "readonly": true})
+            serde_json::from_str::<Statement>(
+                r#"{"sql": "select ?", "params": [-9223372036854775809]}"#
             )
             .is_err()
         );
         assert!(
-            serde_json::from_value::<QueryRequest>(json!({"statements": [], "mode": "admin"}))
+            serde_json::from_str::<Statement>(r#"{"sql": "select :a", "params": {"a": 1e999}}"#)
                 .is_err()
         );
+        assert!(serde_json::from_str::<Statement>(r#"{"sql": "select 1", "params": 1}"#).is_err());
+    }
+
+    #[test]
+    fn request_rejects_unknown_fields() {
+        assert!(request(json!({"statements": [], "mode": "read", "readonly": true})).is_err());
+        assert!(request(json!({"statements": [], "mode": "admin"})).is_err());
     }
 
     #[test]
