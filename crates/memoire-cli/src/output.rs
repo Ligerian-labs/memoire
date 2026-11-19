@@ -70,6 +70,7 @@ pub fn table(headers: &[&str], rows: &[Vec<String>]) -> String {
         .iter()
         .map(|row| row.iter().map(|c| clip(c)).collect())
         .collect();
+    let headers: Vec<String> = headers.iter().map(|h| clip(h)).collect();
     let mut widths: Vec<usize> = headers.iter().map(|h| width(h)).collect();
     for row in &rows {
         for (w, cell) in widths.iter_mut().zip(row) {
@@ -86,7 +87,7 @@ pub fn table(headers: &[&str], rows: &[Vec<String>]) -> String {
     };
     let rule: Vec<String> = widths.iter().map(|w| "-".repeat(*w)).collect();
     let mut lines = vec![
-        render(headers.to_vec()),
+        render(headers.iter().map(String::as_str).collect()),
         render(rule.iter().map(String::as_str).collect()),
     ];
     lines.extend(

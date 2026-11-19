@@ -90,23 +90,25 @@ impl Env {
         } else {
             self.stored()?
         };
-        let server = self
-            .server
-            .clone()
-            .or_else(|| stored.as_ref().map(|c| c.server.clone()));
+        if let Some(key) = &self.api_key {
+            let server = self
+                .server
+                .clone()
+                .or_else(|| stored.map(|c| c.server))
+                .ok_or_else(not_logged_in)?;
+            return Ok((server, key.clone()));
+        }
+        // The stored key travels with the stored URL, and only when
+        // MEMOIRE_SERVER is unset or names that URL.
         let same = |stored: &str| {
             self.server
                 .as_deref()
                 .is_none_or(|s| s.trim_end_matches('/') == stored.trim_end_matches('/'))
         };
-        let key = self
-            .api_key
-            .clone()
-            .or_else(|| stored.filter(|c| same(&c.server)).map(|c| c.api_key));
-        match (server, key) {
-            (Some(server), Some(key)) => Ok((server, key)),
-            _ => Err(not_logged_in()),
-        }
+        stored
+            .filter(|c| same(&c.server))
+            .map(|c| (c.server, c.api_key))
+            .ok_or_else(not_logged_in)
     }
 
     /// Writes the credentials atomically: a private temporary file in the

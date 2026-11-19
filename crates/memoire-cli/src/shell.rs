@@ -123,6 +123,8 @@ impl Shell<'_> {
         let argument = words.next();
         match (command, argument) {
             (".quit" | ".exit", None) => return Ok(Flow::Quit),
+            // Help is for people; with --json it stays off the results.
+            (".help", None) if self.out.json => self.out.note(HELP),
             (".help", None) => self.out.line(HELP)?,
             (".mode", Some("read")) => self.mode = QueryMode::Read,
             (".mode", Some("write")) => self.mode = QueryMode::Write,
@@ -215,6 +217,8 @@ fn split(input: &str) -> Split {
     let mut start = 0;
     let mut content = false;
     let mut words: Vec<String> = Vec::new();
+    // Where the current trigger step's words start.
+    let mut step = 0;
     let mut word = String::new();
     let mut chars = input.char_indices().peekable();
     while let Some((i, c)) = chars.next() {
@@ -246,7 +250,10 @@ fn split(input: &str) -> Split {
                     words.iter().map(String::as_str).take(3).collect::<Vec<_>>()[..],
                     ["CREATE", "TRIGGER", ..] | ["CREATE", "TEMP" | "TEMPORARY", "TRIGGER"]
                 );
-                if trigger && words.last().map(String::as_str) != Some("END") {
+                // As sqlite3_complete: inside a trigger, only a step that is
+                // exactly `END` ends the statement.
+                if trigger && words[step..] != ["END"] {
+                    step = words.len();
                     continue;
                 }
                 if content {
@@ -255,6 +262,7 @@ fn split(input: &str) -> Split {
                 start = i + 1;
                 content = false;
                 words.clear();
+                step = 0;
             }
             (In::Code, c) if !c.is_whitespace() => content = true,
             (In::Quote(close), c) if c == close => state = In::Code,
@@ -309,6 +317,8 @@ mod tests {
 
     #[test]
     fn trigger_bodies_end_at_end() {
+        let case = "CREATE TRIGGER t AFTER INSERT ON a BEGIN SELECT CASE WHEN 1 THEN 2 END; END;";
+        assert_eq!(statements(case), (vec![case.to_owned()], false));
         let body = "CREATE TRIGGER t AFTER INSERT ON a BEGIN\n  INSERT INTO b VALUES (1);\n";
         assert_eq!(statements(body), (vec![], true));
         let whole = format!("{body}END;");

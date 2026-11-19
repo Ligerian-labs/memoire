@@ -323,9 +323,11 @@ fn print_key(
             "key": key.key.expose(),
         }));
     }
+    // The key first: nothing after it may keep it from being seen.
+    out.line(key.key.expose())?;
     out.note(&format!(
         "Created machine {name} ({}) in {team} with key {} ({}), expiring {expires_at}.\n\
-         The key is shown once, below; store it now.",
+         The key above is shown once; store it now.",
         machine["id"].as_str().unwrap_or("?"),
         key.api_key["id"].as_str().unwrap_or("?"),
         if read_only {
@@ -334,7 +336,7 @@ fn print_key(
             "read and write"
         },
     ));
-    out.line(key.key.expose())
+    Ok(())
 }
 
 fn mint(

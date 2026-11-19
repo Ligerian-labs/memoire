@@ -240,7 +240,8 @@ impl Client {
             .headers()
             .get(header::CONTENT_TYPE)
             .and_then(|v| v.to_str().ok())
-            .is_some_and(|v| v.trim().starts_with(SQLITE_TYPE));
+            .and_then(|v| v.split(';').next())
+            .is_some_and(|v| v.trim().eq_ignore_ascii_case(SQLITE_TYPE));
         if !sqlite {
             return Err(Error::local(
                 "invalid_response",

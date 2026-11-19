@@ -8,7 +8,12 @@ fn main() -> ExitCode {
         Ok(cli) => cli,
         // With --json a usage error is JSON too; help and version print as
         // they are.
-        Err(e) if e.use_stderr() && std::env::args_os().any(|a| a == "--json") => {
+        Err(e)
+            if e.use_stderr()
+                && std::env::args_os()
+                    .take_while(|a| a != "--")
+                    .any(|a| a == "--json") =>
+        {
             let rendered = e.render().to_string();
             let message = rendered.lines().next().unwrap_or_default();
             eprintln!(
