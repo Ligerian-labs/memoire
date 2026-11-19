@@ -126,10 +126,6 @@ main > .wrap {
   min-height:calc(100svh - var(--header-height));
   padding-inline:var(--gutter);background-color:var(--paper);
 }
-main > section + .deck-anchor + section,main > section.close {
-  border-radius:1.5rem 1.5rem 0 0;
-  box-shadow:0 -1rem 2.8rem #3023191c;
-}
 main .hero {
   isolation:isolate;overflow:clip;display:flex;align-items:center;
   padding-block:clamp(3rem,10vh,8rem) 7rem;
@@ -147,7 +143,19 @@ main .demo {background:#e8e1d2}
 main .storage {background:#f8f3eb;display:flex;flex-direction:column;justify-content:center}
 main .close {color:var(--paper);background:var(--ink);align-content:center;padding-right:49%}
 @media(prefers-reduced-motion:no-preference){
-  main > section.wrap {position:sticky;top:min(var(--header-height),calc(100svh - var(--card-height,100svh)))}
+  /* Later cards wait under the current one until their natural scroll position. */
+  main > section.wrap {
+    position:sticky;
+    bottom:calc(100svh - var(--header-height) - var(--card-height,100svh));
+  }
+  main > section:not(:last-child) {
+    border-radius:0 0 1.35rem 1.35rem;
+    box-shadow:0 .65rem 1.75rem #30231926;
+  }
+  main .hero {z-index:4}
+  main .demo {z-index:3}
+  main .storage {z-index:2}
+  main .close {z-index:1}
 }
 @media(max-width:720px){
   :root {--header-height:3.9rem}

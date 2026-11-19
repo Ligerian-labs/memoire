@@ -119,11 +119,10 @@ if (ctx) {
     ctx.setTransform(ratio,0,0,ratio,0,0);
     refresh();
   }).observe(canvas);
-  // The hero remains pinned behind later cards. Stop painting once covered.
+  // Stop painting when the outgoing hero clears the header.
   const hero = canvas.closest("section");
-  const firstEdge = document.querySelector("#demo");
   function checkVisibility() {
-    const next = firstEdge.getBoundingClientRect().top > header.offsetHeight && hero.getBoundingClientRect().bottom > 0;
+    const next = hero.getBoundingClientRect().bottom > header.offsetHeight;
     if (visible !== next) {
       visible = next;
       refresh();
@@ -136,6 +135,7 @@ if (ctx) {
   motion.addEventListener("change",refresh);
 }
 
+const deckCards = [...document.querySelectorAll("main > section")];
 const navigation = [...document.querySelectorAll('nav a[href^="#"]')];
 const sections = navigation.map(link => document.querySelector(link.hash).nextElementSibling);
 const header = document.querySelector(".masthead");
@@ -144,7 +144,11 @@ function updateNavigation() {
   scrollFrame = 0;
   const end = document.documentElement.scrollHeight - innerHeight;
   header.style.setProperty("--read", end > 0 ? Math.min(1, Math.max(0, scrollY / end)) : 1);
-  const foremost = [...document.querySelectorAll("main > section")].reverse().find(section => section.getBoundingClientRect().top <= innerHeight * .45);
+  const marker = innerHeight * .45;
+  const foremost = deckCards.find(section => {
+    const bounds = section.getBoundingClientRect();
+    return bounds.top <= marker && marker < bounds.bottom;
+  });
   sections.forEach((section, index) => {
     if (section === foremost) {
       navigation[index].setAttribute("aria-current", "location");
@@ -161,8 +165,7 @@ window.addEventListener("resize", queueNavigation);
 updateNavigation();
 
 
-// A panel taller than the screen pins only after its last line comes into view.
-const deckCards = [...document.querySelectorAll("main > section")];
+// Align the waiting card below the header even when its content exceeds one screen.
 const cardSizes = new ResizeObserver(entries => {
   for (const {target} of entries) {
     target.style.setProperty("--card-height", target.offsetHeight + "px");
