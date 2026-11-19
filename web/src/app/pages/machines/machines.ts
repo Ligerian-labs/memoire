@@ -130,12 +130,18 @@ export class Machines {
 
   async createMachine(): Promise<void> {
     await this.submit(async () => {
+      const org = this.org;
+      // A machine acts only through a team role; its keys carry a subset of the role's permissions.
+      const roles = await this.api.identity.roles(org);
+      const member = roles.items.find((r) => r.key === 'member');
+      if (!member) throw new Error('This team has no member role to give the machine.');
       const machine = await this.api.identity.createServiceAccount(
-        this.org,
+        org,
         this.machineName.trim(),
         this.machineDescription.trim() || undefined,
       );
       this.machines.update((m) => [...m, machine]);
+      await this.api.identity.assignRole(org, machine.id, member.id);
       this.openKey(machine.id);
       this.keyName = machine.name;
     }, false);

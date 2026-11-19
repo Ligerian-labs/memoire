@@ -158,6 +158,26 @@ describe('Http', () => {
     ).toThrow();
   });
 
+  it('unwraps a created machine and assigns it a role by id', async () => {
+    const machine = {
+      id: 'sva_1',
+      name: 'ci',
+      description: null,
+      status: 'active',
+      created_at: '',
+    };
+    const { fetcher, identity } = make(
+      json({ service_account: machine }, 201),
+      json({ assignment: {} }, 201),
+    );
+    expect(await identity.createServiceAccount('org_1', 'ci')).toEqual(machine);
+    await identity.assignRole('org_1', 'sva_1', 'rol_member');
+    expect(fetcher.mock.calls[1][0]).toBe('/v1/identity/organizations/org_1/role-assignments');
+    expect(fetcher.mock.calls[1][1]!.body).toBe(
+      '{"service_account_id":"sva_1","role_id":"rol_member"}',
+    );
+  });
+
   it('selects a team with PUT /v1/identity/session/organization', async () => {
     const { fetcher, identity } = make(
       json({ session: { id: 'ses_1', active_organization_id: 'org_1' } }),

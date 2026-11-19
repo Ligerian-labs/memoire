@@ -6,7 +6,8 @@
     <button class="btn" type="button" (click)="load()" [disabled]="loading()">Refresh</button>
   </div>
   <p class="muted lede">
-    A machine is a team identity for an agent or a server. Give each one its own API key, then run
+    A machine is a team identity for an agent or a server, with the team's member role. Give each
+    one its own API key, then run
     <code>memoire login --server {{ origin }}</code> on it.
   </p>
   @if (error()) {

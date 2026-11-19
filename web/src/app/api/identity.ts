@@ -38,6 +38,11 @@ export interface ServiceAccount {
   created_at: string;
 }
 
+export interface Role {
+  id: string;
+  key: string;
+}
+
 export interface ApiKey {
   id: string;
   name: string;
@@ -116,9 +121,30 @@ export class IdentityApi {
     return this.http.request('GET', `${orgPath(org)}/service-accounts`, undefined, { limit: 100 });
   }
 
-  createServiceAccount(org: string, name: string, description?: string): Promise<ServiceAccount> {
+  async createServiceAccount(
+    org: string,
+    name: string,
+    description?: string,
+  ): Promise<ServiceAccount> {
     const body = description ? { name, description } : { name };
-    return this.http.request('POST', `${orgPath(org)}/service-accounts`, body);
+    const answer = await this.http.request<{ service_account: ServiceAccount }>(
+      'POST',
+      `${orgPath(org)}/service-accounts`,
+      body,
+    );
+    return answer.service_account;
+  }
+
+  /** The team's roles, built-in ones (`admin`, `member`) included. */
+  roles(org: string): Promise<{ items: Role[] }> {
+    return this.http.request('GET', `${orgPath(org)}/roles`);
+  }
+
+  assignRole(org: string, serviceAccountId: string, roleId: string): Promise<unknown> {
+    return this.http.request('POST', `${orgPath(org)}/role-assignments`, {
+      service_account_id: serviceAccountId,
+      role_id: roleId,
+    });
   }
 
   /** Every key of the team in one answer: identity does not page this list. */

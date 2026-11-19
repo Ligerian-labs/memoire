@@ -126,7 +126,7 @@ INSERT INTO notes (body, score) SELECT 'note ' || i, i * 0.5 FROM n;`,
 
   await test.step('read in the console', async () => {
     await page.getByRole('button', { name: 'Parameters' }).click();
-    await page.getByLabel(/^Parameters \(JSON/).fill('["hello"]');
+    await page.getByRole('textbox', { name: /Parameters/ }).fill('["hello"]');
     await runSql(
       page,
       `SELECT id, body, score, data, 9007199254740993 AS big FROM notes WHERE body = ?`,
@@ -136,7 +136,7 @@ INSERT INTO notes (body, score) SELECT 'note ' || i, i * 0.5 FROM n;`,
     await expect(grid.locator('tbody tr')).toContainText('hello');
     await expect(grid.locator('tbody tr')).toContainText('blob 2 B');
     await expect(grid.locator('tbody tr')).toContainText('9007199254740993');
-    await page.getByLabel(/^Parameters \(JSON/).fill('');
+    await page.getByRole('textbox', { name: /Parameters/ }).fill('');
     await runSql(page, `SELECT body, score FROM notes ORDER BY id LIMIT 5`);
     await expect(page.getByTestId('results').locator('tbody tr')).toHaveCount(5);
     await screenshot(page, 'console-read');
@@ -192,7 +192,7 @@ INSERT INTO notes (body, score) SELECT 'note ' || i, i * 0.5 FROM n;`,
     await machine.getByRole('button', { name: 'Create machine' }).click();
     const keyDialog = page.getByRole('dialog', { name: 'New API key' });
     await expect(keyDialog.getByLabel('Name')).toHaveValue('ci-runner');
-    await keyDialog.getByLabel(/^Read-only/).check();
+    await keyDialog.getByRole('radio', { name: /Read-only/ }).check();
     await keyDialog.getByRole('button', { name: 'Create key' }).click();
     key = (await page.getByTestId('minted-key').textContent())?.trim() ?? '';
     expect(key).toMatch(/^mzk_/);
