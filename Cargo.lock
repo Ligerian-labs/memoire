@@ -2517,13 +2517,18 @@ name = "memoire-gateway"
 version = "0.1.0"
 dependencies = [
  "axum",
+ "base64 0.23.1",
+ "jiff",
  "memoire-api",
+ "merezha-application",
  "merezha-cli",
  "merezha-domain",
  "merezha-platform",
  "merezha-postgres",
+ "merezha-runtime",
  "merezha-telemetry",
  "rustls",
+ "serde",
  "serde_json",
  "tempfile",
  "tokio",

@@ -9,8 +9,8 @@
 //! `run` starts the Merezha host with its blocks (identity included) and the
 //! memoire module. `build` is Merezha's guest build at the pinned revision:
 //! it compiles the guests of a runtime manifest into components.
-use memoire_gateway::MemoireModule;
-use merezha_platform::ConfigInput;
+use memoire_gateway::{MemoireModule, Wiring};
+use merezha_platform::{ConfigInput, ProjectConfig};
 use std::{path::PathBuf, process::ExitCode};
 
 const USAGE: &str = "usage: memoire-gateway run --config PATH [--listen ADDRESS] [--set SECTION.KEY=VALUE]...\n\
@@ -60,7 +60,12 @@ async fn run(config: PathBuf, overrides: Vec<(String, String)>, ignored: Vec<Str
         overrides,
     };
     let (mut modules, identity) = merezha_cli::host_blocks(&input);
-    modules.push(Box::new(MemoireModule::new()));
+    modules.push(Box::new(match wiring(&input) {
+        Some(wiring) => MemoireModule::with_catalog(wiring),
+        // Startup then fails on the configuration's own problems, or
+        // `memoire_application_missing` without `[application]`.
+        None => MemoireModule::new(),
+    }));
     merezha_cli::run::run_with(
         input,
         modules,
@@ -69,4 +74,15 @@ async fn run(config: PathBuf, overrides: Vec<(String, String)>, ignored: Vec<Str
         ignored,
     )
     .await
+}
+
+/// The runtime manifest and the application document the project names,
+/// for the catalog the memoire module opens beside the host's application.
+fn wiring(input: &ConfigInput) -> Option<Wiring> {
+    let project = ProjectConfig::load(input).ok()?;
+    let application = merezha_cli::read_application_config(&project.application?.path).ok()?;
+    Some(Wiring {
+        manifest: project.runtime.manifest,
+        application,
+    })
 }

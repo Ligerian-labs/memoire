@@ -6,7 +6,9 @@
 # The database is MEMOIRE_DATABASE_URL when set (an existing, disposable
 # PostgreSQL database); otherwise a throwaway cluster from
 # scripts/dev-postgres.sh on MEMOIRE_DB_PORT (default 28962). Secrets are
-# generated once under .memoire-dev/secrets/ (mode 0600). Synthetic data only.
+# generated once under .memoire-dev/secrets/ (mode 0600). The catalog guest is
+# built first when guests/components/ lacks it. Synthetic data only. Then
+# scripts/dev-owner.py gives a signed-in owner, a team and an API key.
 set -euo pipefail
 root=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 dev="$root/.memoire-dev"
@@ -20,4 +22,5 @@ if [ -z "${MEMOIRE_DATABASE_URL:-}" ]; then
 fi
 export MEMOIRE_DATABASE_URL
 cd "$root"
+[ -s guests/components/memoire-catalog.wasm ] || scripts/build-guests.sh >/dev/null
 exec cargo run --locked -p memoire-gateway -- run --config "$root/config/dev/memoire.toml" "$@"

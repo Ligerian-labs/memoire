@@ -1,35 +1,64 @@
 //! The `memoire` Merezha module.
-use crate::{config::Settings, routes};
+use crate::{
+    catalog::{Catalog, Wiring},
+    config::Settings,
+    routes,
+};
 use axum::Router;
 use merezha_domain::Failure;
 use merezha_platform::{AppContext, BoxFuture, ConfigIssue, ErrorCode, Module, ModuleSection};
-use std::sync::LazyLock;
+use std::{
+    sync::{Arc, LazyLock, OnceLock},
+    time::Duration,
+};
 
 /// The module name: the configuration section `[modules.memoire]` and the
 /// route prefix `/v1/memoire`. Never changes.
 pub const NAME: &str = "memoire";
 
-/// memoire's error codes (docs/api.md, "Errors") in Merezha's registry form.
+/// Codes the catalog answers that no client meets through memoire's
+/// routes: `not_expired` refuses a sweep that came too early.
+const INTERNAL: &[ErrorCode] = &[ErrorCode::new("not_expired", 409)];
+
+/// memoire's error codes (docs/api.md, "Errors") in Merezha's registry
+/// form, and the internal ones.
 static ERRORS: LazyLock<Vec<ErrorCode>> = LazyLock::new(|| {
     memoire_api::error::CODES
         .iter()
         .map(|c| ErrorCode::new(c.code, c.status))
+        .chain(INTERNAL.iter().cloned())
         .collect()
 });
+
+/// Its start loads the guests and connects the catalog to the store.
+const START_TIMEOUT: Duration = Duration::from_secs(60);
 
 /// The module. It owns the data directory; the catalog guest owns which
 /// databases exist.
 #[derive(Default)]
 pub struct MemoireModule {
-    settings: Option<Settings>,
+    settings: Option<Arc<Settings>>,
+    wiring: Option<Wiring>,
+    catalog: OnceLock<Catalog>,
 }
 
 impl MemoireModule {
+    /// A module without the catalog: its start fails
+    /// `memoire_application_missing`. For configuration checks.
     pub fn new() -> Self {
         Self::default()
     }
 
-    fn settings(&self) -> Result<&Settings, Failure> {
+    /// The module with the runtime manifest and application document the
+    /// project names.
+    pub fn with_catalog(wiring: Wiring) -> Self {
+        Self {
+            wiring: Some(wiring),
+            ..Self::default()
+        }
+    }
+
+    fn settings(&self) -> Result<&Arc<Settings>, Failure> {
         self.settings
             .as_ref()
             .ok_or_else(|| Failure::permanent("memoire_not_configured"))
@@ -42,7 +71,7 @@ impl Module for MemoireModule {
     }
 
     fn configure(&mut self, section: &ModuleSection) -> Result<(), Vec<ConfigIssue>> {
-        self.settings = Some(Settings::parse(section)?);
+        self.settings = Some(Arc::new(Settings::parse(section)?));
         Ok(())
     }
 
@@ -50,17 +79,35 @@ impl Module for MemoireModule {
         &ERRORS
     }
 
-    fn start(&self, _ctx: AppContext) -> BoxFuture<'_, Result<(), Failure>> {
+    fn start_timeout(&self) -> Option<Duration> {
+        Some(START_TIMEOUT)
+    }
+
+    fn start(&self, ctx: AppContext) -> BoxFuture<'_, Result<(), Failure>> {
         Box::pin(async move {
             let teams = self.settings()?.teams_dir();
             create_private_dir(&teams)
                 .await
-                .map_err(|_| Failure::permanent("data_dir_unavailable"))
+                .map_err(|_| Failure::permanent("data_dir_unavailable"))?;
+            let wiring = self
+                .wiring
+                .as_ref()
+                .ok_or_else(|| Failure::permanent("memoire_application_missing"))?;
+            let catalog = Catalog::open(&ctx, wiring).await?;
+            let _ = self.catalog.set(catalog);
+            Ok(())
         })
     }
 
-    fn routes(&self, _ctx: &AppContext) -> Router {
-        routes::router()
+    fn routes(&self, ctx: &AppContext) -> Router {
+        match (self.catalog.get(), self.settings()) {
+            (Some(catalog), Ok(settings)) => routes::router(routes::Routes {
+                catalog: catalog.clone(),
+                policy: ctx.authorizer().clone(),
+                settings: settings.clone(),
+            }),
+            _ => Router::new(),
+        }
     }
 
     fn ready(&self) -> BoxFuture<'_, Result<(), Failure>> {
@@ -90,7 +137,10 @@ mod tests {
     #[test]
     fn registers_every_contract_code() {
         let module = MemoireModule::new();
-        assert_eq!(module.errors().len(), memoire_api::error::CODES.len());
+        assert_eq!(
+            module.errors().len(),
+            memoire_api::error::CODES.len() + INTERNAL.len()
+        );
         assert!(
             module
                 .errors()

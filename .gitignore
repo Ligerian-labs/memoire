@@ -2,3 +2,4 @@
 /guests/target
 /guests/components/*.wasm
 /.memoire-dev
+__pycache__/

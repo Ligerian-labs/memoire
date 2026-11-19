@@ -1,0 +1,82 @@
+# The catalog application (docs/architecture.md): one stream per team,
+# `{team}:Catalog/{team}`, decided by the memoire-catalog guest, and the
+# `databases` projection, one partition per team. memoire's own routes run
+# these commands and queries as the caller; the host also serves them under
+# /v1/application/ with the same permissions.
+version = 2
+
+[storage]
+backend = "postgres"
+application = "memoire-catalog-v1"
+
+[limits]
+timeout_ms = 5000
+max_payload_bytes = 16384
+max_state_bytes = 262144
+max_concurrent = 16
+max_stream_events = 4096
+
+[[permissions]]
+name = "memoire.databases.read"
+description = "List and read databases: details, read queries, schema, rows, export, snapshot list"
+[[permissions]]
+name = "memoire.databases.write"
+description = "Write queries, extend and import databases"
+[[permissions]]
+name = "memoire.databases.create"
+description = "Create databases"
+[[permissions]]
+name = "memoire.databases.delete"
+description = "Delete databases"
+[[permissions]]
+name = "memoire.databases.snapshots"
+description = "Restore databases from snapshots"
+
+[[commands]]
+tag = "CreateDatabase"
+service = "memoire-catalog"
+aggregate = "Catalog"
+permission = "memoire.databases.create"
+scope = "tenant"
+
+[[commands]]
+tag = "ExtendDatabase"
+service = "memoire-catalog"
+aggregate = "Catalog"
+permission = "memoire.databases.write"
+scope = "tenant"
+
+[[commands]]
+tag = "DeleteDatabase"
+service = "memoire-catalog"
+aggregate = "Catalog"
+permission = "memoire.databases.delete"
+scope = "tenant"
+
+# System only: the guest refuses every principal but the sweeper's.
+[[commands]]
+tag = "ExpireDatabase"
+service = "memoire-catalog"
+aggregate = "Catalog"
+access = "authenticated"
+scope = "tenant"
+
+[[queries]]
+tag = "ListDatabases"
+service = "memoire-catalog"
+projection = "databases"
+permission = "memoire.databases.read"
+scope = "tenant"
+
+[[queries]]
+tag = "GetDatabase"
+service = "memoire-catalog"
+projection = "databases"
+permission = "memoire.databases.read"
+scope = "tenant"
+
+[[projections]]
+name = "databases"
+service = "memoire-catalog"
+initial = { databases = {} }
+partition = "tenant"
