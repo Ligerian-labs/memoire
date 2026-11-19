@@ -116,15 +116,6 @@ describe('SessionStore', () => {
     expect(TestBed.inject(Api).http.csrf).toBe('c');
   });
 
-  it('names the active team in the memoire header', async () => {
-    const { session } = store(
-      json({ session: { id: 's', active_organization_id: 'org_a' }, user, csrf_token: 'c' }),
-      json({ items: [org('org_a', 'Alpha')], next_cursor: null }),
-    );
-    await session.restore();
-    expect(TestBed.inject(Api).http.team).toBe('org_a');
-  });
-
   it('clears the restore error once the session is known, signed out included', async () => {
     const { session } = store(
       json({ error: { code: 'overloaded' } }, 503),

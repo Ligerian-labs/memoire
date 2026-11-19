@@ -35,21 +35,26 @@ const UNSAFE = new Set(['POST', 'PUT', 'PATCH', 'DELETE']);
  */
 export class Http {
   csrf: string | null = null;
-  /**
-   * The team the page shows, sent as `Merezha-Organization` on memoire routes.
-   * It wins over the session's active team, which another tab may have switched.
-   */
-  team: string | null = null;
   /** Called with every failure before it is thrown, for app-wide reactions such as an ended session. */
   onError: ((error: ApiError) => void) | null = null;
 
   constructor(private readonly fetcher: typeof fetch) {}
 
-  async request<T>(method: string, path: string, body?: unknown, query?: Query): Promise<T> {
+  /**
+   * `team`, when given, goes in `Merezha-Organization`: it wins over the
+   * session's active team, which another tab may have switched.
+   */
+  async request<T>(
+    method: string,
+    path: string,
+    body?: unknown,
+    query?: Query,
+    team?: string | null,
+  ): Promise<T> {
     const headers: Record<string, string> = { Accept: 'application/json' };
     if (body !== undefined) headers['Content-Type'] = 'application/json';
     if (UNSAFE.has(method) && this.csrf) headers['X-CSRF-Token'] = this.csrf;
-    if (this.team && path.startsWith('/v1/memoire/')) headers['Merezha-Organization'] = this.team;
+    if (team) headers['Merezha-Organization'] = team;
     const response = await this.fetcher(path + search(query), {
       method,
       headers,

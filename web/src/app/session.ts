@@ -100,7 +100,6 @@ export class SessionStore {
 
   private setTeam(id: string | null): void {
     this.teamId.set(id);
-    this.api.http.team = id;
   }
 
   /** Forgets the session locally, for a 401 met anywhere. */

@@ -1,5 +1,4 @@
 import { Component, effect, inject, signal, untracked } from '@angular/core';
-import { Api } from '../../api/api';
 import { Snapshot } from '../../api/memoire';
 import { bytes, timestamp } from '../../format';
 import { describe } from '../../messages';
@@ -120,7 +119,6 @@ import { DatabaseContext } from './context';
   `,
 })
 export class Snapshots {
-  private readonly api = inject(Api);
   readonly ctx = inject(DatabaseContext);
   readonly items = signal<Snapshot[]>([]);
   readonly loading = signal(false);
@@ -143,7 +141,7 @@ export class Snapshots {
     this.loading.set(true);
     this.error.set('');
     try {
-      this.items.set((await this.api.memoire.snapshots(this.ctx.name())).items);
+      this.items.set((await this.ctx.memoire.snapshots(this.ctx.name())).items);
     } catch (error) {
       this.error.set(describe(error));
     } finally {
@@ -155,7 +153,7 @@ export class Snapshots {
     this.busy.set(true);
     this.restoreError.set('');
     try {
-      this.ctx.database.set(await this.api.memoire.restore(this.ctx.name(), snapshot.id));
+      this.ctx.database.set(await this.ctx.memoire.restore(this.ctx.name(), snapshot.id));
       this.confirming.set(null);
       this.notice.set(`Restored the snapshot from ${timestamp(snapshot.created_at)}.`);
       // Setting the database reloads the list (the effect above).

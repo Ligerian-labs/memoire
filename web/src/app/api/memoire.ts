@@ -1,4 +1,4 @@
-import { Http, JsonText } from './http';
+import { Http, JsonText, Query } from './http';
 import { Params, Value } from './values';
 
 export type Kind = 'burstable' | 'persistent';
@@ -102,14 +102,27 @@ export interface Snapshot {
 
 /** memoire's routes under /v1/memoire (docs/api.md, "Routes"). */
 export class MemoireApi {
-  constructor(private readonly http: Http) {}
+  constructor(
+    private readonly http: Http,
+    /** The team every request names; null uses the session's active team. */
+    readonly team: string | null = null,
+  ) {}
+
+  /** The same API bound to one team, so a view keeps acting on the team it shows. */
+  forTeam(team: string | null): MemoireApi {
+    return new MemoireApi(this.http, team);
+  }
+
+  private send<T>(method: string, path: string, body?: unknown, query?: Query): Promise<T> {
+    return this.http.request<T>(method, path, body, query, this.team);
+  }
 
   whoami(): Promise<Whoami> {
-    return this.http.request('GET', '/v1/memoire/whoami');
+    return this.send('GET', '/v1/memoire/whoami');
   }
 
   list(state: 'active' | 'all', cursor?: string | null): Promise<Page<Database>> {
-    return this.http.request('GET', '/v1/memoire/databases', undefined, {
+    return this.send('GET', '/v1/memoire/databases', undefined, {
       state,
       cursor,
       limit: 100,
@@ -117,20 +130,20 @@ export class MemoireApi {
   }
 
   create(input: CreateDatabase): Promise<Database> {
-    return this.http.request('POST', '/v1/memoire/databases', input);
+    return this.send('POST', '/v1/memoire/databases', input);
   }
 
   get(name: string): Promise<Database> {
-    return this.http.request('GET', db(name));
+    return this.send('GET', db(name));
   }
 
   delete(name: string): Promise<void> {
-    return this.http.request('DELETE', db(name));
+    return this.send('DELETE', db(name));
   }
 
   extend(name: string, idleTtlSeconds?: number): Promise<Database> {
     const body = idleTtlSeconds === undefined ? {} : { idle_ttl_seconds: idleTtlSeconds };
-    return this.http.request('POST', `${db(name)}/extend`, body);
+    return this.send('POST', `${db(name)}/extend`, body);
   }
 
   /**
@@ -143,31 +156,26 @@ export class MemoireApi {
     request: QueryRequest,
     paramsJson?: string,
   ): Promise<{ results: StatementResult[] }> {
-    return this.http.request('POST', `${db(name)}/query`, queryBody(request, paramsJson));
+    return this.send('POST', `${db(name)}/query`, queryBody(request, paramsJson));
   }
 
   schema(name: string): Promise<Schema> {
-    return this.http.request('GET', `${db(name)}/schema`);
+    return this.send('GET', `${db(name)}/schema`);
   }
 
   rows(name: string, table: string, limit: number, after?: string | null): Promise<RowPage> {
-    return this.http.request(
-      'GET',
-      `${db(name)}/tables/${encodeURIComponent(table)}/rows`,
-      undefined,
-      { limit, after },
-    );
+    return this.send('GET', `${db(name)}/tables/${encodeURIComponent(table)}/rows`, undefined, {
+      limit,
+      after,
+    });
   }
 
   snapshots(name: string): Promise<Page<Snapshot>> {
-    return this.http.request('GET', `${db(name)}/snapshots`);
+    return this.send('GET', `${db(name)}/snapshots`);
   }
 
   restore(name: string, snapshotId: string): Promise<Database> {
-    return this.http.request(
-      'POST',
-      `${db(name)}/snapshots/${encodeURIComponent(snapshotId)}/restore`,
-    );
+    return this.send('POST', `${db(name)}/snapshots/${encodeURIComponent(snapshotId)}/restore`);
   }
 
   exportUrl(name: string): string {

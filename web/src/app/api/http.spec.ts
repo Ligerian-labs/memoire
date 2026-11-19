@@ -120,14 +120,13 @@ describe('Http', () => {
     expect(fetcher.mock.calls[0][0]).toBe('/v1/identity/organizations/org_1/api-keys');
   });
 
-  it('names the shown team on memoire routes only', async () => {
-    const { http, fetcher, identity, memoire } = make(
+  it('names the bound team on every request of a team-bound API, and only there', async () => {
+    const { fetcher, memoire } = make(
       json({ items: [], next_cursor: null }),
-      json({ items: [] }),
+      json({ items: [], next_cursor: null }),
     );
-    http.team = 'org_shown';
+    await memoire.forTeam('org_shown').list('active');
     await memoire.list('active');
-    await identity.apiKeys('org_shown');
     const headers = (i: number) => fetcher.mock.calls[i][1]!.headers as Record<string, string>;
     expect(headers(0)['Merezha-Organization']).toBe('org_shown');
     expect(headers(1)['Merezha-Organization']).toBeUndefined();

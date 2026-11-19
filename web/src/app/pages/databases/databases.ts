@@ -52,10 +52,9 @@ export class Databases implements OnDestroy {
     this.loading.set(true);
     this.error.set('');
     try {
-      const page = await this.api.memoire.list(
-        this.showExpired ? 'all' : 'active',
-        more ? this.next() : null,
-      );
+      const page = await this.api.memoire
+        .forTeam(this.session.teamId())
+        .list(this.showExpired ? 'all' : 'active', more ? this.next() : null);
       if (generation !== this.generation) return;
       this.items.update((items) => (more ? [...items, ...page.items] : page.items));
       this.next.set(page.next_cursor);

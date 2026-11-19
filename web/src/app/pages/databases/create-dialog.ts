@@ -5,6 +5,7 @@ import { Database, Kind } from '../../api/memoire';
 import { DATABASE_NAME } from '../../format';
 import { describe } from '../../messages';
 import { Modal } from '../../ui/modal';
+import { SessionStore } from '../../session';
 
 export const TTL_CHOICES = [
   { seconds: 3600, label: '1 hour' },
@@ -130,6 +131,7 @@ export const TTL_CHOICES = [
 })
 export class CreateDatabaseDialog {
   private readonly api = inject(Api);
+  private readonly session = inject(SessionStore);
   readonly created = output<Database>();
   readonly cancelled = output<void>();
   readonly ttlChoices = TTL_CHOICES;
@@ -149,11 +151,13 @@ export class CreateDatabaseDialog {
     this.error.set('');
     try {
       const kind = this.kind();
-      const database = await this.api.memoire.create(
-        kind === 'burstable'
-          ? { name: this.name, kind, idle_ttl_seconds: this.ttl }
-          : { name: this.name, kind },
-      );
+      const database = await this.api.memoire
+        .forTeam(this.session.teamId())
+        .create(
+          kind === 'burstable'
+            ? { name: this.name, kind, idle_ttl_seconds: this.ttl }
+            : { name: this.name, kind },
+        );
       this.created.emit(database);
     } catch (error) {
       this.error.set(describe(error));

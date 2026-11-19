@@ -1,6 +1,5 @@
 import { Component, computed, effect, inject, input, signal, untracked } from '@angular/core';
 import { FormsModule } from '@angular/forms';
-import { Api } from '../../api/api';
 import { RowPage } from '../../api/memoire';
 import { describe } from '../../messages';
 import { Grid } from '../../ui/grid';
@@ -95,7 +94,6 @@ import { DatabaseContext } from './context';
   `,
 })
 export class Rows {
-  private readonly api = inject(Api);
   private readonly ctx = inject(DatabaseContext);
   readonly table = input.required<string>();
   readonly sizes = [50, 100, 500, 1000];
@@ -153,7 +151,7 @@ export class Rows {
     this.loading.set(true);
     this.error.set('');
     try {
-      const page = await this.api.memoire.rows(
+      const page = await this.ctx.memoire.rows(
         this.ctx.name(),
         this.table(),
         limit,

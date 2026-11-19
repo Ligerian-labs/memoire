@@ -2,6 +2,7 @@ import { Injectable, inject, signal } from '@angular/core';
 import { Api } from '../../api/api';
 import { Database, Mode, Schema, StatementResult } from '../../api/memoire';
 import { describe } from '../../messages';
+import { SessionStore } from '../../session';
 
 export interface ConsoleRun {
   statements: string[];
@@ -14,6 +15,9 @@ export interface ConsoleRun {
 @Injectable()
 export class DatabaseContext {
   private readonly api = inject(Api);
+  private readonly session = inject(SessionStore);
+  /** memoire's API bound to the team active when this database opened. */
+  memoire = this.api.memoire.forTeam(this.session.teamId());
   readonly name = signal('');
   readonly database = signal<Database | null>(null);
   readonly schema = signal<Schema | null>(null);
@@ -29,6 +33,7 @@ export class DatabaseContext {
 
   async open(name: string): Promise<void> {
     if (name === this.name()) return;
+    this.memoire = this.api.memoire.forTeam(this.session.teamId());
     this.name.set(name);
     this.database.set(null);
     this.schema.set(null);
@@ -47,7 +52,7 @@ export class DatabaseContext {
 
   async refreshDatabase(): Promise<void> {
     try {
-      this.database.set(await this.api.memoire.get(this.name()));
+      this.database.set(await this.memoire.get(this.name()));
       this.error.set('');
     } catch (error) {
       this.error.set(describe(error));
@@ -56,7 +61,7 @@ export class DatabaseContext {
 
   async refreshSchema(): Promise<void> {
     try {
-      this.schema.set(await this.api.memoire.schema(this.name()));
+      this.schema.set(await this.memoire.schema(this.name()));
       this.schemaError.set('');
     } catch (error) {
       this.schemaError.set(describe(error));

@@ -1,6 +1,5 @@
 import { Component, inject, signal } from '@angular/core';
 import { FormsModule } from '@angular/forms';
-import { Api } from '../../api/api';
 import { Mode, Statement } from '../../api/memoire';
 import { cell, parseParams, ParamsError } from '../../api/values';
 import { describe } from '../../messages';
@@ -15,7 +14,6 @@ import { DatabaseContext } from './context';
   styleUrl: './console.css',
 })
 export class Console {
-  private readonly api = inject(Api);
   readonly ctx = inject(DatabaseContext);
   readonly running = signal(false);
   readonly error = signal('');
@@ -53,7 +51,7 @@ export class Console {
     this.running.set(true);
     const started = performance.now();
     try {
-      const answer = await this.api.memoire.query(
+      const answer = await this.ctx.memoire.query(
         this.ctx.name(),
         { mode, transaction: this.ctx.transaction, statements: body },
         params === undefined ? undefined : this.ctx.params,

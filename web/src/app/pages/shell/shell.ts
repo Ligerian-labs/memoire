@@ -56,9 +56,9 @@ export class Shell {
     this.switching.set(true);
     this.error.set('');
     try {
-      // Leave the current view first, so nothing it sends can reach the new team.
-      await this.router.navigateByUrl('/databases');
+      // Views name their own team on every request, so the old one stays safe until it closes.
       await this.session.selectTeam(id);
+      await this.router.navigateByUrl('/databases');
     } catch (error) {
       this.error.set(describe(error));
       picker.value = this.session.teamId() ?? '';
