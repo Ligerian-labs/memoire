@@ -3,26 +3,29 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <meta name="theme-color" content="#0c1010">
+  <meta name="theme-color" content="#f5f1e7">
   <meta name="description" content="Mémoire gives agents SQLite databases they can share with their team.">
   <title>Mémoire · SQLite on demand</title>
-  <link rel="stylesheet" href="style.css">
-  <script src="motion.js" defer></script>
+  <link rel="stylesheet" href="style.css?v=2">
+  <script src="motion.js?v=3" defer></script>
 </head>
 <body>
   <header class="wrap masthead" id="top">
-    <a href="#top" class="brand"><span class="mark" aria-hidden="true">◈</span> mémoire</a>
-    <nav aria-label="Main"><a href="#storage">Storage</a><a href="https://github.com/Ligerian-labs/memoire" class="repo">GitHub</a></nav>
+    <a href="#top" class="brand"><span class="mark" aria-hidden="true"></span> mémoire</a>
+    <nav aria-label="Main"><a href="#demo">Terminal</a><a href="https://github.com/Ligerian-labs/memoire" class="repo">GitHub</a></nav>
   </header>
   <main>
-    <section class="hero">
-      <div class="field" aria-hidden="true"><canvas id="field"></canvas></div>
-      <div class="wrap hero-content">
-        <p class="eyebrow"><span></span> SQLITE ON DEMAND</p>
-        <h1>Give agents<br> <em>somewhere</em><br> to put data<span class="period">.</span></h1>
+    <section class="hero wrap">
+      <div class="hero-copy">
+        <p class="eyebrow">SQLITE ON DEMAND</p>
+        <h1>Memory<br> for <em>agents.</em></h1>
         <p class="intro">Spin up a SQLite database from the CLI. Share it across agents, machines, and your team.</p>
-        <a class="button" href="#demo">Try the terminal <span aria-hidden="true">⌘</span></a>
+        <a class="button" href="#demo">Try the terminal <span aria-hidden="true">↘</span></a>
       </div>
+      <figure class="specimen">
+        <div class="stage"><canvas id="field" role="img" aria-label="Mémoire's folded M and acute accent assembled from red plates"></canvas></div>
+        <figcaption><label for="spread">Unfold the mark</label><input type="range" id="spread" min="0" max="100" value="18"></figcaption>
+      </figure>
     </section>
     <section id="demo" class="wrap demo section">
       <div class="section-copy">
@@ -46,7 +49,7 @@ SQLite · burstable · 24h idle TTL</pre>
     </section>
     <section class="wrap section storage" id="storage">
       <p class="eyebrow"><span></span> DATABASE LIFECYCLE</p>
-      <h2>Keep it for <em>as long as it matters.</em></h2>
+      <h2>Choose its <em>lifespan.</em></h2>
       <div class="cards">
         <article><div class="card-glyph burst" aria-hidden="true">✳</div><h3>Burstable</h3><p>Scratch space for an agent run or a one-off import. It expires after 24 hours of inactivity by default.</p></article>
         <article><div class="card-glyph persist" aria-hidden="true">◈</div><h3>Persistent</h3><p>Keep a database until you delete it. Snapshots run every six hours and are kept for seven days.</p></article>
@@ -59,6 +62,6 @@ SQLite · burstable · 24h idle TTL</pre>
       <a class="button" href="https://github.com/Ligerian-labs/memoire">Explore the repository</a>
     </section>
   </main>
-  <footer class="wrap"><a class="brand" href="#top"><span class="mark" aria-hidden="true">◈</span> mémoire</a><span>By Ligerian Labs</span></footer>
+  <footer class="wrap"><a class="brand" href="#top"><span class="mark" aria-hidden="true"></span> mémoire</a><span>By Ligerian Labs</span></footer>
 </body>
 </html>

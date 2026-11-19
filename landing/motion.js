@@ -37,80 +37,87 @@ if (navigator.clipboard) {
   });
 }
 
+// Parallel slices of the same folded M used in the wordmark.
+const contours = [
+  [[-1,.65],[-.77,-.44],[-.44,-.44],[-.22,-.02],[.25,-.44],[.57,-.44],[.83,.65],[.39,.65],[.26,.11],[-.24,.56],[-.48,.08],[-.61,.65]],
+  [[-.37,-.62],[-.13,-.97],[.28,-.97],[-.08,-.62]],
+];
 const canvas = document.querySelector("#field");
-const context = canvas.getContext("2d");
-if (context) {
-  const hero = canvas.closest(".hero");
-  const points = Array.from({ length: 720 }, (_, index) => {
-    const vertical = 1 - 2 * (index + 0.5) / 720;
-    const radius = Math.sqrt(1 - vertical * vertical);
-    const angle = index * Math.PI * (3 - Math.sqrt(5));
-    return [radius * Math.cos(angle), vertical, radius * Math.sin(angle)];
-  });
+const ctx = canvas.getContext("2d");
+const slider = document.querySelector("#spread");
+if (ctx) {
   let frame = 0;
+  let elapsed = 0;
+  let lastTime = 0;
   let visible = true;
-  let pointer = 0;
   let width = 0;
   let height = 0;
+  let tilt = 0;
 
-  function render(time) {
+  function draw(time) {
     frame = 0;
-    const phase = motion.matches ? 0.7 : time * 0.0003 + pointer * 0.32 + scrollY * 0.0015;
-    const sine = Math.sin(phase);
-    const cosine = Math.cos(phase);
-    const radius = Math.min(width * 0.39, height * 0.42);
-    const centerX = width * 0.62;
-    const centerY = height * 0.51;
-    context.clearRect(0, 0, width, height);
-
-    for (const [x, y, z] of points) {
-      const depth = x * sine + z * cosine;
-      const scale = 1 / (1.5 - depth * 0.42);
-      const deformation = 1 + Math.sin(y * 12 + phase * 2) * 0.12;
-      const px = centerX + (x * cosine - z * sine) * radius * scale * deformation;
-      const py = centerY + y * radius * scale * 1.2;
-      context.fillStyle = `rgba(220,255,119,${(depth + 1.13) * 0.4})`;
-      const size = 1 + scale * 1.1;
-      context.fillRect(px, py, size, size);
+    elapsed += lastTime ? Math.min(time - lastTime, 45) : 0;
+    lastTime = time;
+    const wave = motion.matches ? 0 : Math.sin(elapsed / 2100);
+    const separation = Number(slider.value) / 100;
+    const scale = Math.min(width / 3.05, height / 2.55) / (1 + separation * .28);
+    if (!scale) return;
+    ctx.clearRect(0, 0, width, height);
+    ctx.save();
+    ctx.translate(width * .5, height * .52);
+    ctx.scale(scale, scale);
+    const shadow = ctx.createRadialGradient(0,0,.03,0,0,1);
+    shadow.addColorStop(0,"#692d3566");
+    shadow.addColorStop(1,"#80515200");
+    ctx.save();
+    ctx.translate(.02,.9);
+    ctx.scale(1.15,.12);
+    ctx.fillStyle = shadow;
+    ctx.fillRect(-1,-1,2,2);
+    ctx.restore();
+    const entrance = motion.matches ? 0 : Math.max(0, 1 - elapsed / 1250) ** 2;
+    const depth = .45 + separation * .65 + wave * .1 + entrance * .55;
+    const angle = -.19 + wave * .055 + tilt * .045;
+    ctx.rotate(angle);
+    for (let i = 0; i < 27; i++) {
+      const z = i / 26 - .5;
+      ctx.save();
+      ctx.rotate(z * (separation * .96 + entrance * .58 + wave * .14));
+      ctx.transform(.91,-.14,.08,.95,z * depth,-z * depth * .52);
+      for (const contour of contours) {
+        ctx.beginPath();
+        contour.forEach(([x,y], j) => j ? ctx.lineTo(x,y) : ctx.moveTo(x,y));
+        ctx.closePath();
+        const ink = ctx.createLinearGradient(-1,-.9,.85,.65);
+        if (i === 26) {
+          ink.addColorStop(0,"#ff754c"); ink.addColorStop(.5,"#e84220"); ink.addColorStop(1,"#ae281a");
+        } else {
+          ink.addColorStop(0,"#95302e"); ink.addColorStop(.55,"#ed5537"); ink.addColorStop(1,"#772924");
+        }
+        ctx.fillStyle = ink; ctx.fill();
+        ctx.strokeStyle = i === 26 ? "#ff9d72" : "#60201c";
+        ctx.lineWidth = .009; ctx.stroke();
+      }
+      ctx.restore();
     }
-
-    context.save();
-    context.translate(centerX, centerY);
-    context.rotate(-0.28);
-    context.strokeStyle = "#dcff7740";
-    for (let ring = 1; ring <= 3; ring++) {
-      context.beginPath();
-      context.ellipse(0, 0, radius * (0.98 + ring * 0.21), radius * (0.28 + ring * 0.1), 0, 0, Math.PI * 2);
-      context.stroke();
-    }
-    context.restore();
-    schedule();
+    ctx.restore();
+    if (visible && !document.hidden && !motion.matches) frame = requestAnimationFrame(draw);
   }
-
-  function schedule() {
-    if (!frame && visible && !document.hidden && !motion.matches) frame = requestAnimationFrame(render);
-  }
-
-  new ResizeObserver(() => {
-    const ratio = Math.min(devicePixelRatio, 2);
-    width = canvas.clientWidth;
-    height = canvas.clientHeight;
-    canvas.width = width * ratio;
-    canvas.height = height * ratio;
-    context.setTransform(ratio, 0, 0, ratio, 0, 0);
-    if (motion.matches) render(0);
-    else schedule();
-  }).observe(canvas);
-  new IntersectionObserver(([entry]) => {
-    visible = entry.isIntersecting;
-    schedule();
-  }).observe(hero);
-  document.addEventListener("visibilitychange", schedule);
-  motion.addEventListener("change", () => {
+  function refresh() {
     cancelAnimationFrame(frame);
-    render(performance.now());
-  });
-  hero.addEventListener("pointermove", (event) => {
-    if (event.pointerType === "mouse") pointer = event.clientX / innerWidth - 0.5;
-  });
+    lastTime = 0;
+    frame = requestAnimationFrame(draw);
+  }
+  new ResizeObserver(() => {
+    width = canvas.clientWidth; height = canvas.clientHeight;
+    const ratio = Math.min(devicePixelRatio, 2);
+    canvas.width = width * ratio; canvas.height = height * ratio;
+    ctx.setTransform(ratio,0,0,ratio,0,0);
+    refresh();
+  }).observe(canvas);
+  new IntersectionObserver(([entry]) => {visible = entry.isIntersecting;refresh()}).observe(canvas);
+  canvas.addEventListener("pointermove", event => {tilt = event.offsetX / width - .5});
+  slider.addEventListener("input",refresh);
+  document.addEventListener("visibilitychange",refresh);
+  motion.addEventListener("change",refresh);
 }
