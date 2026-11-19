@@ -13,6 +13,10 @@
 //!                                   # close after this long idle (1 to 86400)
 //! last_used_flush_seconds = 60      # last use reaches PostgreSQL this
 //!                                   # often (1 to 3600)
+//! sweep_interval_seconds = 60       # expiry sweep period (1 to 3600)
+//! snapshot_interval_seconds = 21600 # persistent snapshot period
+//!                                   # (1 to 604800)
+//! snapshot_retention_seconds = 604800 # snapshots kept (1 to 31536000)
 //! ```
 //!
 //! Everything but `data_dir` has the contract's value by default; the keys
@@ -31,6 +35,9 @@ const KNOWN: &[&str] = &[
     "max_database_bytes",
     "idle_close_seconds",
     "last_used_flush_seconds",
+    "sweep_interval_seconds",
+    "snapshot_interval_seconds",
+    "snapshot_retention_seconds",
 ];
 
 /// The module's validated settings.
@@ -48,6 +55,12 @@ pub struct Settings {
     pub idle_close_seconds: u64,
     /// How often last use is written to PostgreSQL.
     pub last_used_flush_seconds: u64,
+    /// How often the sweeper expires burstable databases.
+    pub sweep_interval_seconds: u64,
+    /// How often persistent databases are snapshotted.
+    pub snapshot_interval_seconds: u64,
+    /// How long snapshots are kept.
+    pub snapshot_retention_seconds: u64,
 }
 
 impl Settings {
@@ -91,6 +104,17 @@ impl Settings {
         );
         let idle_close_seconds = number("idle_close_seconds", 300, 1..=86_400);
         let last_used_flush_seconds = number("last_used_flush_seconds", 60, 1..=3_600);
+        let sweep_interval_seconds = number("sweep_interval_seconds", 60, 1..=3_600);
+        let snapshot_interval_seconds = number(
+            "snapshot_interval_seconds",
+            6 * 3_600,
+            1..=MAX_LIFETIME_SECONDS,
+        );
+        let snapshot_retention_seconds = number(
+            "snapshot_retention_seconds",
+            MAX_LIFETIME_SECONDS,
+            1..=365 * 86_400,
+        );
         match data_dir {
             Some(data_dir) if issues.is_empty() => Ok(Self {
                 data_dir,
@@ -99,6 +123,9 @@ impl Settings {
                 max_database_bytes,
                 idle_close_seconds,
                 last_used_flush_seconds,
+                sweep_interval_seconds,
+                snapshot_interval_seconds,
+                snapshot_retention_seconds,
             }),
             _ => Err(issues),
         }

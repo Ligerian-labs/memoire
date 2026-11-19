@@ -46,6 +46,11 @@ pub fn database() -> Option<TestDatabase> {
 /// configuration's application and runtime included; `memoire` is the body
 /// of `[modules.memoire]`.
 pub fn config(dir: &Path, memoire: &str) -> PathBuf {
+    config_with(dir, memoire, "")
+}
+
+/// [`config`] with `extra` appended at the top level (`[jobs]` settings).
+pub fn config_with(dir: &Path, memoire: &str, extra: &str) -> PathBuf {
     // Runtime paths stay inside the manifest's directory.
     std::fs::create_dir_all(dir.join("components")).unwrap();
     std::fs::copy(
@@ -97,6 +102,7 @@ secret_key = {{ file = "notifications.key" }}
 allow_http_links = true
 [modules.memoire]
 {memoire}
+{extra}
 "#
     );
     let path = dir.join("memoire.toml");

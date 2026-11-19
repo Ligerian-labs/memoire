@@ -9,8 +9,10 @@ pub mod config;
 pub mod data;
 mod http;
 mod last_used;
+mod lifecycle;
 pub mod module;
 mod routes;
+mod store;
 
 pub use catalog::Wiring;
 pub use config::Settings;

@@ -146,7 +146,11 @@ pub async fn rows(
 /// The database `name` when it is active: `404 database_not_found`
 /// otherwise, `410 database_expired` once it expired. The caller was
 /// admitted to the route, so the lookup checks no second permission.
-async fn active(routes: &Routes, caller: &TeamCaller, name: &str) -> Result<Entry, Response> {
+pub(super) async fn active(
+    routes: &Routes,
+    caller: &TeamCaller,
+    name: &str,
+) -> Result<Entry, Response> {
     if !valid_name(name) {
         return Err(refuse(Failure::permanent("database_not_found")));
     }
@@ -168,7 +172,7 @@ async fn active(routes: &Routes, caller: &TeamCaller, name: &str) -> Result<Entr
 }
 
 /// The response for a refused batch or page.
-fn refusal(refused: Refused) -> Response {
+pub(super) fn refusal(refused: Refused) -> Response {
     match refused {
         Refused::Invalid { path, code } => invalid(vec![(path, code)]),
         Refused::Code(code) => refuse(match code {
@@ -200,7 +204,7 @@ fn refusal(refused: Refused) -> Response {
     }
 }
 
-fn now_unix_ms() -> u64 {
+pub(super) fn now_unix_ms() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map(|d| u64::try_from(d.as_millis()).unwrap_or(u64::MAX))

@@ -10,7 +10,8 @@ use std::{
     time::{Duration, Instant},
 };
 
-pub const MIGRATIONS: &[Migration] = &[Migration::new(
+/// The module's first migration: the last-use table.
+pub const MIGRATION: Migration = Migration::new(
     1,
     "last_used",
     "CREATE SCHEMA IF NOT EXISTS memoire;
@@ -20,7 +21,7 @@ pub const MIGRATIONS: &[Migration] = &[Migration::new(
          last_used_unix_ms bigint NOT NULL,
          PRIMARY KEY (team_id, database_id)
      );",
-)];
+);
 
 const UPSERT: Statement = Statement::new(
     "memoire.last_used.upsert",

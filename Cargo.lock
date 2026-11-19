@@ -2518,6 +2518,7 @@ version = "0.1.0"
 dependencies = [
  "axum",
  "base64 0.23.1",
+ "http-body-util",
  "jiff",
  "memoire-api",
  "merezha-application",
@@ -2533,6 +2534,7 @@ dependencies = [
  "serde_json",
  "tempfile",
  "tokio",
+ "tokio-util",
  "toml",
 ]
 

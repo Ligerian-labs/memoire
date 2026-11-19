@@ -17,10 +17,9 @@ memoire is built on [Merezha](https://github.com/MartianGreed/merezha): the
 gateway is a Merezha host with its identity block, a native module for the
 data plane, and a WASM guest for the database lifecycle rules.
 
-> Status: the catalog and the data plane are live: databases are created,
-> listed, extended and deleted, and queried over HTTP with the limits and
-> the authorizer in place. The sweeper, snapshots, export and import land
-> next, with the CLI commands and the web client.
+> Status: the gateway is complete for v1: the catalog, the data plane,
+> the sweeper, snapshots with restore, export, import and the startup
+> reconciler are live. The CLI commands and the web client land next.
 
 ## Documentation
 
