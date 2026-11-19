@@ -172,12 +172,22 @@ pub enum KeysCommand {
         #[arg(long, value_name = "TEAM")]
         team: Option<String>,
         /// Key lifetime, at most 365d.
-        #[arg(long, value_name = "DURATION", value_parser = parse_seconds, default_value = "90d")]
+        #[arg(long, value_name = "DURATION", value_parser = key_lifetime, default_value = "90d")]
         expires: u64,
         /// Grant only `memoire.databases.read`.
         #[arg(long)]
         read_only: bool,
     },
+}
+
+/// Identity refuses keys that live longer than 365 days; refusing here
+/// keeps a machine from being created without its key.
+fn key_lifetime(text: &str) -> Result<u64, String> {
+    let seconds = parse_seconds(text)?;
+    if seconds > 365 * 86_400 {
+        return Err("a key lives at most 365d".into());
+    }
+    Ok(seconds)
 }
 
 fn database_name(text: &str) -> Result<String, String> {
@@ -266,6 +276,12 @@ mod tests {
         assert_eq!(expires, 90 * 86_400);
         assert!(!read_only);
         assert_eq!(team, None);
+    }
+
+    #[test]
+    fn keys_live_at_most_a_year() {
+        assert!(parse(&["keys", "create", "--name", "ci", "--expires", "365d"]).is_ok());
+        assert!(parse(&["keys", "create", "--name", "ci", "--expires", "366d"]).is_err());
     }
 
     #[test]

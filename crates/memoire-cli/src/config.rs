@@ -82,6 +82,8 @@ impl Env {
     }
 
     /// The gateway URL and API key: each from the environment, else stored.
+    /// The stored key goes only to the stored server: with another
+    /// `MEMOIRE_SERVER`, `MEMOIRE_API_KEY` is needed too.
     pub fn login(&self) -> Result<(String, Secret)> {
         let stored = if self.server.is_some() && self.api_key.is_some() {
             None
@@ -92,7 +94,15 @@ impl Env {
             .server
             .clone()
             .or_else(|| stored.as_ref().map(|c| c.server.clone()));
-        let key = self.api_key.clone().or_else(|| stored.map(|c| c.api_key));
+        let same = |stored: &str| {
+            self.server
+                .as_deref()
+                .is_none_or(|s| s.trim_end_matches('/') == stored.trim_end_matches('/'))
+        };
+        let key = self
+            .api_key
+            .clone()
+            .or_else(|| stored.filter(|c| same(&c.server)).map(|c| c.api_key));
         match (server, key) {
             (Some(server), Some(key)) => Ok((server, key)),
             _ => Err(not_logged_in()),
@@ -264,6 +274,21 @@ mod tests {
         env.server = Some("https://env.example".into());
         env.config_dir = None;
         assert_eq!(env.login().unwrap().0, "https://env.example");
+    }
+
+    #[test]
+    fn the_stored_key_never_goes_to_another_server() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut env = env(dir.path());
+        env.store(&Credentials {
+            server: "https://stored.example".into(),
+            api_key: Secret::new("mzk_stored"),
+        })
+        .unwrap();
+        env.server = Some("https://stored.example/".into());
+        assert_eq!(env.login().unwrap().1.expose(), "mzk_stored");
+        env.server = Some("https://elsewhere.example".into());
+        assert_eq!(env.login().unwrap_err().code(), "not_logged_in");
     }
 
     #[test]

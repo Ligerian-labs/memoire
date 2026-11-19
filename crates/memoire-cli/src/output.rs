@@ -51,10 +51,27 @@ impl Out {
     }
 }
 
+/// Widest cell a table shows; longer ones end in `…` (JSON keeps them
+/// whole). Without a cap, one long value pads every row to its width.
+const MAX_CELL: usize = 200;
+
+fn clip(cell: &str) -> String {
+    if width(cell) <= MAX_CELL {
+        return cell.to_owned();
+    }
+    let mut clipped: String = cell.chars().take(MAX_CELL - 1).collect();
+    clipped.push('…');
+    clipped
+}
+
 /// A table with a header row, columns padded to their widest cell.
 pub fn table(headers: &[&str], rows: &[Vec<String>]) -> String {
+    let rows: Vec<Vec<String>> = rows
+        .iter()
+        .map(|row| row.iter().map(|c| clip(c)).collect())
+        .collect();
     let mut widths: Vec<usize> = headers.iter().map(|h| width(h)).collect();
-    for row in rows {
+    for row in &rows {
         for (w, cell) in widths.iter_mut().zip(row) {
             *w = (*w).max(width(cell));
         }
@@ -250,6 +267,10 @@ mod tests {
             ],
         );
         assert_eq!(text, "id  body\n--  -----\n1   héllo\n22");
+        let long = table(&["a", "b"], &[vec!["x".repeat(1_000), "y".into()]]);
+        let first = long.lines().nth(2).unwrap();
+        assert_eq!(first.chars().count(), MAX_CELL + 3);
+        assert!(first.contains("x…  y"));
     }
 
     #[test]

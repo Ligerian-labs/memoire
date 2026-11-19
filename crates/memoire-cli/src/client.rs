@@ -12,7 +12,11 @@ use reqwest::{
 };
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use serde_json::{Value, json};
-use std::{io::Write, time::Duration};
+use std::{
+    io::{Read as _, Write},
+    path::Path,
+    time::Duration,
+};
 
 /// Every route but export and import answers well within this; the longest
 /// statement deadline is 30 seconds.
@@ -224,13 +228,45 @@ impl Client {
         self.json(self.database_request(Method::GET, name, &["schema"]))
     }
 
-    /// Streams the export into `out`; the number of bytes written.
-    pub fn export(&self, name: &str, out: &mut impl Write) -> Result<u64> {
+    /// Streams the export into `out`; the number of bytes written. A read
+    /// failure is the transfer's; a write failure is `out`'s, reported with
+    /// `path`.
+    pub fn export(&self, name: &str, out: &mut impl Write, path: &Path) -> Result<u64> {
         let mut response = self.send(
             self.database_request(Method::GET, name, &["export"])
                 .timeout(TRANSFER_TIMEOUT),
         )?;
-        response.copy_to(out).map_err(transport)
+        let sqlite = response
+            .headers()
+            .get(header::CONTENT_TYPE)
+            .and_then(|v| v.to_str().ok())
+            .is_some_and(|v| v.trim().starts_with(SQLITE_TYPE));
+        if !sqlite {
+            return Err(Error::local(
+                "invalid_response",
+                exit::FAILURE,
+                "the gateway's export is not a SQLite file; is --server a memoire gateway?",
+            ));
+        }
+        let mut buffer = vec![0; 64 * 1024];
+        let mut total = 0;
+        loop {
+            let read = match response.read(&mut buffer) {
+                Ok(0) => return Ok(total),
+                Ok(read) => read,
+                Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
+                Err(e) => {
+                    return Err(Error::local(
+                        "transport_failed",
+                        exit::UNAVAILABLE,
+                        format!("the export stopped: {e}"),
+                    ));
+                }
+            };
+            out.write_all(&buffer[..read])
+                .map_err(|e| crate::config::io_error(path, &e))?;
+            total += read as u64;
+        }
     }
 
     /// Uploads `len` bytes of a SQLite file.

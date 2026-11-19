@@ -108,7 +108,7 @@ impl Gateway {
                 sink.lock().unwrap().push(line);
             }
         });
-        let gateway = Self {
+        let mut gateway = Self {
             child,
             logs,
             http: reqwest::blocking::Client::new(),
@@ -120,6 +120,12 @@ impl Gateway {
                 .get(format!("{SERVER}/health/ready"))
                 .send()
                 .is_ok_and(|r| r.status() == 200);
+            if let Ok(Some(status)) = gateway.child.try_wait() {
+                panic!(
+                    "the gateway exited {status}: {:?}",
+                    gateway.logs.lock().unwrap()
+                );
+            }
             if ready {
                 return gateway;
             }

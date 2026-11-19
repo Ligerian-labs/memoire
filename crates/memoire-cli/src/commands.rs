@@ -140,20 +140,16 @@ fn create(out: &Out, client: &Client, args: &CreateArgs) -> Result<()> {
 /// A `-p` value: JSON in any parameter form when it parses as JSON, else
 /// the text as given.
 pub fn param(text: &str) -> Result<SqlValue> {
-    // A number JSON cannot hold (`1e999`) still counts as meant for JSON.
-    let numeric =
-        text.starts_with(|c: char| c == '-' || c.is_ascii_digit()) && text.parse::<f64>().is_ok();
-    let is_json = numeric || serde_json::from_str::<serde::de::IgnoredAny>(text).is_ok();
-    if !is_json {
-        return Ok(SqlValue::Text(text.to_owned()));
-    }
-    SqlValue::from_json_text(text).map_err(|why| {
-        Error::local(
+    match SqlValue::from_json_text(text) {
+        Ok(value) => Ok(value),
+        // Neither JSON nor a JSON number token (`1e999` is one): text.
+        Err("invalid JSON") => Ok(SqlValue::Text(text.to_owned())),
+        Err(why) => Err(Error::local(
             "invalid_param",
             exit::USAGE,
             format!("-p {text}: {why}; quote it as a JSON string to bind it as text"),
-        )
-    })
+        )),
+    }
 }
 
 /// Runs one statement.
@@ -203,7 +199,7 @@ fn export(out: &Out, client: &Client, db: &str, path: &Path) -> Result<()> {
         _ => Path::new("."),
     };
     let mut file = tempfile::NamedTempFile::new_in(dir).map_err(|e| io_error(dir, &e))?;
-    let bytes = client.export(db, &mut file)?;
+    let bytes = client.export(db, &mut file, path)?;
     file.as_file().sync_all().map_err(|e| io_error(path, &e))?;
     file.persist(path).map_err(|e| io_error(path, &e.error))?;
     if out.json {
@@ -285,7 +281,6 @@ fn create_key(
         }
     };
     let server = env.server()?;
-    let expires_at = expires_at(expires)?;
     let anonymous = Client::new(&server, None)?;
     let origin = anonymous.origin();
     let (email, password) = input::sign_in()?;
@@ -294,7 +289,13 @@ fn create_key(
         .sign_in(&email, &password)?;
     let member =
         Client::new(&server, Some(&session))?.with_header("merezha-organization", &team)?;
-    let created = mint(&member, &team, name, &expires_at, read_only);
+    // The expiry counts from now, after the sign-in prompt.
+    let printed = expires_at(expires).and_then(|at| {
+        let (machine, key) = mint(&member, &team, name, &at, read_only)?;
+        // The key exists only in this answer: print it before anything else
+        // can fail or stall.
+        print_key(out, &team, name, read_only, &at, &machine, &key)
+    });
     // The session was only for this; end it whatever happened.
     if let Err(e) = member.sign_out() {
         out.note(&format!(
@@ -302,7 +303,18 @@ fn create_key(
             e.message()
         ));
     }
-    let (machine, key) = created?;
+    printed
+}
+
+fn print_key(
+    out: &Out,
+    team: &str,
+    name: &str,
+    read_only: bool,
+    expires_at: &str,
+    machine: &serde_json::Value,
+    key: &crate::client::CreatedApiKey,
+) -> Result<()> {
     if out.json {
         return out.json(&json!({
             "team_id": team,
@@ -378,6 +390,8 @@ mod tests {
     fn params_read_json_or_fall_back_to_text() {
         assert_eq!(param("42").unwrap(), SqlValue::Integer(42));
         assert_eq!(param("2.5").unwrap(), SqlValue::Real(2.5));
+        assert_eq!(param("00123").unwrap(), SqlValue::Text("00123".into()));
+        assert_eq!(param("-").unwrap(), SqlValue::Text("-".into()));
         assert_eq!(param("null").unwrap(), SqlValue::Null);
         assert_eq!(param("true").unwrap(), SqlValue::Integer(1));
         assert_eq!(param("\"42\"").unwrap(), SqlValue::Text("42".into()));

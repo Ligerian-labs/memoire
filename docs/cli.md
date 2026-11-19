@@ -29,7 +29,9 @@ memoire login --server https://memoire.example < key.txt
 ```
 
 An agent can skip `login`: `MEMOIRE_SERVER` and `MEMOIRE_API_KEY` take
-precedence over the stored values.
+precedence over the stored values. The stored key only goes to the stored
+server, so a `MEMOIRE_SERVER` that names another one needs `MEMOIRE_API_KEY`
+as well.
 
 ## Commands
 
@@ -68,7 +70,9 @@ memoire query scratch "SELECT * FROM notes WHERE id = ?" -p 1 --json
 
 ### The shell
 
-`shell` reads statements that end with `;` and may span lines. Dot commands:
+`shell` reads statements that end with `;`. A statement may span lines and
+a line may hold several. A `;` inside quotes, a comment or a `CREATE
+TRIGGER … END` body does not end one. Dot commands:
 `.tables`, `.schema [NAME]`, `.mode read|write`, `.help`, `.quit`. On a
 terminal it prompts and keeps going after an error. With a script on
 standard input it prints no prompts and stops at the first error, exiting
@@ -86,7 +90,7 @@ from the terminal (the password without echo), or as two lines of standard
 input. Then it creates the machine and its key with the five memoire
 permissions, or only `memoire.databases.read` with `--read-only`. It prints
 the key once and signs the temporary session out. The team is `--team`,
-else the stored key's team. The `--server` URL must be the gateway's
+else the stored key's team. `--expires` is at most `365d`, identity's limit. The `--server` URL must be the gateway's
 application origin, because the sign-in carries it as `Origin`.
 
 Without `--json` the key is the only thing on standard output, so it can go

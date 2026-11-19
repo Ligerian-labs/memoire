@@ -733,26 +733,15 @@ fn run_query(
         if body.mode == QueryMode::Read && !stmt.readonly() {
             return Err(fail(422, "read_only"));
         }
-        match &statement.params {
-            Params::Positional(values) => {
-                if values.len() != stmt.parameter_count() {
-                    return Err(invalid(&format!("/statements/{i}/params"), "count"));
-                }
-                for (j, v) in values.iter().enumerate() {
-                    stmt.raw_bind_parameter(j + 1, bindable(v)).unwrap();
-                }
-            }
-            Params::Named(values) => {
-                for (k, v) in values {
-                    let index = [":", "@", "$"]
-                        .iter()
-                        .find_map(|sigil| stmt.parameter_index(&format!("{sigil}{k}")).unwrap())
-                        .ok_or_else(|| {
-                            invalid(&format!("/statements/{i}/params/{k}"), "unknown")
-                        })?;
-                    stmt.raw_bind_parameter(index, bindable(v)).unwrap();
-                }
-            }
+        // The CLI binds positionally only.
+        let Params::Positional(values) = &statement.params else {
+            panic!("unexpected named parameters");
+        };
+        if values.len() != stmt.parameter_count() {
+            return Err(invalid(&format!("/statements/{i}/params"), "count"));
+        }
+        for (j, v) in values.iter().enumerate() {
+            stmt.raw_bind_parameter(j + 1, bindable(v)).unwrap();
         }
         let columns: Vec<Column> = stmt
             .column_names()

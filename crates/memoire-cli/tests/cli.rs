@@ -328,7 +328,7 @@ CREATE TABLE t (
 INSERT INTO t VALUES (1), (2);
 .mode read
 .tables
-SELECT sum(a) AS total FROM t;
+SELECT sum(a) AS total FROM t; SELECT 'x;y' AS s; -- trailing comment
 .schema t
 ";
     let run = memoire.run(&["shell", "scratch"], script).ok();
@@ -338,6 +338,7 @@ SELECT sum(a) AS total FROM t;
          2 rows affected, last insert rowid 2\n\
          t\n\
          total\n-----\n3\n(1 row)\n\
+         s\n---\nx;y\n(1 row)\n\
          CREATE TABLE t (\n  a INTEGER\n);\n"
     );
     assert_eq!(run.stderr, "", "no prompts without a terminal");
@@ -424,6 +425,19 @@ fn export_and_import_round_trip_a_database() {
     let run = memoire.run(&["export", "nope", "-o", missing.to_str().unwrap()], "");
     assert_eq!(run.code, 5);
     assert!(!missing.exists(), "a failed export leaves no file");
+    // A 200 that is not a SQLite file (a proxy's page) is refused.
+    fake.fail_next(200, "not_sqlite", "permanent", None);
+    let run = memoire.run(
+        &["export", "source", "-o", file.to_str().unwrap(), "--json"],
+        "",
+    );
+    assert_eq!(run.code, 1);
+    assert_eq!(run.error()["error"]["code"], "invalid_response");
+    assert!(
+        std::fs::read(&file)
+            .unwrap()
+            .starts_with(b"SQLite format 3\0")
+    );
 }
 
 #[test]
@@ -601,4 +615,7 @@ fn failures_map_to_stable_exit_codes() {
 
     let run = memoire.run(&["db", "create", "Bad_Name"], "");
     assert_eq!(run.code, 2);
+    let run = memoire.run(&["db", "create", "Bad_Name", "--json"], "");
+    assert_eq!(run.code, 2);
+    assert_eq!(run.error()["error"]["code"], "invalid_usage");
 }
