@@ -89,6 +89,25 @@ fn eventually(seconds: u64, what: &str, mut done: impl FnMut() -> bool) {
     }
 }
 
+/// A scheduled snapshot that surely holds the writes made before the call:
+/// the newest of two taken since. Snapshot runs are serialized, so the
+/// second one started after the first finished, which was after the call;
+/// the first alone may have been copying while the writes committed.
+fn after_writes(list: &dyn Fn() -> Vec<Value>) -> Value {
+    let before: Vec<Value> = list().iter().map(|s| s["id"].clone()).collect();
+    let mut newest = Value::Null;
+    eventually(30, "two scheduled snapshots after the writes", || {
+        let fresh: Vec<Value> = list()
+            .into_iter()
+            .filter(|s| s["reason"] == "scheduled" && !before.contains(&s["id"]))
+            .collect();
+        // The list is newest first.
+        newest = fresh.first().cloned().unwrap_or(Value::Null);
+        fresh.len() >= 2
+    });
+    newest
+}
+
 fn start(dir: &Path, db: &merezha_postgres::TestDatabase) -> (Gateway, PathBuf) {
     let config = config_with(dir, SETTINGS, JOBS);
     (Gateway::start(&config, db), config)
@@ -185,11 +204,7 @@ fn persistent_databases_are_snapshotted_restored_and_pruned() {
         assert_eq!(status, 200, "{body}");
         body["items"].as_array().unwrap().clone()
     };
-    let mut first = Value::Null;
-    eventually(20, "a scheduled snapshot of v1", || {
-        first = list().last().cloned().unwrap_or(Value::Null);
-        first["reason"] == "scheduled"
-    });
+    let first = after_writes(&list);
     assert!(first["id"].as_str().unwrap().starts_with("snap_"));
     assert!(first["size_bytes"].as_u64().unwrap() > 0);
     team.sql("notes", "write", "UPDATE t SET v = 'v2'");
@@ -415,9 +430,9 @@ fn the_reconciler_repairs_drift_at_startup() {
     let blank = team.create(json!({"name": "blank", "kind": "burstable"}));
     team.sql("kept", "write", "CREATE TABLE t (v)");
     team.sql("kept", "write", "INSERT INTO t VALUES ('saved')");
-    eventually(20, "a snapshot of kept", || {
+    after_writes(&|| {
         let (_, body) = team.call("GET", "/databases/kept/snapshots", None);
-        !body["items"].as_array().unwrap().is_empty()
+        body["items"].as_array().unwrap().clone()
     });
     assert!(gateway.stop().success());
 
