@@ -139,6 +139,45 @@ const deckCards = [...document.querySelectorAll("main > section")];
 const navigation = [...document.querySelectorAll('nav a[href^="#"]')];
 const sections = navigation.map(link => document.querySelector(link.hash).nextElementSibling);
 const header = document.querySelector(".masthead");
+const menuToggle = header.querySelector(".menu-toggle");
+const menuLabel = menuToggle.querySelector(".menu-label");
+const menu = document.querySelector("#main-nav");
+const compactMenu = matchMedia("(max-width:720px)");
+
+function setMenu(open) {
+  menuToggle.setAttribute("aria-expanded", String(open));
+  menuLabel.textContent = open ? "Close" : "Menu";
+  menuToggle.hidden = !compactMenu.matches;
+  menu.hidden = compactMenu.matches && !open;
+}
+menuToggle.addEventListener("click", () => setMenu(menu.hidden));
+menu.addEventListener("click", event => {
+  const link = event.target.closest("a");
+  if (!link || !compactMenu.matches) return;
+  setMenu(false);
+  if (link.hash) {
+    const section = document.querySelector(link.hash).nextElementSibling;
+    section.tabIndex = -1;
+    section.focus({preventScroll:true});
+  }
+});
+document.addEventListener("pointerdown", event => {
+  if (!header.contains(event.target) && !menu.hidden && compactMenu.matches) setMenu(false);
+});
+header.addEventListener("focusout", event => {
+  if (!header.contains(event.relatedTarget) && compactMenu.matches) setMenu(false);
+});
+document.addEventListener("keydown", event => {
+  if (event.key === "Escape" && compactMenu.matches && !menu.hidden) {
+    setMenu(false);
+    menuToggle.focus();
+  }
+});
+header.querySelector(".brand").addEventListener("click", () => setMenu(false));
+compactMenu.addEventListener("change", () => setMenu(false));
+window.addEventListener("pageshow", () => setMenu(false));
+setMenu(false);
+
 let scrollFrame = 0;
 function updateNavigation() {
   scrollFrame = 0;
