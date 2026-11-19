@@ -4,7 +4,7 @@
 //!
 //! The gateway runs the repository's development configuration
 //! (`config/dev/`), copied into a temporary directory with synthetic
-//! secrets, on 127.0.0.1:28971. Its binary is the workspace build's
+//! secrets, one gateway per test on its own loopback port. Its binary is the workspace build's
 //! (`cargo test --workspace` builds it; `cargo build -p memoire-gateway`
 //! otherwise), or `MEMOIRE_GATEWAY_BIN`.
 #![cfg(unix)]
