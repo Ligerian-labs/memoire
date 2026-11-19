@@ -346,6 +346,9 @@ fn mint(
     expires_at: &str,
     read_only: bool,
 ) -> Result<(serde_json::Value, crate::client::CreatedApiKey)> {
+    // The key acts through the machine's role and carries a subset of it.
+    // Found first, so a team without it leaves no machine behind.
+    let member_role = member.role_id(team, "member")?;
     let machine = member.create_service_account(team, name)?;
     let machine_id = machine["id"].as_str().ok_or_else(|| {
         Error::local(
@@ -354,8 +357,6 @@ fn mint(
             "identity returned a service account without an id",
         )
     })?;
-    // The key acts through the machine's role and carries a subset of it.
-    let member_role = member.role_id(team, "member")?;
     member.assign_role(team, machine_id, &member_role)?;
     let permissions = if read_only {
         &PERMISSIONS[..1]

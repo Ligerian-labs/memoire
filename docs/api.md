@@ -467,7 +467,7 @@ clients need:
 | Teams | `POST /v1/identity/organizations` `{name, slug}`, `GET /v1/identity/organizations` |
 | Switch team | `PUT /v1/identity/session/organization` `{organization_id}` |
 | Invite and join | `POST /v1/identity/organizations/{org}/invitations` `{email, role_ids}`; the invitee opens the mailed token and the client calls `POST /v1/identity/invitations/inspect` `{token}`, then `POST /v1/identity/invitations/accept` `{token, transport?}`. Signed in with the invited address, accept adds the membership. Anonymous, it creates a verified account with a session when the address has none (or only an unverified one), and answers `401 sign_in_required` when a verified account exists: sign in, then retry with the same token. Signed in with another address it answers `403 email_mismatch`. |
-| Machines | `GET`, `POST /v1/identity/organizations/{org}/service-accounts` `{name, description?}` → `201 {service_account: {id, …}}` |
+| Machines | `GET /v1/identity/organizations/{org}/service-accounts`; `POST` there `{name, description?}` → `201 {service_account: {id, …}}` |
 | Machine roles | `GET /v1/identity/organizations/{org}/roles` → `{items: [{id, key, …}]}`; `POST /v1/identity/organizations/{org}/role-assignments` `{service_account_id, role_id}` → `201`. A machine holds no permission until it has a role; its keys carry a subset of the role's. |
 | API keys | `GET`, `POST /v1/identity/organizations/{org}/api-keys` `{name, permissions, expires_at, service_account_id?}` → `201 {api_key, key}`; `DELETE …/api-keys/{key_id}` |
 
