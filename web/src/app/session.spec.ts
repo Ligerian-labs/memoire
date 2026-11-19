@@ -56,7 +56,9 @@ describe('SessionStore', () => {
     );
     await session.signIn('dev@example.test', 'pw');
     expect(session.team()?.name).toBe('Beta');
-    expect(JSON.parse((fetcher.mock.calls[2] as unknown as [string, RequestInit])[1].body as string)).toEqual({
+    expect(
+      JSON.parse((fetcher.mock.calls[2] as unknown as [string, RequestInit])[1].body as string),
+    ).toEqual({
       organization_id: 'org_b',
     });
     localStorage.clear();

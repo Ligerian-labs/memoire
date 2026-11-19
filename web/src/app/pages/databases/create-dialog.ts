@@ -107,6 +107,7 @@ export const TTL_CHOICES = [
       display: grid;
       grid-template-columns: auto 1fr;
       gap: 2px 8px;
+      align-items: start;
       padding: 10px;
       border: 1px solid var(--rule-strong);
       border-radius: var(--radius);
@@ -117,7 +118,7 @@ export const TTL_CHOICES = [
       background: var(--accent-soft);
     }
     .kind input {
-      margin: 2px 0 0;
+      margin: 3px 0 0;
       accent-color: var(--accent);
     }
     .kind span {

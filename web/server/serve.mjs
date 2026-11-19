@@ -141,7 +141,9 @@ export function createWebServer({ gateway, root }) {
     }
     // The gateway uses these only when it trusts this server as a proxy.
     const peer = req.socket.remoteAddress ?? '';
-    headers['x-forwarded-for'] = headers['x-forwarded-for'] ? `${headers['x-forwarded-for']}, ${peer}` : peer;
+    headers['x-forwarded-for'] = headers['x-forwarded-for']
+      ? `${headers['x-forwarded-for']}, ${peer}`
+      : peer;
     headers['x-forwarded-proto'] ??= 'http';
     const upstream = send(
       {

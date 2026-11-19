@@ -114,6 +114,12 @@ describe('Http', () => {
     expect(fetcher.mock.calls[1][1]!.body).toBe('{"idle_ttl_seconds":7200}');
   });
 
+  it("lists a team's keys without paging parameters, which identity refuses", async () => {
+    const { fetcher, identity } = make(json({ items: [] }));
+    await identity.apiKeys('org_1');
+    expect(fetcher.mock.calls[0][0]).toBe('/v1/identity/organizations/org_1/api-keys');
+  });
+
   it('selects a team with PUT /v1/identity/session/organization', async () => {
     const { fetcher, identity } = make(
       json({ session: { id: 'ses_1', active_organization_id: 'org_1' } }),

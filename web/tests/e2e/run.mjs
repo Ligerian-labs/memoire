@@ -60,8 +60,9 @@ function start(name, command, args, env = {}) {
     env: { ...process.env, ...env },
     stdio: ['ignore', 'pipe', 'pipe'],
   });
-  child.stdout.pipe(log);
-  child.stderr.pipe(log);
+  child.stdout.pipe(log, { end: false });
+  child.stderr.pipe(log, { end: false });
+  child.once('exit', () => log.end());
   children.push({ name, child });
   return child;
 }
@@ -105,14 +106,6 @@ try {
     run('cargo', ['build', '--locked', '-p', 'memoire-gateway'], { cwd: repo });
     gateway = join(process.env.CARGO_TARGET_DIR ?? join(repo, 'target'), 'debug/memoire-gateway');
   }
-  // Build the guests when the gateway's runtime manifest names components that are missing.
-  const manifest = readFileSync(join(repo, 'config/dev/runtime.toml'), 'utf8');
-  const components = [...manifest.matchAll(/"([^"]+\.wasm)"/g)].map((m) =>
-    resolve(repo, 'config/dev', m[1]),
-  );
-  if (components.some((c) => !existsSync(c)))
-    run(join(repo, 'scripts/build-guests.sh'), [], { cwd: repo });
-
   if (!existsSync(join(web, 'dist/memoire-web/browser/index.html')))
     run('pnpm', ['build'], { cwd: web });
 
@@ -135,23 +128,42 @@ try {
       mode: 0o600,
     });
   }
+  // The development configuration, moved into this run: its .memoire-dev paths
+  // point here (secrets may not be command-line overrides) and its other
+  // relative paths resolve against config/dev as before.
+  const devDir = join(repo, 'config/dev');
+  const config = readFileSync(join(devDir, 'memoire.toml'), 'utf8').replace(
+    /^([^#\n]*\b(?:manifest|path|file|data_dir)\s*=\s*)"([^"]+)"/gm,
+    (_, key, value) => {
+      const dev = value.indexOf('.memoire-dev/');
+      const absolute =
+        dev !== -1
+          ? join(runtime, value.slice(dev + '.memoire-dev/'.length))
+          : resolve(devDir, value);
+      return `${key}${JSON.stringify(absolute)}`;
+    },
+  );
+  // Build the guests when the runtime manifest names a component that is missing.
+  const manifestPath = /^manifest\s*=\s*"([^"]+)"/m.exec(config)?.[1];
+  if (!manifestPath) throw new Error('config/dev/memoire.toml has no [runtime] manifest');
+  const manifest = readFileSync(manifestPath, 'utf8');
+  const components = [...manifest.matchAll(/^\s*path\s*=\s*"([^"]+\.wasm)"/gm)].map((m) =>
+    resolve(dirname(manifestPath), m[1]),
+  );
+  if (components.some((c) => !existsSync(c)))
+    run(join(repo, 'scripts/build-guests.sh'), [], { cwd: repo });
+  writeFileSync(join(runtime, 'memoire.toml'), config, { mode: 0o600 });
   const gatewayProcess = start(
     'gateway',
     gateway,
     [
       'run',
       '--config',
-      join(repo, 'config/dev/memoire.toml'),
+      join(runtime, 'memoire.toml'),
       '--listen',
       `127.0.0.1:${gatewayPort}`,
       '--set',
       `modules.identity.app_origin=${JSON.stringify(origin)}`,
-      '--set',
-      `modules.identity.secret_key={ file = ${JSON.stringify(join(runtime, 'secrets/identity.key'))} }`,
-      '--set',
-      `modules.notifications.secret_key={ file = ${JSON.stringify(join(runtime, 'secrets/notifications.key'))} }`,
-      '--set',
-      `modules.memoire.data_dir=${JSON.stringify(join(runtime, 'data'))}`,
     ],
     { MEMOIRE_DATABASE_URL: databaseUrl },
   );

@@ -5,6 +5,7 @@ import { Cell, Value, cell } from '../api/values';
 /** A read-only result grid: typed headers, one mono cell per value, a row number gutter. */
 @Component({
   selector: 'app-grid',
+  host: { style: 'display: block; min-width: 0' },
   template: `
     <div class="table-wrap" [style.max-height]="maxHeight()">
       <table class="data grid">

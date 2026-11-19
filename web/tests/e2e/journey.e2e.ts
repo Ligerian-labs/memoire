@@ -31,7 +31,11 @@ async function verificationLink(page: Page): Promise<string> {
         if (!response.ok()) return undefined;
         const captures = (await response.json()) as Capture[];
         const mine = captures.find((c) => c.target === email);
-        link = mine ? /https?:\/\/[^\s"'<>\\]+#token=[A-Za-z0-9_\-.~%]+/.exec(JSON.stringify(mine.rendered))?.[0] : undefined;
+        link = mine
+          ? /https?:\/\/[^\s"'<>\\]+#token=[A-Za-z0-9_\-.~%]+/.exec(
+              JSON.stringify(mine.rendered),
+            )?.[0]
+          : undefined;
         return link;
       },
       { timeout: 30_000, message: 'the verification email is captured' },
@@ -49,6 +53,14 @@ test('register, create a team and a database, write, read, browse rows, mint an 
   page,
   baseURL,
 }) => {
+  // A blocked script or stylesheet would leave the app half-styled without failing a locator.
+  const violations: string[] = [];
+  page.on('console', (message) => {
+    if (message.type() === 'error' && /Content Security Policy|Refused to/.test(message.text())) {
+      violations.push(message.text());
+    }
+  });
+
   await test.step('register and confirm the email', async () => {
     await page.goto('/');
     await expect(page.getByRole('heading', { name: 'Sign in' })).toBeVisible();
@@ -113,7 +125,10 @@ INSERT INTO notes (body, score) SELECT 'note ' || i, i * 0.5 FROM n;`,
   await test.step('read in the console', async () => {
     await page.getByRole('button', { name: 'Parameters' }).click();
     await page.getByLabel(/^Parameters \(JSON/).fill('["hello"]');
-    await runSql(page, `SELECT id, body, score, data, 9007199254740993 AS big FROM notes WHERE body = ?`);
+    await runSql(
+      page,
+      `SELECT id, body, score, data, 9007199254740993 AS big FROM notes WHERE body = ?`,
+    );
     const grid = page.getByTestId('results').locator('table');
     await expect(grid.locator('tbody tr')).toHaveCount(1);
     await expect(grid.locator('tbody tr')).toContainText('hello');
@@ -126,7 +141,10 @@ INSERT INTO notes (body, score) SELECT 'note ' || i, i * 0.5 FROM n;`,
   });
 
   await test.step('browse rows page by page', async () => {
-    await page.getByRole('complementary', { name: 'Tables and views' }).getByRole('link', { name: 'notes' }).click();
+    await page
+      .getByRole('complementary', { name: 'Tables and views' })
+      .getByRole('link', { name: 'notes' })
+      .click();
     await expect(page).toHaveURL(/\/tables\/notes$/);
     await page.getByLabel('Rows per page').selectOption('50');
     await expect(page.getByText('Rows 1–50')).toBeVisible();
@@ -151,7 +169,10 @@ INSERT INTO notes (body, score) SELECT 'note ' || i, i * 0.5 FROM n;`,
   });
 
   await test.step('list the databases', async () => {
-    await page.getByRole('navigation', { name: 'Main' }).getByRole('link', { name: 'Databases' }).click();
+    await page
+      .getByRole('navigation', { name: 'Main' })
+      .getByRole('link', { name: 'Databases' })
+      .click();
     const row = page.locator('tbody tr', { hasText: 'scratch' });
     await expect(row).toContainText('burstable');
     await expect(row).toContainText('active');
@@ -173,7 +194,9 @@ INSERT INTO notes (body, score) SELECT 'note ' || i, i * 0.5 FROM n;`,
     await keyDialog.getByRole('button', { name: 'Create key' }).click();
     key = (await page.getByTestId('minted-key').textContent())?.trim() ?? '';
     expect(key).toMatch(/^mzk_/);
-    await page.getByTestId('minted-key').evaluate((el) => (el.textContent = 'mzk_••••••••••••••••'));
+    await page
+      .getByTestId('minted-key')
+      .evaluate((el) => (el.textContent = 'mzk_••••••••••••••••'));
     await screenshot(page, 'key-created');
     await page.getByRole('button', { name: 'Done' }).click();
     const row = page.locator('tbody tr', { hasText: 'ci-runner' }).last();
@@ -218,4 +241,6 @@ INSERT INTO notes (body, score) SELECT 'note ' || i, i * 0.5 FROM n;`,
     await page.getByRole('button', { name: 'Sign in' }).click();
     await expect(page.locator('tbody tr', { hasText: 'scratch' })).toBeVisible();
   });
+
+  expect(violations).toEqual([]);
 });

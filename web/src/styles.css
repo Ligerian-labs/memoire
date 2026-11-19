@@ -402,6 +402,7 @@ dialog.modal footer {
 /* ---- page frame ---- */
 .page {
   display: grid;
+  grid-template-columns: minmax(0, 1fr);
   align-content: start;
   gap: 14px;
   padding: 18px 22px 28px;
@@ -409,8 +410,9 @@ dialog.modal footer {
 }
 .page-head {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
-  gap: 12px;
+  gap: 8px 12px;
   min-height: 32px;
 }
 .page-head .spacer {
@@ -473,6 +475,12 @@ dialog.modal footer {
   overflow: hidden;
   clip: rect(0 0 0 0);
   white-space: nowrap;
+}
+
+@media (max-width: 720px) {
+  .page {
+    padding: 14px 12px 24px;
+  }
 }
 
 @media (prefers-reduced-motion: reduce) {

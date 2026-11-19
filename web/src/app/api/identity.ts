@@ -121,8 +121,9 @@ export class IdentityApi {
     return this.http.request('POST', `${orgPath(org)}/service-accounts`, body);
   }
 
-  apiKeys(org: string): Promise<Page<ApiKey>> {
-    return this.http.request('GET', `${orgPath(org)}/api-keys`, undefined, { limit: 100 });
+  /** Every key of the team in one answer: identity does not page this list. */
+  apiKeys(org: string): Promise<{ items: ApiKey[] }> {
+    return this.http.request('GET', `${orgPath(org)}/api-keys`);
   }
 
   createApiKey(org: string, input: CreateKey): Promise<{ api_key: ApiKey; key: string }> {

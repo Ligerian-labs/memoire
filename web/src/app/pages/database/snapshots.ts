@@ -107,6 +107,8 @@ import { DatabaseContext } from './context';
   styles: `
     :host {
       display: grid;
+      grid-template-columns: minmax(0, 1fr);
+      min-width: 0;
       gap: 10px;
     }
     .spacer {
