@@ -67,6 +67,15 @@ impl LastUse {
         }
     }
 
+    /// The last use this process saw of `database`.
+    pub fn seen(&self, team: &str, database: &str) -> Option<u64> {
+        self.seen
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .get(&(team.to_owned(), database.to_owned()))
+            .copied()
+    }
+
     /// Forgets a removed database, here and in the store.
     pub async fn forget(&self, db: &Database, team: &str, database: &str) -> Result<(), Failure> {
         let key = (team.to_owned(), database.to_owned());

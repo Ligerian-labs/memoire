@@ -255,17 +255,14 @@ impl Module for MemoireModule {
             self.lifecycle.get(),
             self.settings(),
         ) {
-            (Some(catalog), Some(data), Some(lifecycle), Ok(settings)) => {
-                routes::router(routes::Routes {
-                    catalog: catalog.clone(),
-                    data: data.clone(),
-                    last_used: self.last_used.clone(),
-                    database: ctx.database().clone(),
-                    lifecycle: lifecycle.clone(),
-                    policy: ctx.authorizer().clone(),
-                    settings: settings.clone(),
-                })
-            }
+            (Some(catalog), Some(data), Some(_), Ok(settings)) => routes::router(routes::Routes {
+                catalog: catalog.clone(),
+                data: data.clone(),
+                last_used: self.last_used.clone(),
+                database: ctx.database().clone(),
+                policy: ctx.authorizer().clone(),
+                settings: settings.clone(),
+            }),
             _ => Router::new(),
         }
     }

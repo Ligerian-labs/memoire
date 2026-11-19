@@ -135,7 +135,11 @@ impl Lifecycle {
             if entry.state != DatabaseState::Active {
                 continue;
             }
-            let used = uses.get(&entry.id).copied();
+            // The freshest use: a query records it before it runs.
+            let used = uses
+                .get(&entry.id)
+                .copied()
+                .max(self.last_used.seen(team, &entry.id));
             let Some(deadline) = entry.expires_unix_ms(used) else {
                 continue;
             };
@@ -173,16 +177,14 @@ impl Lifecycle {
     /// `min_age`), and gives an active database whose file is missing its
     /// latest snapshot, or an empty file.
     pub async fn reconcile(&self, min_age: Duration) -> Result<(), Failure> {
+        let mut failed = None;
         for team in self.teams().await? {
             if let Err(failure) = self.reconcile_team(&team, min_age, true, None).await {
-                merezha_telemetry::event!(
-                    WARN,
-                    "memoire.reconcile_failed",
-                    code = failure.code.as_str()
-                );
+                failed = Some(failure);
             }
         }
-        Ok(())
+        // The caller retries the pass while any team failed.
+        failed.map_or(Ok(()), Err)
     }
 
     async fn reconcile_team(
@@ -215,26 +217,31 @@ impl Lifecycle {
         if !repair_missing {
             return Ok(());
         }
+        let mut failed = None;
         for entry in entries.iter().filter(|e| e.state == DatabaseState::Active) {
             if self.data.size(team, &entry.id).is_some() {
                 continue;
             }
-            let latest = store::snapshots(&self.database, team, &entry.id)
-                .await?
-                .into_iter()
-                .next();
-            match latest {
-                Some(snapshot) => {
-                    let source = self.data.snapshot_path(team, &entry.id, &snapshot.id)?;
-                    self.data.recreate_from(team, &entry.id, source).await?;
-                    merezha_telemetry::event!(WARN, "memoire.reconcile_restored");
-                }
-                None => {
-                    self.data.create(team, &entry.id).await?;
-                    merezha_telemetry::event!(WARN, "memoire.reconcile_created");
-                }
+            if let Err(failure) = self.repair(team, &entry.id).await {
+                failed = Some(failure);
             }
         }
+        failed.map_or(Ok(()), Err)
+    }
+
+    /// Gives a database whose file is missing its newest snapshot that is
+    /// still on disk, or an empty file.
+    async fn repair(&self, team: &str, id: &str) -> Result<(), Failure> {
+        for snapshot in store::snapshots(&self.database, team, id).await? {
+            let source = self.data.snapshot_path(team, id, &snapshot.id)?;
+            if source.is_file() {
+                self.data.recreate_from(team, id, source).await?;
+                merezha_telemetry::event!(WARN, "memoire.reconcile_restored");
+                return Ok(());
+            }
+        }
+        self.data.create(team, id).await?;
+        merezha_telemetry::event!(WARN, "memoire.reconcile_created");
         Ok(())
     }
 
@@ -311,11 +318,25 @@ impl Lifecycle {
             if expired.is_empty() {
                 return Ok(());
             }
+            let mut stuck = false;
             for (id, team, database) in expired {
-                store::delete_snapshot(&self.database, &id).await?;
-                if let Ok(path) = self.data.snapshot_path(&team, &database, &id) {
-                    let _ = std::fs::remove_file(path);
+                // The file first: a row stays until its file is gone, so a
+                // failed unlink is retried by the next run.
+                let removed = match self.data.snapshot_path(&team, &database, &id) {
+                    Ok(path) => match std::fs::remove_file(path) {
+                        Ok(()) => true,
+                        Err(e) => e.kind() == std::io::ErrorKind::NotFound,
+                    },
+                    Err(_) => true,
+                };
+                if removed {
+                    store::delete_snapshot(&self.database, &id).await?;
+                } else {
+                    stuck = true;
                 }
+            }
+            if stuck {
+                return Ok(());
             }
         }
     }
@@ -336,20 +357,15 @@ impl JobHandler for Tick {
     ) -> BoxFuture<'a, Result<(), JobFailure>> {
         Box::pin(async move {
             let slot = payload["slot"].as_u64().unwrap_or(0);
-            // The next run first, so a failing one never ends the chain.
-            if let Err(failure) = schedule(&self.lifecycle, &self.jobs, self.task, Some(slot)).await
-            {
-                merezha_telemetry::event!(
-                    WARN,
-                    "memoire.schedule_failed",
-                    code = failure.code.as_str()
-                );
-            }
+            // The next run first, so a failing one never ends the chain; if
+            // it cannot be enqueued, this job fails after its work and the
+            // runtime retries it, enqueueing again.
+            let next = schedule(&self.lifecycle, &self.jobs, self.task, Some(slot)).await;
             let done = match self.task {
                 Task::Sweep => self.lifecycle.sweep().await,
                 Task::Snapshot => self.lifecycle.snapshot_all().await,
             };
-            done.map_err(JobFailure::from)
+            done.and(next).map_err(JobFailure::from)
         })
     }
 }

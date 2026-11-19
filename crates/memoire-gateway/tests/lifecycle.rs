@@ -246,22 +246,23 @@ fn persistent_databases_are_snapshotted_restored_and_pruned() {
 
     // Older than the retention, the first snapshot is pruned with its file.
     let first_id = first["id"].as_str().unwrap().to_owned();
-    let first_file = dir
-        .path()
-        .join("data/snapshots")
-        .join(&team_id)
-        .join(first_id.clone() + ".sqlite");
-    eventually(30, "the first snapshot pruned", || {
-        !list().iter().any(|s| s["id"] == first_id.as_str())
-    });
-    let snapshots_dir = first_file.parent().unwrap().to_owned();
-    let _ = snapshots_dir;
-
-    // Deleting the database removes its snapshots.
     let notes_id = {
         let (_, body) = team.call("GET", "/databases/notes", None);
         body["id"].as_str().unwrap().to_owned()
     };
+    let first_file = dir
+        .path()
+        .join("data/snapshots")
+        .join(&team_id)
+        .join(&notes_id)
+        .join(format!("{first_id}.sqlite"));
+    assert!(first_file.is_file(), "{first_file:?}");
+    eventually(30, "the first snapshot pruned", || {
+        !list().iter().any(|s| s["id"] == first_id.as_str())
+    });
+    assert!(!first_file.exists(), "pruning removes the file");
+
+    // Deleting the database removes its snapshots.
     let dir_of = dir
         .path()
         .join("data/snapshots")

@@ -50,7 +50,6 @@ pub struct Routes {
     pub data: Arc<DataPlane>,
     pub last_used: Arc<LastUse>,
     pub database: merezha_platform::Database,
-    pub lifecycle: Arc<crate::lifecycle::Lifecycle>,
     pub policy: Arc<dyn Authorizer>,
     pub settings: Arc<Settings>,
 }

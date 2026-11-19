@@ -69,9 +69,10 @@ pub async fn query(
         Err(refusal) => return refusal,
     };
     let team = caller.team.as_str();
-    let outcome = routes.data.query(&entry.target(team), batch).await;
-    // Any query is a use, whatever it answered.
+    // Any query is a use, whatever it answers; recorded before it runs, so
+    // a sweep deciding meanwhile sees it.
     routes.last_used.touch(team, &entry.id, now_unix_ms());
+    let outcome = routes.data.query(&entry.target(team), batch).await;
     match outcome {
         Ok(results) => Json(QueryResponse { results }).into_response(),
         Err(refused) => refusal(refused),

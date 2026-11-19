@@ -95,9 +95,6 @@ pub async fn restore(
     if !known || !source.is_file() {
         return refuse(Failure::permanent("snapshot_not_found"));
     }
-    if let Err(failure) = routes.lifecycle.snapshot(team, &entry, "pre_restore").await {
-        return refuse(failure);
-    }
     let scratch = match routes.data.scratch() {
         Ok(path) => path,
         Err(failure) => return refuse(failure),
@@ -105,13 +102,46 @@ pub async fn restore(
     if std::fs::copy(&source, &scratch).is_err() {
         return refuse(Failure::transient("data_dir_unavailable"));
     }
-    if let Err(refused) = routes
+    // The `pre_restore` copy is taken inside the swap, while no request
+    // runs, so no write falls between the two.
+    let pre_id = match crate::catalog::random_hex() {
+        Ok(hex) => format!("snap_{hex}"),
+        Err(failure) => return refuse(failure),
+    };
+    let pre_path = match routes.data.snapshot_path(team, &entry.id, &pre_id) {
+        Ok(path) => path,
+        Err(failure) => return refuse(failure),
+    };
+    let created_unix_ms = now_unix_ms();
+    let kept = routes
         .data
-        .replace_with(&entry.target(team), scratch.clone(), false)
-        .await
-    {
-        let _ = std::fs::remove_file(&scratch);
-        return refusal(refused);
+        .replace_with(
+            &entry.target(team),
+            scratch.clone(),
+            false,
+            Some(pre_path.clone()),
+        )
+        .await;
+    let size_bytes = match kept {
+        Ok(size) => size.unwrap_or(0),
+        Err(refused) => {
+            let _ = std::fs::remove_file(&scratch);
+            let _ = std::fs::remove_file(&pre_path);
+            return refusal(refused);
+        }
+    };
+    let row = store::SnapshotRow {
+        id: pre_id,
+        created_unix_ms,
+        size_bytes,
+        reason: "pre_restore".into(),
+    };
+    if let Err(failure) = store::insert_snapshot(&routes.database, team, &entry.id, &row).await {
+        merezha_telemetry::event!(
+            WARN,
+            "memoire.snapshot_record_failed",
+            code = failure.code.as_str()
+        );
     }
     respond(&routes, &caller, &name, None, StatusCode::OK).await
 }
@@ -213,12 +243,11 @@ pub async fn import(
         Err(refused) => Err(refused),
     };
     let outcome = match outcome {
-        Ok(()) => {
-            routes
-                .data
-                .replace_with(&target, scratch.clone(), true)
-                .await
-        }
+        Ok(()) => routes
+            .data
+            .replace_with(&target, scratch.clone(), true, None)
+            .await
+            .map(|_| ()),
         Err(refused) => Err(refused),
     };
     if let Err(refused) = outcome {
