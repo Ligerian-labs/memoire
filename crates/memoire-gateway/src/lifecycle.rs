@@ -234,10 +234,16 @@ impl Lifecycle {
     async fn repair(&self, team: &str, id: &str) -> Result<(), Failure> {
         for snapshot in store::snapshots(&self.database, team, id).await? {
             let source = self.data.snapshot_path(team, id, &snapshot.id)?;
-            if source.is_file() {
-                self.data.recreate_from(team, id, source).await?;
-                merezha_telemetry::event!(WARN, "memoire.reconcile_restored");
-                return Ok(());
+            match std::fs::metadata(&source) {
+                Ok(meta) if meta.is_file() => {
+                    self.data.recreate_from(team, id, source).await?;
+                    merezha_telemetry::event!(WARN, "memoire.reconcile_restored");
+                    return Ok(());
+                }
+                // Gone: the next older snapshot, then an empty file.
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+                // Unreadable is not absent: no empty file over it.
+                _ => return Err(Failure::transient("data_dir_unavailable")),
             }
         }
         self.data.create(team, id).await?;
@@ -365,7 +371,8 @@ impl JobHandler for Tick {
                 Task::Sweep => self.lifecycle.sweep().await,
                 Task::Snapshot => self.lifecycle.snapshot_all().await,
             };
-            done.and(next).map_err(JobFailure::from)
+            // An enqueue failure wins: it is what keeps the chain going.
+            next.and(done).map_err(JobFailure::from)
         })
     }
 }

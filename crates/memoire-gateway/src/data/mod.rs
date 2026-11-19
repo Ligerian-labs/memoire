@@ -15,6 +15,7 @@ use connection::{BUSY_TIMEOUT, Opened};
 use exec::Refused;
 use memoire_api::{Rows, Schema, StatementResult};
 use merezha_domain::Failure;
+use merezha_platform::BoxFuture;
 use std::{
     collections::HashMap,
     path::{Path, PathBuf},
@@ -387,18 +388,9 @@ impl DataPlane {
     }
 
     /// Replaces the database with the file at `source` in one step (a
-    /// rename), once every request on it finished; with `require_empty`
-    /// only while it holds no user object (`database_not_empty`). With
-    /// `keep`, a consistent copy of the current contents goes there first,
-    /// in the same quiet moment, so no write falls between the copy and the
-    /// swap; its size is returned.
-    pub async fn replace_with(
-        &self,
-        target: &Target,
-        source: PathBuf,
-        require_empty: bool,
-        keep: Option<PathBuf>,
-    ) -> Result<Option<u64>, Refused> {
+    /// rename), once every request on it finished, and only while it holds
+    /// no user object (`database_not_empty`): an import.
+    pub async fn replace_with(&self, target: &Target, source: PathBuf) -> Result<(), Refused> {
         let handle = self.handle(target)?;
         let (mut writer, readers) = tokio::time::timeout(BUSY_TIMEOUT * 2, drain(&handle))
             .await
@@ -409,34 +401,63 @@ impl DataPlane {
         // release them while the swap runs.
         let result = tokio::task::spawn_blocking(move || {
             let _readers = readers;
-            if require_empty {
-                let opened = connection::open(&inner.path, false, max_bytes)
-                    .map_err(|_| Refused::Code("database_unavailable"))?;
-                if !is_empty(&opened.connection).map_err(|_| Refused::Code("internal"))? {
-                    return Err(Refused::Code("database_not_empty"));
-                }
+            let opened = connection::open(&inner.path, false, max_bytes)
+                .map_err(|_| Refused::Code("database_unavailable"))?;
+            if !is_empty(&opened.connection).map_err(|_| Refused::Code("internal"))? {
+                return Err(Refused::Code("database_not_empty"));
             }
+            drop(opened);
             *writer = None;
-            inner
-                .readers
-                .lock()
-                .unwrap_or_else(|p| p.into_inner())
-                .clear();
-            let kept = match keep {
-                Some(destination) => Some(copy_file(&inner.path, &destination)?),
-                None => None,
-            };
-            remove_side_files(&inner.path).map_err(|_| Refused::Code("data_dir_unavailable"))?;
-            remove_side_files(&source).map_err(|_| Refused::Code("data_dir_unavailable"))?;
-            std::fs::rename(&source, &inner.path)
-                .map_err(|_| Refused::Code("data_dir_unavailable"))?;
-            connection::wal(&inner.path).map_err(|_| Refused::Code("internal"))?;
-            Ok(kept)
+            swap(&inner, &source)
         })
         .await
         .map_err(|_| Refused::Code("internal"))?;
         handle.used.store(self.now(), Ordering::Relaxed);
         result
+    }
+
+    /// A restore, as one critical section no request runs in: a
+    /// consistent copy of the current contents goes to `keep`, `record`
+    /// lists it (nothing changes when it fails), then the file at `source`
+    /// replaces the database. It runs to its end even when the request that
+    /// asked for it goes away.
+    pub async fn restore(
+        &self,
+        target: &Target,
+        source: PathBuf,
+        keep: PathBuf,
+        record: impl FnOnce(u64) -> BoxFuture<'static, Result<(), Failure>> + Send + 'static,
+    ) -> Result<(), Refused> {
+        let handle = self.handle(target)?;
+        let used = self.now();
+        let section = tokio::spawn(async move {
+            let (mut writer, readers) = tokio::time::timeout(BUSY_TIMEOUT * 2, drain(&handle))
+                .await
+                .map_err(|_| Refused::Code("sqlite_busy"))?;
+            let _readers = readers.map_err(|_| Refused::Code("internal"))?;
+            *writer = None;
+            handle
+                .readers
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .clear();
+            let (path, kept) = (handle.path.clone(), keep.clone());
+            let size = tokio::task::spawn_blocking(move || copy_file(&path, &kept))
+                .await
+                .map_err(|_| Refused::Code("internal"))??;
+            if record(size).await.is_err() {
+                let _ = std::fs::remove_file(&keep);
+                return Err(Refused::Code("internal"));
+            }
+            let inner = handle.clone();
+            let swapped = tokio::task::spawn_blocking(move || swap(&inner, &source))
+                .await
+                .map_err(|_| Refused::Code("internal"))?;
+            handle.used.store(used, Ordering::Relaxed);
+            drop(writer);
+            swapped
+        });
+        section.await.map_err(|_| Refused::Code("internal"))?
     }
 
     /// The databases of `team` with a snapshot directory.
@@ -537,6 +558,22 @@ async fn drain(
         .acquire_many_owned(READERS as u32)
         .await;
     (writer, readers)
+}
+
+/// Puts the staged file at `source` in WAL mode, then renames it over the
+/// database's file. The database's connections are closed and no request
+/// runs.
+fn swap(handle: &Handle, source: &Path) -> Result<(), Refused> {
+    handle
+        .readers
+        .lock()
+        .unwrap_or_else(|p| p.into_inner())
+        .clear();
+    // Ready before the rename, so nothing can fail after it.
+    connection::wal(source).map_err(|_| Refused::Code("invalid_import"))?;
+    remove_side_files(source).map_err(|_| Refused::Code("data_dir_unavailable"))?;
+    remove_side_files(&handle.path).map_err(|_| Refused::Code("data_dir_unavailable"))?;
+    std::fs::rename(source, &handle.path).map_err(|_| Refused::Code("data_dir_unavailable"))
 }
 
 /// A consistent copy of the closed database at `source` (its WAL

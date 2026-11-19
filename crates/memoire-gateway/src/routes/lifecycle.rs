@@ -112,36 +112,34 @@ pub async fn restore(
         Ok(path) => path,
         Err(failure) => return refuse(failure),
     };
-    let created_unix_ms = now_unix_ms();
-    let kept = routes
-        .data
-        .replace_with(
-            &entry.target(team),
-            scratch.clone(),
-            false,
-            Some(pre_path.clone()),
-        )
-        .await;
-    let size_bytes = match kept {
-        Ok(size) => size.unwrap_or(0),
-        Err(refused) => {
-            let _ = std::fs::remove_file(&scratch);
-            let _ = std::fs::remove_file(&pre_path);
-            return refusal(refused);
-        }
-    };
     let row = store::SnapshotRow {
         id: pre_id,
-        created_unix_ms,
-        size_bytes,
+        created_unix_ms: now_unix_ms(),
+        size_bytes: 0,
         reason: "pre_restore".into(),
     };
-    if let Err(failure) = store::insert_snapshot(&routes.database, team, &entry.id, &row).await {
-        merezha_telemetry::event!(
-            WARN,
-            "memoire.snapshot_record_failed",
-            code = failure.code.as_str()
-        );
+    let (database, team_id, database_id) =
+        (routes.database.clone(), team.to_owned(), entry.id.clone());
+    let restored = routes
+        .data
+        .restore(
+            &entry.target(team),
+            scratch.clone(),
+            pre_path,
+            move |size| {
+                Box::pin(async move {
+                    let row = store::SnapshotRow {
+                        size_bytes: size,
+                        ..row
+                    };
+                    store::insert_snapshot(&database, &team_id, &database_id, &row).await
+                })
+            },
+        )
+        .await;
+    if let Err(refused) = restored {
+        let _ = std::fs::remove_file(&scratch);
+        return refusal(refused);
     }
     respond(&routes, &caller, &name, None, StatusCode::OK).await
 }
@@ -243,11 +241,7 @@ pub async fn import(
         Err(refused) => Err(refused),
     };
     let outcome = match outcome {
-        Ok(()) => routes
-            .data
-            .replace_with(&target, scratch.clone(), true, None)
-            .await
-            .map(|_| ()),
+        Ok(()) => routes.data.replace_with(&target, scratch.clone()).await,
         Err(refused) => Err(refused),
     };
     if let Err(refused) = outcome {
