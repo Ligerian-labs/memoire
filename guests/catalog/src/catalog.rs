@@ -112,11 +112,14 @@ pub struct ExtendDatabase {
     pub idle_ttl_seconds: Option<u64>,
 }
 
-/// `DeleteDatabase`, active or expired.
+/// `DeleteDatabase`, active or expired. With `id`, only that entry: a
+/// database created again under the name since the caller looked is kept.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct DeleteDatabase {
     pub name: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub id: Option<String>,
 }
 
 /// `ExpireDatabase`, system principals only. The host supplies `now` and
@@ -186,6 +189,9 @@ impl Command {
             "DeleteDatabase" => {
                 let delete: DeleteDatabase = typed(payload)?;
                 check_name(&delete.name)?;
+                if let Some(id) = &delete.id {
+                    check_id(id)?;
+                }
                 Self::Delete(delete)
             }
             "ExpireDatabase" => {
@@ -454,7 +460,7 @@ impl History {
     /// | --- | --- |
     /// | `database_exists` | create: an active database holds the name, or the id was used before |
     /// | `database_limit` | create: the team has [`MAX_ACTIVE`] active databases |
-    /// | `database_not_found` | extend, delete, expire: no entry of that name (and id) |
+    /// | `database_not_found` | extend, delete, expire: no entry of that name (and id when given) |
     /// | `not_burstable` | extend, expire: a persistent database |
     /// | `database_expired` | extend: the entry already expired |
     /// | `unauthorized` | expire: the principal is not a system principal |
@@ -503,7 +509,10 @@ impl History {
                 })])
             }
             Command::Delete(c) => {
-                let entry = databases.get(&c.name).ok_or_else(not_found)?;
+                let entry = databases
+                    .get(&c.name)
+                    .filter(|e| c.id.as_ref().is_none_or(|id| *id == e.id))
+                    .ok_or_else(not_found)?;
                 Ok(vec![Event::Deleted(DatabaseDeleted {
                     id: entry.id.clone(),
                     name: c.name,

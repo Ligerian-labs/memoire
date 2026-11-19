@@ -9,7 +9,7 @@
 //! | --- | --- | --- |
 //! | `CreateDatabase` `{id, name, kind, idle_ttl_seconds?}` | `DatabaseCreated` | `database_exists`, `database_limit` |
 //! | `ExtendDatabase` `{name, idle_ttl_seconds?}` | `DatabaseExtended` | `database_not_found`, `not_burstable`, `database_expired` |
-//! | `DeleteDatabase` `{name}` | `DatabaseDeleted` | `database_not_found` |
+//! | `DeleteDatabase` `{name, id?}` | `DatabaseDeleted` | `database_not_found` |
 //! | `ExpireDatabase` `{name, id, now_unix_ms, last_used_unix_ms?}`, system only | `DatabaseExpired`, or nothing when already expired | `unauthorized`, `database_not_found`, `not_burstable`, `not_expired` |
 //!
 //! The `databases` projection, partitioned by team, folds the same events

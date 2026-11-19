@@ -264,6 +264,11 @@ impl Gateway {
         (status, head, body)
     }
 
+    /// The process id.
+    pub fn pid(&self) -> u32 {
+        self.child.id()
+    }
+
     /// SIGTERM and the exit status.
     pub fn stop(mut self) -> std::process::ExitStatus {
         Command::new("kill")

@@ -6,7 +6,9 @@
 //! the host with Merezha's blocks (identity included) and this module.
 pub mod catalog;
 pub mod config;
+pub mod data;
 mod http;
+mod last_used;
 pub mod module;
 mod routes;
 

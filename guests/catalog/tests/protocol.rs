@@ -324,6 +324,14 @@ fn delete_removes_active_and_expired_entries() {
         code_of(s.decide(&member(), "DeleteDatabase", json!({"name": "gone"}))),
         "database_not_found"
     );
+    // Pinned by id: another entry of the name is kept.
+    let pinned = json!({"name": "scratch", "id": id(9)});
+    assert_eq!(
+        code_of(s.decide(&member(), "DeleteDatabase", pinned)),
+        "database_not_found"
+    );
+    let pinned = json!({"name": "scratch", "id": id(1)});
+    assert!(s.decide(&member(), "DeleteDatabase", pinned).is_ok());
 }
 
 #[test]

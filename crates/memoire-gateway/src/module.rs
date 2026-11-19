@@ -2,23 +2,34 @@
 use crate::{
     catalog::{Catalog, Wiring},
     config::Settings,
+    data::DataPlane,
+    last_used::{self, LastUse},
     routes,
 };
 use axum::Router;
 use merezha_domain::Failure;
-use merezha_platform::{AppContext, BoxFuture, ConfigIssue, ErrorCode, Module, ModuleSection};
+use merezha_platform::{
+    AppContext, BoxFuture, ConfigIssue, ErrorCode, Migration, Module, ModuleSection,
+};
 use std::{
-    sync::{Arc, LazyLock, OnceLock},
-    time::Duration,
+    sync::{Arc, LazyLock, Mutex, OnceLock},
+    time::{Duration, Instant},
 };
 
 /// The module name: the configuration section `[modules.memoire]` and the
 /// route prefix `/v1/memoire`. Never changes.
 pub const NAME: &str = "memoire";
 
-/// Codes the catalog answers that no client meets through memoire's
-/// routes: `not_expired` refuses a sweep that came too early.
-const INTERNAL: &[ErrorCode] = &[ErrorCode::new("not_expired", 409)];
+/// Codes no client meets through memoire's routes in normal operation:
+/// `not_expired` refuses a sweep that came too early, and
+/// `database_unavailable` a database whose file is not on disk.
+const INTERNAL: &[ErrorCode] = &[
+    ErrorCode::new("not_expired", 409),
+    ErrorCode::new("database_unavailable", 503),
+];
+
+/// The statement lists the module runs.
+const STATEMENTS: &[&[merezha_postgres::Statement]] = &[last_used::STATEMENTS];
 
 /// memoire's error codes (docs/api.md, "Errors") in Merezha's registry
 /// form, and the internal ones.
@@ -40,6 +51,10 @@ pub struct MemoireModule {
     settings: Option<Arc<Settings>>,
     wiring: Option<Wiring>,
     catalog: OnceLock<Catalog>,
+    data: OnceLock<Arc<DataPlane>>,
+    last_used: Arc<LastUse>,
+    database: OnceLock<merezha_platform::Database>,
+    tasks: Mutex<Vec<tokio::task::AbortHandle>>,
 }
 
 impl MemoireModule {
@@ -79,6 +94,14 @@ impl Module for MemoireModule {
         &ERRORS
     }
 
+    fn migrations(&self) -> &[Migration] {
+        last_used::MIGRATIONS
+    }
+
+    fn statements(&self) -> &[&'static [merezha_postgres::Statement]] {
+        STATEMENTS
+    }
+
     fn start_timeout(&self) -> Option<Duration> {
         Some(START_TIMEOUT)
     }
@@ -95,14 +118,68 @@ impl Module for MemoireModule {
                 .ok_or_else(|| Failure::permanent("memoire_application_missing"))?;
             let catalog = Catalog::open(&ctx, wiring).await?;
             let _ = self.catalog.set(catalog);
+            let settings = self.settings()?;
+            let data = Arc::new(DataPlane::new(
+                teams,
+                settings.max_database_bytes,
+                Duration::from_secs(settings.idle_close_seconds),
+            ));
+            let _ = self.data.set(data.clone());
+            let _ = self.database.set(ctx.database().clone());
+            let mut tasks = self.tasks.lock().unwrap_or_else(|p| p.into_inner());
+            let every = data.idle_check();
+            tasks.push(
+                tokio::spawn(async move {
+                    let mut tick = tokio::time::interval(every);
+                    loop {
+                        tick.tick().await;
+                        data.close_idle();
+                    }
+                })
+                .abort_handle(),
+            );
+            let (uses, db) = (self.last_used.clone(), ctx.database().clone());
+            let every = Duration::from_secs(settings.last_used_flush_seconds);
+            tasks.push(
+                tokio::spawn(async move {
+                    let mut tick = tokio::time::interval(every);
+                    loop {
+                        tick.tick().await;
+                        if uses.flush(&db).await.is_err() {
+                            merezha_telemetry::event!(WARN, "memoire.last_used_flush_failed");
+                        }
+                    }
+                })
+                .abort_handle(),
+            );
             Ok(())
         })
     }
 
+    /// Stops the background work and writes the last uses not flushed yet.
+    fn shutdown(&self, deadline: Instant) -> BoxFuture<'_, ()> {
+        Box::pin(async move {
+            for task in self
+                .tasks
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .drain(..)
+            {
+                task.abort();
+            }
+            if let Some(db) = self.database.get() {
+                let _ = tokio::time::timeout_at(deadline.into(), self.last_used.flush(db)).await;
+            }
+        })
+    }
+
     fn routes(&self, ctx: &AppContext) -> Router {
-        match (self.catalog.get(), self.settings()) {
-            (Some(catalog), Ok(settings)) => routes::router(routes::Routes {
+        match (self.catalog.get(), self.data.get(), self.settings()) {
+            (Some(catalog), Some(data), Ok(settings)) => routes::router(routes::Routes {
                 catalog: catalog.clone(),
+                data: data.clone(),
+                last_used: self.last_used.clone(),
+                database: ctx.database().clone(),
                 policy: ctx.authorizer().clone(),
                 settings: settings.clone(),
             }),

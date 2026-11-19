@@ -2,13 +2,17 @@
 // A refusal is the rendered error response, built once on a request's
 // failure path; boxing it would buy nothing.
 #![allow(clippy::result_large_err)]
+mod data;
+
 use crate::{
     catalog::{Catalog, random_hex},
     config::Settings,
+    data::DataPlane,
     http::{
         Fields, TeamCaller, admit, invalid, json_object, no_content, no_store, principal, refuse,
         timestamp,
     },
+    last_used::LastUse,
 };
 use axum::{
     Json, Router,
@@ -41,6 +45,9 @@ pub mod permission {
 #[derive(Clone)]
 pub struct Routes {
     pub catalog: Catalog,
+    pub data: Arc<DataPlane>,
+    pub last_used: Arc<LastUse>,
+    pub database: merezha_platform::Database,
     pub policy: Arc<dyn Authorizer>,
     pub settings: Arc<Settings>,
 }
@@ -51,6 +58,9 @@ pub fn router(routes: Routes) -> Router {
         .route("/databases", get(list).post(create))
         .route("/databases/{name}", get(detail).delete(remove))
         .route("/databases/{name}/extend", post(extend))
+        .route("/databases/{name}/query", post(data::query))
+        .route("/databases/{name}/schema", get(data::schema))
+        .route("/databases/{name}/tables/{table}/rows", get(data::rows))
         .with_state(routes)
         .layer(middleware::map_response(no_store))
 }
@@ -76,7 +86,7 @@ async fn whoami(request: Request) -> Response {
 
 /// One entry of the `databases` projection (the guest's `Entry`).
 #[derive(Debug, Deserialize)]
-struct Entry {
+pub(crate) struct Entry {
     id: String,
     name: String,
     kind: DatabaseKind,
@@ -87,14 +97,16 @@ struct Entry {
 }
 
 impl Entry {
-    /// The contract's database object.
-    fn database(&self) -> Database {
-        let last_used = self.extended_unix_ms;
+    /// The contract's database object. `last_used` is the data plane's
+    /// last query or import, `size` the file's size.
+    fn database(&self, last_used: Option<u64>, size: Option<u64>) -> Database {
+        let last_used = self.extended_unix_ms.max(last_used);
         let burstable = self.kind == DatabaseKind::Burstable;
         let max = self.created_unix_ms + MAX_LIFETIME_SECONDS * 1000;
         let expires = self.idle_ttl_seconds.filter(|_| burstable).map(|ttl| {
             last_used
                 .unwrap_or(self.created_unix_ms)
+                .max(self.created_unix_ms)
                 .saturating_add(ttl * 1000)
                 .min(max)
         });
@@ -105,17 +117,24 @@ impl Entry {
             state: self.state,
             created_at: timestamp(self.created_unix_ms),
             last_used_at: last_used.map(timestamp),
-            // The data plane reports file sizes; until it does no file is
-            // on disk.
-            size_bytes: None,
+            size_bytes: size.filter(|_| self.state == DatabaseState::Active),
             idle_ttl_seconds: self.idle_ttl_seconds.filter(|_| burstable),
             expires_at: expires.map(timestamp),
             expires_at_max: burstable.then(|| timestamp(max)),
         }
     }
+
+    /// The data plane's target for this entry.
+    pub(crate) fn target(&self, team: &str) -> crate::data::Target {
+        crate::data::Target {
+            team: team.to_owned(),
+            id: self.id.clone(),
+            burstable: self.kind == DatabaseKind::Burstable,
+        }
+    }
 }
 
-fn entry(value: Value) -> Result<Entry, Response> {
+pub(crate) fn entry(value: Value) -> Result<Entry, Response> {
     serde_json::from_value(value).map_err(|_| refuse(Failure::transient("internal")))
 }
 
@@ -141,12 +160,17 @@ async fn list(State(routes): State<Routes>, request: Request) -> Response {
         Ok(entries) => entries,
         Err(_) => return refuse(Failure::transient("internal")),
     };
+    let team = caller.team.as_str();
+    let uses = match routes.last_used.team(&routes.database, team).await {
+        Ok(uses) => uses,
+        Err(failure) => return refuse(failure),
+    };
     let mut items: Vec<Database> = entries
         .iter()
         .filter(|e| all || e.state == DatabaseState::Active)
         .filter(|e| after.as_deref().is_none_or(|after| e.name.as_str() > after))
         .take(limit + 1)
-        .map(Entry::database)
+        .map(|e| e.database(uses.get(&e.id).copied(), routes.data.size(team, &e.id)))
         .collect();
     let next_cursor = (items.len() > limit).then(|| {
         items.truncate(limit);
@@ -271,6 +295,10 @@ async fn create(State(routes): State<Routes>, request: Request) -> Response {
         Ok(receipt) => receipt,
         Err(failure) => return refuse(failure),
     };
+    // The catalog accepted it: its empty file follows.
+    if let Err(failure) = routes.data.create(caller.team.as_str(), &id).await {
+        return refuse(failure);
+    }
     respond(&routes, &caller, &name, Some(&receipt), StatusCode::CREATED).await
 }
 
@@ -303,16 +331,37 @@ async fn remove(
     if !valid_name(&name) {
         return refuse(Failure::permanent("database_not_found"));
     }
+    // The entry the delete removes, pinned by id: a database created again
+    // under the name in between is not touched.
+    let id = match routes
+        .catalog
+        .query(
+            caller.admitted(),
+            "GetDatabase",
+            json!({"name": name}),
+            None,
+        )
+        .await
+        .map(entry)
+    {
+        Ok(Ok(entry)) => entry.id,
+        Ok(Err(refusal)) => return refusal,
+        Err(failure) => return refuse(failure),
+    };
     let receipt = match routes
         .catalog
-        .command(caller.edge(), "DeleteDatabase", json!({"name": name}))
+        .command(
+            caller.edge(),
+            "DeleteDatabase",
+            json!({"name": name, "id": id}),
+        )
         .await
     {
         Ok(receipt) => receipt,
         Err(failure) => return refuse(failure),
     };
     // Answer once reads see the delete, as every route reads its writes.
-    match routes
+    if let Err(failure) = routes
         .catalog
         .query(
             caller.admitted(),
@@ -322,9 +371,15 @@ async fn remove(
         )
         .await
     {
-        Ok(_) => no_content(),
-        Err(failure) => refuse(failure),
+        return refuse(failure);
     }
+    // The catalog deleted it: its file and last use follow.
+    let team = caller.team.as_str();
+    if let Err(failure) = routes.data.remove(team, &id).await {
+        return refuse(failure);
+    }
+    let _ = routes.last_used.forget(&routes.database, team, &id).await;
+    no_content()
 }
 
 /// `POST /v1/memoire/databases/{name}/extend`.
@@ -373,7 +428,7 @@ async fn extend(
 
 /// The database `name` as the projection holds it, once it reached
 /// `after` when given.
-async fn respond(
+pub(crate) async fn respond(
     routes: &Routes,
     caller: &TeamCaller,
     name: &str,
@@ -397,7 +452,15 @@ async fn respond(
         }
     };
     match answer.map(entry) {
-        Ok(Ok(entry)) => (status, Json(entry.database())).into_response(),
+        Ok(Ok(entry)) => {
+            let team = caller.team.as_str();
+            let used = match routes.last_used.team(&routes.database, team).await {
+                Ok(uses) => uses.get(&entry.id).copied(),
+                Err(failure) => return refuse(failure),
+            };
+            let size = routes.data.size(team, &entry.id);
+            (status, Json(entry.database(used, size))).into_response()
+        }
         Ok(Err(refusal)) => refusal,
         Err(failure) => refuse(failure),
     }
@@ -439,8 +502,9 @@ mod tests {
             idle_ttl_seconds: Some(604_800),
             extended_unix_ms: Some(1_795_000_060_000),
         };
-        let db = entry.database();
+        let db = entry.database(None, Some(4096));
         assert_eq!(db.expires_at, db.expires_at_max);
+        assert_eq!(db.size_bytes, Some(4096));
         assert_eq!(db.last_used_at.as_deref(), Some("2026-11-18T11:07:40Z"));
         let persistent = Entry {
             kind: DatabaseKind::Persistent,
@@ -448,7 +512,8 @@ mod tests {
             extended_unix_ms: None,
             ..entry
         };
-        let db = persistent.database();
+        let db = persistent.database(Some(1_795_000_090_000), None);
+        assert_eq!(db.last_used_at.as_deref(), Some("2026-11-18T11:08:10Z"));
         assert_eq!(
             (db.idle_ttl_seconds, db.expires_at, db.expires_at_max),
             (None, None, None)
