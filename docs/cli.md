@@ -116,6 +116,10 @@ result or snapshot objects, or an array of them for `db ls` and
            "message": "the team already has an active database of that name"}}
 ```
 
+An `sql_error` also gets an `sql` member, `{"statement", "sqlite_code",
+"message"}`, built from the error's `details` and SQLite's message, which
+the gateway sends in the `Memoire-Sql-Message` header.
+
 The CLI's own failures use the same envelope, with codes such as
 `not_logged_in`, `connection_failed`, `timeout` and `invalid_param`.
 

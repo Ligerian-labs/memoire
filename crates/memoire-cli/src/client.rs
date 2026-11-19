@@ -2,9 +2,10 @@
 use crate::config::Secret;
 use crate::error::{Error, Result, exit};
 use memoire_api::{
-    CreateDatabase, Database, ErrorBody, ExtendDatabase, Page, QueryRequest, QueryResponse, Schema,
-    Snapshot, Whoami,
+    CreateDatabase, Database, ErrorBody, ExtendDatabase, FieldError, Page, QueryRequest,
+    QueryResponse, Schema, Snapshot, SqlErrorDetail, Whoami,
 };
+use percent_encoding::percent_decode_str;
 use reqwest::{
     Method, StatusCode, Url,
     blocking::{Body, RequestBuilder, Response},
@@ -442,13 +443,23 @@ fn failure(status: StatusCode, response: Response) -> Error {
         .get(header::RETRY_AFTER)
         .and_then(|v| v.to_str().ok())
         .and_then(|v| v.trim().parse().ok());
+    let sql_message = response
+        .headers()
+        .get(SQL_MESSAGE)
+        .and_then(|v| v.to_str().ok())
+        .map(|v| percent_decode_str(v).decode_utf8_lossy().into_owned());
     let body = response.bytes().ok();
     match body.and_then(|b| serde_json::from_slice::<ErrorBody>(&b).ok()) {
-        Some(body) => Error::Api {
-            status: status.as_u16(),
-            error: Box::new(body.error),
-            retry_after,
-        },
+        Some(mut body) => {
+            if body.error.code == "sql_error" && body.error.sql.is_none() {
+                body.error.sql = sql_detail(&body.error.details, sql_message);
+            }
+            Error::Api {
+                status: status.as_u16(),
+                error: Box::new(body.error),
+                retry_after,
+            }
+        }
         None => Error::local(
             "invalid_response",
             if status.is_server_error() {
@@ -463,9 +474,57 @@ fn failure(status: StatusCode, response: Response) -> Error {
     }
 }
 
+/// SQLite's message about a refused statement, percent-encoded (UTF-8).
+const SQL_MESSAGE: &str = "memoire-sql-message";
+
+/// Which statement SQLite refused and why, from a `sql_error`: the details
+/// entry `{"path": "/statements/{i}/sql", "code": "sqlite_<code>"}` and the
+/// message header, or the code when the header is absent.
+fn sql_detail(details: &[FieldError], message: Option<String>) -> Option<SqlErrorDetail> {
+    details.iter().find_map(|d| {
+        let statement = d
+            .path
+            .strip_prefix("/statements/")?
+            .strip_suffix("/sql")?
+            .parse()
+            .ok()?;
+        let sqlite_code = d.code.to_ascii_uppercase();
+        Some(SqlErrorDetail {
+            statement,
+            message: message.clone().unwrap_or_else(|| sqlite_code.clone()),
+            sqlite_code,
+        })
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn sql_errors_come_from_details_and_the_message_header() {
+        let details = [FieldError {
+            path: "/statements/2/sql".into(),
+            code: "sqlite_constraint".into(),
+        }];
+        assert_eq!(
+            sql_detail(&details, Some("UNIQUE constraint failed: t.a".into())),
+            Some(SqlErrorDetail {
+                statement: 2,
+                sqlite_code: "SQLITE_CONSTRAINT".into(),
+                message: "UNIQUE constraint failed: t.a".into(),
+            })
+        );
+        assert_eq!(
+            sql_detail(&details, None).unwrap().message,
+            "SQLITE_CONSTRAINT"
+        );
+        let other = [FieldError {
+            path: "/statements/0/params".into(),
+            code: "count".into(),
+        }];
+        assert_eq!(sql_detail(&other, None), None);
+    }
 
     #[test]
     fn servers_are_http_urls_without_extras() {

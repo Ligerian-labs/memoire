@@ -723,11 +723,28 @@ fn sql_error(statement: usize, error: &rusqlite::Error) -> Response {
         ),
         other => ("SQLITE_ERROR", other.to_string()),
     };
-    reply(
+    // Merezha's edge carries only code, classification and details; the
+    // message travels percent-encoded in a header.
+    let mut response = reply(
         422,
         &json!({"error": {"code": "sql_error", "classification": "permanent",
-                          "sql": {"statement": statement, "sqlite_code": code, "message": message}}}),
-    )
+                          "details": [{"path": format!("/statements/{statement}/sql"),
+                                       "code": code.to_ascii_lowercase()}]}}),
+    );
+    let encoded: String = message
+        .bytes()
+        .map(|b| {
+            if b.is_ascii_alphanumeric() || b"-._~".contains(&b) {
+                (b as char).to_string()
+            } else {
+                format!("%{b:02X}")
+            }
+        })
+        .collect();
+    response
+        .headers_mut()
+        .insert("memoire-sql-message", encoded.parse().unwrap());
+    response
 }
 
 fn run_query(
