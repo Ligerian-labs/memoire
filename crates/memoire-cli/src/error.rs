@@ -183,12 +183,12 @@ fn describe(error: &ErrorDetail, sql: Option<&SqlErrorDetail>) -> String {
     if !fixed.is_empty() {
         return fixed.to_owned();
     }
+    // The CLI sends one statement per request, so its index says nothing
+    // here; --json keeps it.
     if let Some(sql) = sql {
         return format!(
-            "SQLite refused statement {}: {} ({})",
-            sql.statement + 1,
-            sql.message,
-            sql.sqlite_code
+            "SQLite refused the statement: {} ({})",
+            sql.message, sql.sqlite_code
         );
     }
     if !error.details.is_empty() {
@@ -272,7 +272,7 @@ mod tests {
         };
         assert_eq!(
             failure.message(),
-            "SQLite refused statement 1: no such table: t (SQLITE_ERROR)"
+            "SQLite refused the statement: no such table: t (SQLITE_ERROR)"
         );
         assert_eq!(
             failure.to_json()["error"]["sql"]["sqlite_code"],

@@ -308,7 +308,7 @@ fn queries_bind_params_and_print_tables_or_json() {
         error["error"]["message"]
             .as_str()
             .unwrap()
-            .starts_with("SQLite refused statement 1")
+            .starts_with("SQLite refused the statement: no such table")
     );
     let run = memoire.run(&["query", "scratch", "ATTACH 'x' AS y", "--write"], "");
     assert_eq!(run.code, 4);
