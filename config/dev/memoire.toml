@@ -11,14 +11,24 @@ listen = "127.0.0.1:28960"
 [database]
 url = { env = "MEMOIRE_DATABASE_URL" }
 migrate = true
+# The catalog runs a second application instance on this pool.
+pool_size = 24
 
 [runtime]
-manifest = "runtime.toml"
+manifest = "../../guests/runtime.toml"
+
+[application]
+path = "application.toml"
 
 [modules.identity]
 app_origin = "http://localhost:4200"
 secret_key = { file = "../../.memoire-dev/secrets/identity.key" }
 registration = "open"
+
+# The team roles hold memoire's five permissions; API keys carry a subset.
+[modules.identity.rbac.builtin_grants]
+admin = ["memoire.databases.*"]
+member = ["memoire.databases.*"]
 
 [modules.identity.password]
 argon2_memory_kib = 19456

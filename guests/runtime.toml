@@ -1,15 +1,21 @@
-# The guests memoire ships. `memoire-gateway build --manifest guests/runtime.toml
-# --workspace guests/Cargo.toml` (scripts/build-guests.sh) compiles each
-# service from the package named after its id into its `path`.
+# The guests memoire ships, and the gateway's runtime manifest
+# (`[runtime] manifest` in config/dev/memoire.toml). `memoire-gateway build
+# --manifest guests/runtime.toml --workspace guests/Cargo.toml`
+# (scripts/build-guests.sh) compiles each service from the package named
+# after its id into its `path`.
 version = 1
 
+# The catalog's history goes whole to the guest on every decision, so the
+# input and output limits are Merezha's ceiling. The host's application
+# and the memoire module's each reserve their concurrency from their own
+# runtime instance.
 [limits]
-memory_bytes = 16777216
-fuel = 200000000
-max_input_bytes = 262144
-max_output_bytes = 262144
-timeout_ms = 2000
-max_concurrent_invocations = 8
+memory_bytes = 33554432
+fuel = 1000000000
+max_input_bytes = 1048576
+max_output_bytes = 1048576
+timeout_ms = 5000
+max_concurrent_invocations = 24
 
 [[services]]
 id = "memoire-catalog"

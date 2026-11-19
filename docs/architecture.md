@@ -58,6 +58,20 @@ PostgreSQL, migrations, jobs, health and telemetry.
    the list and detail queries. The guest speaks application protocol 2, so
    it sees the principal and tenant the host established. Guests import
    nothing: no file, network or database handle.
+   The guest is one Merezha application (`config/dev/application.toml`,
+   PostgreSQL storage): the host's `application` module migrates the store,
+   runs the projection in the background and serves `/v1/application/…`
+   under the same permissions. The memoire module opens a second
+   application instance on the same store and runs the commands and
+   queries in process, as the caller the edge authenticated, so its routes
+   keep memoire's own JSON shapes. A command whose team stream moved under
+   it (`concurrency_conflict`) is decided again, up to five times; its reads
+   wait for the projection to reach the command (`min_position`). The
+   gateway mints database ids; the guest checks their shape and that the
+   team never used them. A team's history goes whole to the guest on every
+   decision, so it is bounded by Merezha's `max_stream_events` (4096) and
+   the runtime's 1 MiB input: roughly a thousand database lifecycles per
+   team. Compacting the stream is a later change.
 2. **Data plane** (core, the native `memoire` module in
    `crates/memoire-gateway`). Opens files, runs queries, enforces limits,
    tracks last use, makes snapshots, exports and imports. It acts on catalog
@@ -69,7 +83,16 @@ PostgreSQL, migrations, jobs, health and telemetry.
    service accounts, API keys and RBAC. memoire registers the permissions
    `memoire.databases.create`, `.delete`, `.read`, `.write` and `.snapshots`;
    the team roles admin and member hold them by default, and an API key can
-   carry a subset.
+   carry a subset. The grants are configuration, in every deployment:
+
+   ```toml
+   [modules.identity.rbac.builtin_grants]
+   admin = ["memoire.databases.*"]
+   member = ["memoire.databases.*"]
+   ```
+
+   A machine's key is capped by its service account's own grants, so the
+   service account needs a team role (`member`) for its key to act.
 
 ## Data plane rules
 
@@ -100,6 +123,20 @@ PostgreSQL, migrations, jobs, health and telemetry.
 | Burstable lifetime | 7 days from creation |
 | Snapshots | every 6 hours, kept 7 days |
 
+## Configuration
+
+`[modules.memoire]`:
+
+| Key | Default | Meaning |
+| --- | --- | --- |
+| `data_dir` | required | Root of the SQLite files; relative to the configuration file |
+| `min_idle_ttl_seconds` | 60 | Shortest burstable idle TTL a client may ask for (1 to 604 800); lower it only to watch an expiry in tests |
+| `default_idle_ttl_seconds` | 86 400 | Idle TTL of a burstable database created without one |
+
+The gateway also needs `[application] path` naming the catalog
+application, and `[runtime] manifest` naming `guests/runtime.toml` (component
+paths stay inside the manifest's directory).
+
 ## Repository
 
 | Path | What |
@@ -107,9 +144,9 @@ PostgreSQL, migrations, jobs, health and telemetry.
 | `crates/memoire-api` | Wire types of the HTTP contract (`docs/api.md`), shared by the gateway and the CLI |
 | `crates/memoire-gateway` | The memoire module and the `memoire-gateway` binary |
 | `crates/memoire-cli` | The `memoire` binary |
-| `guests/` | WASM guests, a separate Cargo workspace; `guests/runtime.toml` lists them |
-| `config/dev/` | The development gateway configuration |
-| `scripts/` | Development gateway, throwaway PostgreSQL and guest build |
+| `guests/` | WASM guests, a separate Cargo workspace; `guests/runtime.toml` lists them and is the gateway's runtime manifest |
+| `config/dev/` | The development gateway configuration: `memoire.toml` and the catalog application |
+| `scripts/` | Development gateway, throwaway PostgreSQL, guest build and a development owner with a team and an API key |
 | `web/` | The Angular debugger (to come) |
 
 ## Hosting
