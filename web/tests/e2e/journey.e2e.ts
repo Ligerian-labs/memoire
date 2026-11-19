@@ -66,6 +66,8 @@ test('register, create a team and a database, write, read, browse rows, mint an 
     await expect(page.getByRole('heading', { name: 'Sign in' })).toBeVisible();
     await screenshot(page, 'sign-in');
     await page.getByRole('link', { name: 'Create one' }).click();
+    // Both pages have an Email field: fill only once the register page is up.
+    await expect(page.getByRole('heading', { name: 'Create an account' })).toBeVisible();
     await page.getByLabel('Email').fill(email);
     await page.getByLabel('Password').fill(password);
     await screenshot(page, 'register');
@@ -226,6 +228,7 @@ INSERT INTO notes (body, score) SELECT 'note ' || i, i * 0.5 FROM n;`,
 
   await test.step('switch teams', async () => {
     await page.getByRole('link', { name: 'New team' }).click();
+    await expect(page.getByRole('heading', { name: 'New team' })).toBeVisible();
     await page.getByLabel('Name').fill(`Second ${suffix}`);
     await page.getByRole('button', { name: 'Create team' }).click();
     await expect(page.getByText('No databases in this team yet.')).toBeVisible();
