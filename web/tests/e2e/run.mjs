@@ -165,6 +165,9 @@ try {
       `127.0.0.1:${gatewayPort}`,
       '--set',
       `modules.identity.app_origin=${JSON.stringify(origin)}`,
+      // Snapshots every 2 seconds instead of 6 hours, so the journey can restore one.
+      '--set',
+      'modules.memoire.snapshot_interval_seconds=2',
     ],
     { MEMOIRE_DATABASE_URL: databaseUrl },
   );

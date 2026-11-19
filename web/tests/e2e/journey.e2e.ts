@@ -1,5 +1,5 @@
 import { expect, request, test, type Locator, type Page } from '@playwright/test';
-import { mkdirSync } from 'node:fs';
+import { mkdirSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 
 // One person's whole path through the debugger against a real gateway.
@@ -45,13 +45,18 @@ async function verificationLink(page: Page): Promise<string> {
 }
 
 /**
- * Fills a field and checks the value stayed: on a slow runner a form that
- * just rendered can still write its initial model value over the first fill.
+ * Fills a field and checks the value stayed. A route's DOM can be on screen
+ * before Angular's first change detection (scheduled on a frame or a timer,
+ * zoneless); that pass writes the form's initial value over an early fill. So
+ * fill, let one frame and one timer pass, then check, and fill again if reset.
  */
 async function fill(field: Locator, value: string): Promise<void> {
   await expect(async () => {
     await field.fill(value);
-    await expect(field).toHaveValue(value, { timeout: 1_000 });
+    await field
+      .page()
+      .evaluate(() => new Promise((done) => requestAnimationFrame(() => setTimeout(done, 50))));
+    await expect(field).toHaveValue(value, { timeout: 500 });
   }).toPass({ timeout: 15_000 });
 }
 
@@ -60,7 +65,7 @@ async function runSql(page: Page, sql: string): Promise<void> {
   await page.getByRole('button', { name: /^Run/ }).click();
 }
 
-test('register, create a team and a database, write, read, browse rows, mint an API key', async ({
+test('register, create a team and databases, write, read, browse rows, restore a snapshot, mint an API key', async ({
   page,
   baseURL,
 }) => {
@@ -194,6 +199,70 @@ INSERT INTO notes (body, score) SELECT 'note ' || i, i * 0.5 FROM n;`,
     await screenshot(page, 'schema');
     await page.getByRole('link', { name: 'Snapshots' }).click();
     await expect(page.getByText('Burstable databases have no snapshots.')).toBeVisible();
+  });
+
+  await test.step('snapshot a persistent database, restore it and export it', async () => {
+    await page
+      .getByRole('navigation', { name: 'Main' })
+      .getByRole('link', { name: 'Databases' })
+      .click();
+    await page.getByRole('button', { name: 'New database' }).click();
+    const dialog = page.getByRole('dialog', { name: 'New database' });
+    await fill(dialog.getByLabel('Name'), 'keeper');
+    await dialog.getByRole('radio', { name: /Persistent/ }).check();
+    await dialog.getByRole('button', { name: 'Create database' }).click();
+    await expect(page).toHaveURL(/\/databases\/keeper\/console$/);
+    await page.getByRole('button', { name: 'Write', exact: true }).click();
+    await runSql(
+      page,
+      `CREATE TABLE kv (k TEXT PRIMARY KEY, v TEXT);\nINSERT INTO kv VALUES ('a', 'v1');`,
+    );
+    await expect(page.getByTestId('results').locator('.result')).toHaveCount(2);
+    const written = Date.now();
+
+    // Wait for a scheduled snapshot taken after the write (shown to the second, so strictly later).
+    await page.getByRole('link', { name: 'Snapshots' }).click();
+    const snapshots = page.locator('app-snapshots');
+    let id = '';
+    await expect(async () => {
+      await snapshots.getByRole('button', { name: 'Refresh' }).click();
+      const newest = snapshots.locator('tbody tr').first();
+      const taken = Date.parse(
+        ((await newest.locator('td').first().textContent()) ?? '').trim().replace(' ', 'T'),
+      );
+      expect(taken).toBeGreaterThan(written);
+      id = ((await newest.locator('td').nth(3).textContent()) ?? '').trim();
+      expect(id).toMatch(/^snap_/);
+    }).toPass({ timeout: 30_000 });
+
+    await page.getByRole('link', { name: 'Console' }).click();
+    await runSql(page, `UPDATE kv SET v = 'v2'`);
+    await expect(page.getByTestId('results').locator('.result')).toHaveCount(1);
+    await expect(page.getByTestId('results')).toContainText('1 changed');
+
+    await page.getByRole('link', { name: 'Snapshots' }).click();
+    await snapshots
+      .locator('tbody tr', { hasText: id })
+      .getByRole('button', { name: 'Restore' })
+      .click();
+    const confirm = page.getByRole('dialog', { name: 'Restore keeper' });
+    await screenshot(page, 'restore-dialog');
+    await confirm.getByRole('button', { name: 'Restore snapshot' }).click();
+    await expect(snapshots.getByRole('status')).toContainText('Restored the snapshot');
+    await expect(snapshots.locator('tbody')).toContainText('before a restore');
+    await screenshot(page, 'snapshots');
+
+    await page.getByRole('link', { name: 'Console' }).click();
+    await page.getByRole('button', { name: 'Read', exact: true }).click();
+    await runSql(page, `SELECT v FROM kv`);
+    await expect(page.getByTestId('results').locator('tbody tr')).toHaveText(/v1/);
+
+    const download = page.waitForEvent('download');
+    await page.getByRole('button', { name: 'Export' }).click();
+    const file = await download;
+    expect(file.suggestedFilename()).toBe('keeper.sqlite');
+    const bytes = readFileSync(await file.path());
+    expect(bytes.subarray(0, 16).toString('latin1')).toBe('SQLite format 3\u0000');
   });
 
   await test.step('list the databases', async () => {
