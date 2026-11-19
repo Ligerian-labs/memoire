@@ -17,23 +17,33 @@ pub struct Cli {
 
 #[derive(Debug, Subcommand)]
 pub enum Command {
-    /// Store the gateway URL and an API key (read from standard input or
-    /// MEMOIRE_API_KEY) in ~/.config/memoire/ with mode 0600.
+    /// Check an API key against a gateway, then store both in
+    /// ~/.config/memoire/credentials.json with mode 0600. The key comes from
+    /// --key-file, else MEMOIRE_API_KEY, else standard input (a prompt
+    /// without echo on a terminal); never from an argument.
     Login {
         #[arg(long, value_name = "URL")]
         server: String,
+        /// Read the API key from this file instead.
+        #[arg(long, value_name = "FILE")]
+        key_file: Option<PathBuf>,
     },
     /// Show the caller and its team.
     Whoami,
     /// Manage databases.
     #[command(subcommand)]
     Db(DbCommand),
-    /// Run one SQL statement.
+    /// Run one SQL statement in read mode, or on the writer with --write.
     Query(QueryArgs),
-    /// Open an interactive SQL shell.
+    /// Open an interactive SQL shell. Statements end with `;`; `.help`
+    /// lists the dot commands. Reading a script from standard input, it
+    /// stops at the first error.
     Shell {
         #[arg(value_parser = database_name)]
         db: String,
+        /// Start on the writer connection (`.mode write` in the shell).
+        #[arg(long)]
+        write: bool,
     },
     /// Download a consistent copy of a database.
     Export {
@@ -124,15 +134,29 @@ pub struct QueryArgs {
     pub write: bool,
 }
 
+impl QueryArgs {
+    pub fn mode(&self) -> memoire_api::QueryMode {
+        if self.write {
+            memoire_api::QueryMode::Write
+        } else {
+            memoire_api::QueryMode::Read
+        }
+    }
+}
+
 #[derive(Debug, Subcommand)]
 pub enum SnapshotsCommand {
+    /// List a persistent database's snapshots, newest first.
     Ls {
         #[arg(value_parser = database_name)]
         db: String,
     },
+    /// Replace a persistent database with one of its snapshots, after
+    /// taking a `pre_restore` snapshot of the current contents.
     Restore {
         #[arg(value_parser = database_name)]
         db: String,
+        /// The snapshot id (`snap_…`).
         id: String,
     },
 }
@@ -148,12 +172,22 @@ pub enum KeysCommand {
         #[arg(long, value_name = "TEAM")]
         team: Option<String>,
         /// Key lifetime, at most 365d.
-        #[arg(long, value_name = "DURATION", value_parser = parse_seconds, default_value = "90d")]
+        #[arg(long, value_name = "DURATION", value_parser = key_lifetime, default_value = "90d")]
         expires: u64,
         /// Grant only `memoire.databases.read`.
         #[arg(long)]
         read_only: bool,
     },
+}
+
+/// Identity refuses keys that live longer than 365 days; refusing here
+/// keeps a machine from being created without its key.
+fn key_lifetime(text: &str) -> Result<u64, String> {
+    let seconds = parse_seconds(text)?;
+    if seconds > 365 * 86_400 {
+        return Err("a key lives at most 365d".into());
+    }
+    Ok(seconds)
 }
 
 fn database_name(text: &str) -> Result<String, String> {
@@ -242,6 +276,12 @@ mod tests {
         assert_eq!(expires, 90 * 86_400);
         assert!(!read_only);
         assert_eq!(team, None);
+    }
+
+    #[test]
+    fn keys_live_at_most_a_year() {
+        assert!(parse(&["keys", "create", "--name", "ci", "--expires", "365d"]).is_ok());
+        assert!(parse(&["keys", "create", "--name", "ci", "--expires", "366d"]).is_err());
     }
 
     #[test]

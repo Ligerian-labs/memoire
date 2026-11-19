@@ -24,6 +24,7 @@ data plane, and a WASM guest for the database lifecycle rules.
 ## Documentation
 
 - [docs/api.md](docs/api.md): the HTTP API contract.
+- [docs/cli.md](docs/cli.md): the `memoire` command line.
 - [docs/architecture.md](docs/architecture.md): contexts, data plane rules
   and repository layout.
 

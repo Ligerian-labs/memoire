@@ -467,7 +467,8 @@ clients need:
 | Teams | `POST /v1/identity/organizations` `{name, slug}`, `GET /v1/identity/organizations` |
 | Switch team | `PUT /v1/identity/session/organization` `{organization_id}` |
 | Invite and join | `POST /v1/identity/organizations/{org}/invitations` `{email, role_ids}`; the invitee opens the mailed token and the client calls `POST /v1/identity/invitations/inspect` `{token}`, then `POST /v1/identity/invitations/accept` `{token, transport?}`. Signed in with the invited address, accept adds the membership. Anonymous, it creates a verified account with a session when the address has none (or only an unverified one), and answers `401 sign_in_required` when a verified account exists: sign in, then retry with the same token. Signed in with another address it answers `403 email_mismatch`. |
-| Machines | `GET`, `POST /v1/identity/organizations/{org}/service-accounts` `{name, description?}` |
+| Machines | `GET /v1/identity/organizations/{org}/service-accounts`; `POST` there `{name, description?}` → `201 {service_account: {id, …}}` |
+| Machine roles | `GET /v1/identity/organizations/{org}/roles` → `{items: [{id, key, …}]}`; `POST /v1/identity/organizations/{org}/role-assignments` `{service_account_id, role_id}` → `201`. A machine holds no permission until it has a role; its keys carry a subset of the role's. |
 | API keys | `GET`, `POST /v1/identity/organizations/{org}/api-keys` `{name, permissions, expires_at, service_account_id?}` → `201 {api_key, key}`; `DELETE …/api-keys/{key_id}` |
 
 `transport: "bearer"` returns the session token once, in `session.token`;
@@ -480,8 +481,10 @@ gateway's application origin (`modules.identity.app_origin`), otherwise
 they fail `403 origin_rejected`. Browsers send it on their own. Bearer
 requests are not Origin-checked.
 
-Creating a machine and its key needs `identity.service_accounts.manage` and a
-recent sign-in, which an API key is not. `memoire keys create --name MACHINE
+Creating a machine, giving it a role and creating its key need
+`identity.service_accounts.manage`, `identity.roles.assign` and a recent
+sign-in, which an API key is not. The team roles `admin` and `owner` hold
+both permissions and `member` does not. `memoire keys create --name MACHINE
 [--team org_…] [--expires 90d] [--read-only]` therefore:
 
 1. Picks the team: `--team`, else the `team_id` of the stored login key
@@ -492,7 +495,8 @@ recent sign-in, which an API key is not. `memoire keys create --name MACHINE
    therefore the public origin the web is served from, which is the
    application origin in a deployment.
 3. Sends `Merezha-Organization` for that team, creates the service account,
-   then the key: the five memoire permissions (only
+   assigns it the team role `member` (found by `key` among the team's
+   roles), then the key: the five memoire permissions (only
    `memoire.databases.read` with `--read-only`) and `expires_at` = now plus
    `--expires` (default 90 days; identity refuses more than 365 days with
    `422 validation_failed`, path `/expires_at`).
