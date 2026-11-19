@@ -1,4 +1,4 @@
-import { expect, request, test, type Page } from '@playwright/test';
+import { expect, request, test, type Locator, type Page } from '@playwright/test';
 import { mkdirSync } from 'node:fs';
 import { join } from 'node:path';
 
@@ -44,8 +44,19 @@ async function verificationLink(page: Page): Promise<string> {
   return link!;
 }
 
+/**
+ * Fills a field and checks the value stayed: on a slow runner a form that
+ * just rendered can still write its initial model value over the first fill.
+ */
+async function fill(field: Locator, value: string): Promise<void> {
+  await expect(async () => {
+    await field.fill(value);
+    await expect(field).toHaveValue(value, { timeout: 1_000 });
+  }).toPass({ timeout: 15_000 });
+}
+
 async function runSql(page: Page, sql: string): Promise<void> {
-  await page.getByLabel('SQL').fill(sql);
+  await fill(page.getByLabel('SQL'), sql);
   await page.getByRole('button', { name: /^Run/ }).click();
 }
 
@@ -68,8 +79,8 @@ test('register, create a team and a database, write, read, browse rows, mint an 
     await page.getByRole('link', { name: 'Create one' }).click();
     // Both pages have an Email field: fill only once the register page is up.
     await expect(page.getByRole('heading', { name: 'Create an account' })).toBeVisible();
-    await page.getByLabel('Email').fill(email);
-    await page.getByLabel('Password').fill(password);
+    await fill(page.getByLabel('Email'), email);
+    await fill(page.getByLabel('Password'), password);
     await screenshot(page, 'register');
     await page.getByRole('button', { name: 'Create account' }).click();
     await expect(page.getByRole('heading', { name: 'Check your email' })).toBeVisible();
@@ -81,7 +92,7 @@ test('register, create a team and a database, write, read, browse rows, mint an 
   });
 
   await test.step('create a team', async () => {
-    await page.getByLabel('Name').fill(`Synthetic ${suffix}`);
+    await fill(page.getByLabel('Name'), `Synthetic ${suffix}`);
     await expect(page.getByLabel('Slug')).toHaveValue(`synthetic-${suffix}`);
     await screenshot(page, 'new-team');
     await page.getByRole('button', { name: 'Create team' }).click();
@@ -93,7 +104,7 @@ test('register, create a team and a database, write, read, browse rows, mint an 
   await test.step('create a burstable database', async () => {
     await page.getByRole('button', { name: 'New database' }).click();
     const dialog = page.getByRole('dialog', { name: 'New database' });
-    await dialog.getByLabel('Name').fill('scratch');
+    await fill(dialog.getByLabel('Name'), 'scratch');
     await dialog.getByLabel('Expires after idle for').selectOption({ label: '6 hours' });
     await screenshot(page, 'create-dialog');
     await dialog.getByRole('button', { name: 'Create database' }).click();
@@ -141,7 +152,7 @@ INSERT INTO notes (body, score) SELECT 'note ' || i, i * 0.5 FROM n;`,
 
   await test.step('read in the console', async () => {
     await page.getByRole('button', { name: 'Parameters' }).click();
-    await page.getByRole('textbox', { name: /Parameters/ }).fill('["hello"]');
+    await fill(page.getByRole('textbox', { name: /Parameters/ }), '["hello"]');
     await runSql(
       page,
       `SELECT id, body, score, data, 9007199254740993 AS big FROM notes WHERE body = ?`,
@@ -151,7 +162,7 @@ INSERT INTO notes (body, score) SELECT 'note ' || i, i * 0.5 FROM n;`,
     await expect(grid.locator('tbody tr')).toContainText('hello');
     await expect(grid.locator('tbody tr')).toContainText('blob 2 B');
     await expect(grid.locator('tbody tr')).toContainText('9007199254740993');
-    await page.getByRole('textbox', { name: /Parameters/ }).fill('');
+    await fill(page.getByRole('textbox', { name: /Parameters/ }), '');
     await runSql(page, `SELECT body, score FROM notes ORDER BY id LIMIT 5`);
     await expect(page.getByTestId('results').locator('tbody tr')).toHaveCount(5);
     await screenshot(page, 'console-read');
@@ -202,8 +213,8 @@ INSERT INTO notes (body, score) SELECT 'note ' || i, i * 0.5 FROM n;`,
     await page.getByRole('link', { name: 'Machines and API keys' }).click();
     await page.getByRole('button', { name: 'New machine' }).click();
     const machine = page.getByRole('dialog', { name: 'New machine' });
-    await machine.getByLabel('Name').fill('ci-runner');
-    await machine.getByLabel('Description').fill('synthetic test machine');
+    await fill(machine.getByLabel('Name'), 'ci-runner');
+    await fill(machine.getByLabel('Description'), 'synthetic test machine');
     await machine.getByRole('button', { name: 'Create machine' }).click();
     const keyDialog = page.getByRole('dialog', { name: 'New API key' });
     await expect(keyDialog.getByLabel('Name')).toHaveValue('ci-runner');
@@ -244,7 +255,7 @@ INSERT INTO notes (body, score) SELECT 'note ' || i, i * 0.5 FROM n;`,
   await test.step('switch teams', async () => {
     await page.getByRole('link', { name: 'New team' }).click();
     await expect(page.getByRole('heading', { name: 'New team' })).toBeVisible();
-    await page.getByLabel('Name').fill(`Second ${suffix}`);
+    await fill(page.getByLabel('Name'), `Second ${suffix}`);
     await page.getByRole('button', { name: 'Create team' }).click();
     await expect(page.getByText('No databases in this team yet.')).toBeVisible();
     await page.getByTestId('team-switch').selectOption({ label: `Synthetic ${suffix}` });
@@ -254,8 +265,8 @@ INSERT INTO notes (body, score) SELECT 'note ' || i, i * 0.5 FROM n;`,
   await test.step('sign out and back in', async () => {
     await page.getByRole('button', { name: 'Sign out' }).click();
     await expect(page.getByRole('heading', { name: 'Sign in' })).toBeVisible();
-    await page.getByLabel('Email').fill(email);
-    await page.getByLabel('Password').fill(password);
+    await fill(page.getByLabel('Email'), email);
+    await fill(page.getByLabel('Password'), password);
     await page.getByRole('button', { name: 'Sign in' }).click();
     await expect(page.locator('tbody tr', { hasText: 'scratch' })).toBeVisible();
   });
