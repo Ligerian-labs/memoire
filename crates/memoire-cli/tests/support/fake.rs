@@ -47,6 +47,8 @@ struct Key {
     subject: String,
     team: Option<String>,
     permissions: Vec<String>,
+    /// A machine's key acts only once its service account holds a role.
+    machine: Option<String>,
 }
 
 struct Db {
@@ -59,6 +61,8 @@ struct Inner {
     dir: tempfile::TempDir,
     keys: HashMap<String, Key>,
     sessions: Vec<String>,
+    /// Service accounts that hold the `member` role.
+    with_role: Vec<String>,
     databases: BTreeMap<String, Db>,
     serial: u64,
     page_size: usize,
@@ -81,12 +85,14 @@ impl Fake {
                 subject: "key_fake_member".into(),
                 team: Some(TEAM.into()),
                 permissions: ALL.iter().map(|p| (*p).to_owned()).collect(),
+                machine: None,
             },
         );
         let inner = Arc::new(Mutex::new(Inner {
             dir: tempfile::tempdir().unwrap(),
             keys,
             sessions: Vec::new(),
+            with_role: Vec::new(),
             databases: BTreeMap::new(),
             serial: 0,
             page_size: 2,
@@ -118,6 +124,7 @@ impl Fake {
                 subject: format!("key_{}", key.len()),
                 team: team.map(str::to_owned),
                 permissions: permissions.iter().map(|p| (*p).to_owned()).collect(),
+                machine: None,
             },
         );
     }
@@ -335,6 +342,14 @@ fn identity(inner: &mut Inner, method: &Method, rest: &[&str], seen: &Seen) -> R
             }
             Ok(reply(204, &Value::Null))
         }
+        ("GET", ["organizations", TEAM, "roles"]) => {
+            let token = bearer(seen).ok_or_else(|| fail(401, "unauthenticated"))?;
+            if !inner.sessions.iter().any(|s| s == token) {
+                return Err(fail(401, "unauthenticated"));
+            }
+            ok(json!({"items": [{"id": "role_admin", "key": "admin"},
+                                {"id": "role_member", "key": "member"}]}))
+        }
         ("POST", ["organizations", org, kind]) => {
             let token = bearer(seen).ok_or_else(|| fail(401, "unauthenticated"))?;
             if !inner.sessions.iter().any(|s| s == token) {
@@ -346,6 +361,14 @@ fn identity(inner: &mut Inner, method: &Method, rest: &[&str], seen: &Seen) -> R
             let body: Value = json_body(seen)?;
             inner.serial += 1;
             match *kind {
+                "role-assignments" => {
+                    if body["role_id"] != "role_member" {
+                        return Err(invalid("/role_id", "invalid"));
+                    }
+                    let machine = body["service_account_id"].as_str().unwrap().to_owned();
+                    inner.with_role.push(machine);
+                    Ok(reply(201, &json!({"role_assignment": body})))
+                }
                 "service-accounts" => Ok(reply(
                     201,
                     &json!({"service_account": {"id": format!("sa_{:04}", inner.serial), "name": body["name"]}}),
@@ -370,6 +393,7 @@ fn identity(inner: &mut Inner, method: &Method, rest: &[&str], seen: &Seen) -> R
                             subject: id.clone(),
                             team: Some(TEAM.into()),
                             permissions: permissions.clone(),
+                            machine: body["service_account_id"].as_str().map(str::to_owned),
                         },
                     );
                     Ok(reply(
@@ -397,7 +421,15 @@ fn memoire(inner: &mut Inner, method: &Method, rest: &[&str], seen: &Seen) -> Re
     if key.team.is_none() {
         return Err(fail(403, "tenant_required"));
     }
-    let permissions = key.permissions.clone();
+    let roleless = key
+        .machine
+        .as_ref()
+        .is_some_and(|m| !inner.with_role.contains(m));
+    let permissions = if roleless {
+        Vec::new()
+    } else {
+        key.permissions.clone()
+    };
     let need = |permission: &str| {
         if permissions.iter().any(|p| p.ends_with(permission)) {
             Ok(())

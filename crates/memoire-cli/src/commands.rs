@@ -354,6 +354,9 @@ fn mint(
             "identity returned a service account without an id",
         )
     })?;
+    // The key acts through the machine's role and carries a subset of it.
+    let member_role = member.role_id(team, "member")?;
+    member.assign_role(team, machine_id, &member_role)?;
     let permissions = if read_only {
         &PERMISSIONS[..1]
     } else {

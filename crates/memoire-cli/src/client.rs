@@ -336,6 +336,44 @@ impl Client {
         Ok(created.service_account)
     }
 
+    /// The id of the team role whose `key` is `role` (`member`, `admin`).
+    pub fn role_id(&self, team: &str, role: &str) -> Result<String> {
+        #[derive(Deserialize)]
+        struct Roles {
+            items: Vec<Value>,
+        }
+        let roles: Roles = self.json(self.request(
+            Method::GET,
+            &["v1", "identity", "organizations", team, "roles"],
+        ))?;
+        roles
+            .items
+            .iter()
+            .find(|r| r["key"] == role)
+            .and_then(|r| r["id"].as_str())
+            .map(str::to_owned)
+            .ok_or_else(|| {
+                Error::local(
+                    "invalid_response",
+                    exit::FAILURE,
+                    format!("the team has no `{role}` role"),
+                )
+            })
+    }
+
+    /// Gives a machine a team role; a machine holds no permission without
+    /// one.
+    pub fn assign_role(&self, team: &str, service_account: &str, role_id: &str) -> Result<()> {
+        self.send(
+            self.request(
+                Method::POST,
+                &["v1", "identity", "organizations", team, "role-assignments"],
+            )
+            .body_json(&json!({ "service_account_id": service_account, "role_id": role_id })),
+        )
+        .map(drop)
+    }
+
     pub fn create_api_key(&self, team: &str, body: &NewApiKey<'_>) -> Result<CreatedApiKey> {
         self.json(
             self.request(
