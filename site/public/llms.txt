@@ -1,0 +1,16 @@
+# memoire
+
+> SQLite databases on demand for agents, shared across teams and machines. Open source (Apache-2.0, Rust). Early: v1 is in progress.
+
+One always-on gateway handles every request, and the SQLite files live on its host. Agents and people create databases with the `memoire` CLI and query them over an HTTP JSON API.
+
+- Burstable databases are scratch space. They expire after an idle TTL (24 hours by default, at most 7 days after creation) and have no backups.
+- Persistent databases live until deleted. They are snapshotted every 6 hours, and snapshots are kept 7 days.
+- Access is per team. Members sign in. Machines and agents use API keys (`mzk_…`) that can be narrowed, for example to read-only.
+- Limits: 1 GiB per database, 50 active databases per team.
+
+## Documentation
+
+- [Repository](https://github.com/ligerian-labs/memoire): source, README and status
+- [HTTP API](https://github.com/ligerian-labs/memoire/blob/main/docs/api.md): the contract between the gateway and its clients
+- [Architecture](https://github.com/ligerian-labs/memoire/blob/main/docs/architecture.md): contexts, data plane rules and limits

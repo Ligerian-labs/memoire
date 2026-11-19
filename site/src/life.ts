@@ -134,7 +134,7 @@ export function createLife(root: HTMLElement): Scene {
         painter.spot(agent.x, agent.y, 20, agent.level * 0.4);
         const targets = i === 0 && scratchHeat > 0.2 ? [notes, scratch] : [notes];
         for (const target of targets) {
-          painter.line(agent.x, agent.y, target.x, target.y, 3, agent.level * 0.3);
+          painter.line(agent.x, agent.y, target.x, target.y, 3, agent.level * 0.36);
           if (env.reduced) continue;
           // A request travelling to the database.
           const k = (env.time * 0.45 + i * 0.37 + (target === scratch ? 0.5 : 0)) % 1;

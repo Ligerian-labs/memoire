@@ -52,7 +52,8 @@ It binds loopback. Exposure beyond the host is the operator's choice.
 | `src/main.ts` | Frame loop: wakes on input, sleeps when the field has settled |
 | `src/heat/` | The heat field (WebGL2), its source painter and the color ramp |
 | `src/hero.ts`, `life.ts`, `kinds.ts`, `access.ts`, `ember.ts`, `headings.ts` | One scene per part of the page |
-| `public/fonts/` | Anybody and Martian Mono, self-hosted (SIL Open Font License) |
+| `src/fonts/` | Anybody and Martian Mono, self-hosted (SIL Open Font License) |
+| `public/` | `robots.txt`, `llms.txt` and the font licenses, copied as they are |
 | `tests/` | Smoke test and screenshot scripts |
 
 Two query parameters help when testing: `?scale=1` pins the drawing-buffer

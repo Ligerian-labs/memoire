@@ -25,7 +25,7 @@ const TYPES = {
 const COMPRESSIBLE = new Set([".html", ".css", ".js", ".json", ".svg", ".txt"]);
 const SECURITY_HEADERS = {
   "Content-Security-Policy":
-    "default-src 'none'; script-src 'self'; style-src 'self'; font-src 'self'; img-src 'self' data:; base-uri 'none'; form-action 'none'; frame-ancestors 'none'",
+    "default-src 'none'; script-src 'self'; style-src 'self'; font-src 'self'; img-src 'self' data:; connect-src 'self'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'",
   "X-Content-Type-Options": "nosniff",
   "Referrer-Policy": "strict-origin-when-cross-origin",
 };
@@ -47,7 +47,6 @@ function config() {
 
 function cacheControl(path) {
   if (path.startsWith("/assets/")) return "public, max-age=31536000, immutable";
-  if (path.startsWith("/fonts/")) return "public, max-age=604800";
   return "no-cache";
 }
 
