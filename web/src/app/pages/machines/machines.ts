@@ -56,6 +56,8 @@ export class Machines {
   readonly now = signal(Date.now());
   readonly origin = location.origin;
 
+  /** A machine created whose role assignment failed, so Retry does not create a second one. */
+  private unassigned: ServiceAccount | null = null;
   machineName = '';
   machineDescription = '';
   keyName = '';
@@ -106,6 +108,7 @@ export class Machines {
   }
 
   openMachine(): void {
+    this.unassigned = null;
     this.machineName = '';
     this.machineDescription = '';
     this.formError.set('');
@@ -129,19 +132,24 @@ export class Machines {
   }
 
   async createMachine(): Promise<void> {
+    // Capture the form before the first await; edits while this runs do not change it.
+    const org = this.org;
+    const name = this.machineName.trim();
+    const description = this.machineDescription.trim() || undefined;
     await this.submit(async () => {
-      const org = this.org;
       // A machine acts only through a team role; its keys carry a subset of the role's permissions.
       const roles = await this.api.identity.roles(org);
       const member = roles.items.find((r) => r.key === 'member');
       if (!member) throw new Error('This team has no member role to give the machine.');
-      const machine = await this.api.identity.createServiceAccount(
-        org,
-        this.machineName.trim(),
-        this.machineDescription.trim() || undefined,
-      );
-      this.machines.update((m) => [...m, machine]);
+      // A retry after a failed role assignment reuses the machine already created.
+      let machine = this.unassigned;
+      if (!machine) {
+        machine = await this.api.identity.createServiceAccount(org, name, description);
+        this.unassigned = machine;
+        this.machines.update((m) => [...m, machine!]);
+      }
       await this.api.identity.assignRole(org, machine.id, member.id);
+      this.unassigned = null;
       this.openKey(machine.id);
       this.keyName = machine.name;
     }, false);

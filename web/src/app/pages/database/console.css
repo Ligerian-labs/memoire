@@ -116,9 +116,9 @@
 }
 .failed {
   display: block;
+  max-height: 8em;
   margin-top: 4px;
-  overflow: hidden;
+  overflow: auto;
   color: #5c140c;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  white-space: pre-wrap;
 }

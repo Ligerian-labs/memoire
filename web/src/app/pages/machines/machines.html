@@ -116,7 +116,7 @@
 </section>
 
 @if (dialog() === 'machine') {
-  <dialog appModal (closed)="closeDialog()" aria-labelledby="machine-title">
+  <dialog appModal [locked]="busy()" (closed)="closeDialog()" aria-labelledby="machine-title">
     <form (ngSubmit)="createMachine()">
       <header><h2 id="machine-title">New machine</h2></header>
       <label class="field">
@@ -139,7 +139,9 @@
         <p class="alert" role="alert">{{ formError() }}</p>
       }
       <footer>
-        <button class="btn" type="button" (click)="closeDialog()">Cancel</button>
+        <button class="btn" type="button" (click)="closeDialog()" [disabled]="busy()">
+          Cancel
+        </button>
         <button class="btn primary" type="submit" [disabled]="busy() || !machineName.trim()">
           Create machine
         </button>
