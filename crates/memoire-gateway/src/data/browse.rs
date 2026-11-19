@@ -252,11 +252,16 @@ pub fn rows(
     let mut more = false;
     // `{"columns":[…],"rows":[…],"next_after":"…"}` around the rows.
     let mut budget = MAX_RESULT_BYTES
-        - 256
-        - columns
-            .iter()
-            .map(|c| text_size(&c.name) + c.decltype.as_deref().map_or(4, text_size) + 24)
-            .sum::<usize>();
+        .checked_sub(
+            256 + columns
+                .iter()
+                .map(|c| text_size(&c.name) + c.decltype.as_deref().map_or(4, text_size) + 24)
+                .sum::<usize>(),
+        )
+        .ok_or(Refused::TooLarge)?;
+    // A row's `next_after`, should the page end on it: base64url of
+    // `{"d":…,"o":…,"p":[key…]}`.
+    let fixed_cursor = text_size(database) + text_size(object) + 40;
     while let Some(row) = found.next()? {
         if rows.len() == limit {
             more = true;
@@ -269,9 +274,10 @@ pub fn rows(
             .map(|c| row.get_ref(c).map(to_value))
             .collect::<rusqlite::Result<_>>()?;
         let cost: usize = 3 + values.iter().map(|v| size(v) + 1).sum::<usize>();
+        let cursor = (fixed_cursor + key.iter().map(|v| size(v) + 1).sum::<usize>()) * 4 / 3 + 4;
         // A short page rather than a response past the cap, ending at a row
-        // that fits; a row that alone passes it is refused.
-        if cost > budget {
+        // that fits with its cursor; a row that alone passes it is refused.
+        if cost + cursor > budget {
             if rows.is_empty() {
                 return Err(Refused::TooLarge);
             }

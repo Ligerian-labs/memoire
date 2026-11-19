@@ -115,14 +115,19 @@ impl DataPlane {
                 (writer, readers)
             })
             .await;
-            if let Ok((mut writer, _readers)) = drained {
-                *writer = None;
-                handle
-                    .readers
-                    .lock()
-                    .unwrap_or_else(|p| p.into_inner())
-                    .clear();
-            }
+            let Ok((mut writer, _readers)) = drained else {
+                // Still in use: the files stay, and the startup reconciler
+                // removes them, as it does any file the catalog no longer
+                // holds.
+                merezha_telemetry::event!(WARN, "memoire.remove_deferred");
+                return Ok(());
+            };
+            *writer = None;
+            handle
+                .readers
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .clear();
         }
         blocking(move || {
             for suffix in std::iter::once("").chain(SIDE_FILES.iter().copied()) {

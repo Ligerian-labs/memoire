@@ -239,7 +239,9 @@ impl Gateway {
         }
         head.push_str("\r\n");
         stream.write_all(head.as_bytes()).unwrap();
-        stream.write_all(bytes).unwrap();
+        // A server refusing a large body early may close before it is all
+        // sent; its 413 is still there to read.
+        let sent = stream.write_all(bytes);
         let mut response = Vec::new();
         let _ = stream.read_to_end(&mut response);
         let split = response
@@ -253,6 +255,9 @@ impl Gateway {
             .nth(1)
             .and_then(|s| s.parse().ok())
             .unwrap_or(0);
+        if let Err(error) = sent {
+            assert_eq!(status, 413, "the request was cut short: {error}");
+        }
         let body = if head
             .to_ascii_lowercase()
             .contains("transfer-encoding: chunked")

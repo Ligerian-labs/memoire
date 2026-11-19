@@ -296,8 +296,9 @@ pub fn to_value(value: ValueRef<'_>) -> SqlValue {
 pub fn size(value: &SqlValue) -> usize {
     match value {
         SqlValue::Null => 4,
-        // `{"type":"integer","value":"-9223372036854775808"}` at most.
-        SqlValue::Integer(_) => 48,
+        // `{"type":"integer","value":"-9223372036854775808"}`, 49 bytes, at
+        // most.
+        SqlValue::Integer(_) => 56,
         // The shortest round-trip form is at most 24 bytes; infinity is
         // `{"type":"real","value":"-Infinity"}`.
         SqlValue::Real(_) => 40,
