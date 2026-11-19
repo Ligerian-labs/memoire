@@ -58,11 +58,12 @@ if (ctx) {
     const wave = motion.matches ? 0 : Math.sin(elapsed / 2100);
     const travel = motion.matches ? 0 : Math.min(1, scrollY / Math.max(1, canvas.clientHeight));
     const separation = Number(slider.value) / 100 + travel * .78;
-    const scale = Math.min(width / 3.05, height / 2.55) / (1 + separation * .28);
+    const portrait = width < 740;
+    const scale = Math.min(width / (portrait ? 1.42 : 2.2), height / 1.78) / (1 + separation * .16);
     if (!scale) return;
     ctx.clearRect(0, 0, width, height);
     ctx.save();
-    ctx.translate(width * .5, height * .52);
+    ctx.translate(width * ((portrait ? .74 : .68) - travel * .17), height * ((portrait ? .52 : .54) - travel * .09));
     ctx.scale(scale, scale);
     const shadow = ctx.createRadialGradient(0,0,.03,0,0,1);
     shadow.addColorStop(0,"#692d3566");
@@ -118,7 +119,17 @@ if (ctx) {
     ctx.setTransform(ratio,0,0,ratio,0,0);
     refresh();
   }).observe(canvas);
-  new IntersectionObserver(([entry]) => {visible = entry.isIntersecting;refresh()}).observe(canvas);
+  // The hero remains pinned behind later cards. Stop painting once covered.
+  const hero = canvas.closest("section");
+  const firstEdge = document.querySelector("#demo");
+  function checkVisibility() {
+    const next = firstEdge.getBoundingClientRect().top > header.offsetHeight && hero.getBoundingClientRect().bottom > 0;
+    if (visible !== next) {
+      visible = next;
+      refresh();
+    }
+  }
+  window.addEventListener("scroll", checkVisibility, {passive:true});
   canvas.addEventListener("pointermove", event => {tilt = event.offsetX / width - .5});
   slider.addEventListener("input",refresh);
   document.addEventListener("visibilitychange",refresh);
@@ -126,16 +137,16 @@ if (ctx) {
 }
 
 const navigation = [...document.querySelectorAll('nav a[href^="#"]')];
-const sections = navigation.map(link => document.querySelector(link.hash));
+const sections = navigation.map(link => document.querySelector(link.hash).nextElementSibling);
 const header = document.querySelector(".masthead");
 let scrollFrame = 0;
 function updateNavigation() {
   scrollFrame = 0;
   const end = document.documentElement.scrollHeight - innerHeight;
   header.style.setProperty("--read", end > 0 ? Math.min(1, Math.max(0, scrollY / end)) : 1);
+  const foremost = [...document.querySelectorAll("main > section")].reverse().find(section => section.getBoundingClientRect().top <= innerHeight * .45);
   sections.forEach((section, index) => {
-    const bounds = section.getBoundingClientRect();
-    if (bounds.top <= innerHeight * .45 && bounds.bottom > innerHeight * .45) {
+    if (section === foremost) {
       navigation[index].setAttribute("aria-current", "location");
     } else {
       navigation[index].removeAttribute("aria-current");
@@ -148,3 +159,13 @@ function queueNavigation() {
 window.addEventListener("scroll", queueNavigation, {passive:true});
 window.addEventListener("resize", queueNavigation);
 updateNavigation();
+
+
+// A panel taller than the screen pins only after its last line comes into view.
+const deckCards = [...document.querySelectorAll("main > section")];
+const cardSizes = new ResizeObserver(entries => {
+  for (const {target} of entries) {
+    target.style.setProperty("--card-height", target.offsetHeight + "px");
+  }
+});
+for (const card of deckCards) cardSizes.observe(card);

@@ -117,3 +117,45 @@ main {overflow-x:clip}
  .masthead .brand{font-size:1.54rem}
  nav{gap:.4rem}nav .repo{padding-inline:.38rem}
 }
+
+:root {--header-height:4.6rem;--gutter:max(4vw,calc((100vw - 90rem)/2))}
+.deck-anchor {height:0;scroll-margin-top:var(--header-height)}
+main {isolation:isolate}
+main > .wrap {
+  position:relative;width:100%;margin:0;
+  min-height:calc(100svh - var(--header-height));
+  padding-inline:var(--gutter);background-color:var(--paper);
+}
+main > section + .deck-anchor + section,main > section.close {
+  border-radius:1.5rem 1.5rem 0 0;
+  box-shadow:0 -1rem 2.8rem #3023191c;
+}
+main .hero {
+  isolation:isolate;overflow:clip;display:flex;align-items:center;
+  padding-block:clamp(3rem,10vh,8rem) 7rem;
+}
+.hero .specimen {position:absolute;inset:0;z-index:-1;pointer-events:none}
+.hero .stage {position:absolute;inset:0;height:auto}
+.hero .stage::after {
+  content:"";position:absolute;inset:0;pointer-events:none;
+  background:linear-gradient(90deg,var(--paper) 2%,#f5f1e7f5 23%,#f5f1e7c2 36%,#f5f1e742 52%,transparent 69%);
+}
+.hero figcaption {position:absolute;bottom:1.5rem;right:var(--gutter);pointer-events:auto;min-width:13rem}
+.hero .hero-copy {max-width:42rem}
+.hero .intro {max-width:31ch}
+main .demo {background:#e8e1d2}
+main .storage {background:#f8f3eb;display:flex;flex-direction:column;justify-content:center}
+main .close {color:var(--paper);background:var(--ink);align-content:center;padding-right:49%}
+@media(prefers-reduced-motion:no-preference){
+  main > section.wrap {position:sticky;top:min(var(--header-height),calc(100svh - var(--card-height,100svh)))}
+}
+@media(max-width:720px){
+  :root {--header-height:3.9rem}
+  main .hero {align-items:flex-start;padding-top:clamp(3rem,10svh,7rem)}
+  .hero .stage::after {background:linear-gradient(150deg,#f5f1e7 2%,#f5f1e7f0 25%,#f5f1e7bb 42%,#f5f1e72b 61%,transparent 73%)}
+  .hero h1 {max-width:7ch}
+  .hero figcaption {bottom:1rem}
+  main .demo {align-content:center}
+  main .close {padding-right:var(--gutter)}
+  .hero .intro {max-width:27ch}
+}
