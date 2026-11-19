@@ -113,6 +113,28 @@ PostgreSQL, migrations, jobs, health and telemetry.
   databases past their idle TTL or lifetime. Persistent databases are
   snapshotted every 6 hours and snapshots older than 7 days are pruned.
 
+Data plane specifics:
+
+- Each statement is prepared with the authorizer on: `ATTACH`, `DETACH`,
+  `load_extension`, `fts3_tokenizer` and transaction control are refused,
+  and only an allow-list of pragmas that touch no file, journal or size
+  limit passes. `VACUUM INTO` is refused by its text, since SQLite shows the
+  authorizer no action for it. Connections run with `SQLITE_DBCONFIG_DEFENSIVE`,
+  untrusted schemas and `sqlite3_limit` caps (100 KiB statements, 16 MiB
+  values, 999 parameters).
+- Without `transaction` each write statement runs in a savepoint, so a
+  failing statement (a result limit included) leaves no change; `VACUUM`
+  runs outside one, as SQLite requires.
+- `size_bytes` is the file and its write-ahead log, whose pages belong to
+  the database until a checkpoint moves them.
+- Last use lives in `memoire.last_used` (team, database, Unix
+  milliseconds), flushed every `last_used_flush_seconds` and on shutdown.
+
+Merezha's edge rewrites any error body whose `error` object carries a
+member beyond `code`, `classification` and `details`, so `sql_error` sends
+SQLite's message in the `Memoire-Sql-Message` header. Letting a module add
+its own error member is a later upstream improvement.
+
 ## Limits
 
 | Limit | Value |
@@ -132,6 +154,9 @@ PostgreSQL, migrations, jobs, health and telemetry.
 | `data_dir` | required | Root of the SQLite files; relative to the configuration file |
 | `min_idle_ttl_seconds` | 60 | Shortest burstable idle TTL a client may ask for (1 to 604 800); lower it only to watch an expiry in tests |
 | `default_idle_ttl_seconds` | 86 400 | Idle TTL of a burstable database created without one |
+| `max_database_bytes` | 1 073 741 824 | Largest file (65 536 to 1 GiB), through `max_page_count` |
+| `idle_close_seconds` | 300 | A burstable database's connections close after this long without a request |
+| `last_used_flush_seconds` | 60 | How often last use reaches PostgreSQL |
 
 The gateway also needs `[application] path` naming the catalog
 application, and `[runtime] manifest` naming `guests/runtime.toml` (component

@@ -2527,6 +2527,7 @@ dependencies = [
  "merezha-postgres",
  "merezha-runtime",
  "merezha-telemetry",
+ "rusqlite",
  "rustls",
  "serde",
  "serde_json",

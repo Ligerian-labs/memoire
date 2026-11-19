@@ -15,7 +15,9 @@ pub mod whoami;
 pub use database::{
     CreateDatabase, Database, DatabaseKind, DatabaseState, ExtendDatabase, Page, valid_name,
 };
-pub use error::{ErrorBody, ErrorCode, ErrorDetail, FieldError, SqlErrorDetail};
+pub use error::{
+    ErrorBody, ErrorCode, ErrorDetail, FieldError, SQL_MESSAGE_HEADER, SqlErrorDetail,
+};
 pub use query::{
     Column, Params, QueryMode, QueryRequest, QueryResponse, Statement, StatementResult,
 };

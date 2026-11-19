@@ -1,8 +1,10 @@
 //! The error shape and memoire's own error codes.
 //!
 //! Errors use Merezha's shape, `{"error": {"code", "classification",
-//! "details"?}}`. `sql_error` adds an `sql` member (see [`SqlErrorDetail`]).
-//! Clients branch on `code` only; the HTTP status is fixed per code.
+//! "details"?}}`. `sql_error` carries which statement SQLite refused in
+//! `details` and SQLite's message in the [`SQL_MESSAGE_HEADER`] header; see
+//! [`SqlErrorDetail`]. Clients branch on `code` only; the HTTP status is
+//! fixed per code.
 use serde::{Deserialize, Serialize};
 
 /// An error code and the one HTTP status it always has.
@@ -58,8 +60,6 @@ pub struct ErrorDetail {
     /// request body and a code.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub details: Vec<FieldError>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub sql: Option<SqlErrorDetail>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -68,9 +68,18 @@ pub struct FieldError {
     pub code: String,
 }
 
-/// Which statement SQLite refused, and why. The message is SQLite's own
-/// text about the caller's SQL, at most 512 bytes; it never contains file
-/// paths.
+/// The response header of a `sql_error` that carries SQLite's message,
+/// percent-encoded UTF-8.
+pub const SQL_MESSAGE_HEADER: &str = "memoire-sql-message";
+
+/// Longest SQLite message a `sql_error` carries, in bytes before encoding.
+pub const MAX_SQL_MESSAGE: usize = 512;
+
+/// Which statement SQLite refused, and why: what a `sql_error` response
+/// carries in its one `details` entry
+/// (`{"path": "/statements/{statement}/sql", "code": "sqlite_<code>"}`)
+/// and its [`SQL_MESSAGE_HEADER`] header. The message is SQLite's own text
+/// about the caller's SQL, at most 512 bytes; it never contains file paths.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SqlErrorDetail {
     /// 0-based index into `statements`.
@@ -79,6 +88,74 @@ pub struct SqlErrorDetail {
     /// `SQLITE_CONSTRAINT`.
     pub sqlite_code: String,
     pub message: String,
+}
+
+impl SqlErrorDetail {
+    /// The response's `details` entry and header value.
+    pub fn to_wire(&self) -> (FieldError, String) {
+        (
+            FieldError {
+                path: format!("/statements/{}/sql", self.statement),
+                code: self.sqlite_code.to_ascii_lowercase(),
+            },
+            percent_encode(&self.message),
+        )
+    }
+
+    /// Reads a `sql_error` back from its body and its header (`None` when
+    /// the header is absent: the message is then empty). `None` for any
+    /// other error.
+    pub fn from_wire(error: &ErrorDetail, header: Option<&str>) -> Option<Self> {
+        if error.code != "sql_error" {
+            return None;
+        }
+        let detail = error.details.first()?;
+        let statement = detail
+            .path
+            .strip_prefix("/statements/")?
+            .strip_suffix("/sql")?
+            .parse()
+            .ok()?;
+        let sqlite_code = detail.code.strip_prefix("sqlite_")?;
+        Some(Self {
+            statement,
+            sqlite_code: format!("SQLITE_{}", sqlite_code.to_ascii_uppercase()),
+            message: header.and_then(percent_decode).unwrap_or_default(),
+        })
+    }
+}
+
+/// Percent-encodes every byte of `text` but RFC 3986's unreserved ones
+/// (`A-Z a-z 0-9 - . _ ~`), so the result is a valid header value.
+pub fn percent_encode(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    for byte in text.bytes() {
+        if byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'.' | b'_' | b'~') {
+            out.push(char::from(byte));
+        } else {
+            out.push_str(&format!("%{byte:02X}"));
+        }
+    }
+    out
+}
+
+/// The text [`percent_encode`] encoded; `None` for a malformed escape or
+/// bytes that are not UTF-8.
+pub fn percent_decode(text: &str) -> Option<String> {
+    let bytes = text.as_bytes();
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == b'%' {
+            let hex = std::str::from_utf8(bytes.get(i + 1..i + 3)?).ok()?;
+            out.push(u8::from_str_radix(hex, 16).ok()?);
+            i += 3;
+        } else {
+            out.push(bytes[i]);
+            i += 1;
+        }
+    }
+    String::from_utf8(out).ok()
 }
 
 #[cfg(test)]
@@ -105,12 +182,42 @@ mod tests {
     }
 
     #[test]
-    fn sql_errors_parse() {
+    fn sql_errors_travel_in_details_and_a_header() {
+        let detail = SqlErrorDetail {
+            statement: 1,
+            sqlite_code: "SQLITE_CONSTRAINT".into(),
+            message: "UNIQUE constraint failed: users.émail (100%)".into(),
+        };
+        let (entry, header) = detail.to_wire();
+        assert_eq!(
+            (entry.path.as_str(), entry.code.as_str()),
+            ("/statements/1/sql", "sqlite_constraint")
+        );
+        assert_eq!(
+            header,
+            "UNIQUE%20constraint%20failed%3A%20users.%C3%A9mail%20%28100%25%29"
+        );
         let body: ErrorBody = serde_json::from_str(
             r#"{"error":{"code":"sql_error","classification":"permanent",
-                "sql":{"statement":1,"sqlite_code":"SQLITE_ERROR","message":"no such table: t"}}}"#,
+                "details":[{"path":"/statements/1/sql","code":"sqlite_constraint"}]}}"#,
         )
         .unwrap();
-        assert_eq!(body.error.sql.unwrap().statement, 1);
+        assert_eq!(
+            SqlErrorDetail::from_wire(&body.error, Some(&header)),
+            Some(detail)
+        );
+        assert_eq!(
+            SqlErrorDetail::from_wire(&body.error, None)
+                .unwrap()
+                .message,
+            ""
+        );
+        let other = ErrorDetail {
+            code: "validation_failed".into(),
+            ..body.error
+        };
+        assert_eq!(SqlErrorDetail::from_wire(&other, Some("x")), None);
+        assert_eq!(percent_decode("%zz"), None);
+        assert_eq!(percent_decode("%C3"), None);
     }
 }

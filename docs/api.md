@@ -92,15 +92,21 @@ the same status.
              "details": [{"path": "/name", "code": "invalid"}]}}
   ```
 
-- `sql_error` adds `sql`: which statement SQLite refused and SQLite's
-  message about it (at most 512 bytes, never a file path). Merezha's shared
-  error builder has no such member, so the gateway writes this body itself,
-  with the same envelope, status and headers as every other error.
+- `sql_error` names the statement SQLite refused in one `details` entry,
+  path `/statements/{i}/sql` (0-based) and code `sqlite_` plus SQLite's
+  primary result code in lower case (`sqlite_constraint`, `sqlite_error`…).
+  SQLite's message about it (at most 512 bytes before encoding, never a
+  file path) is in the `Memoire-Sql-Message` response header,
+  percent-encoded UTF-8: every byte but `A-Z a-z 0-9 - . _ ~` is `%XX`.
+  Merezha's error shape has no room for a member of memoire's own, hence
+  the header.
 
-  ```json
+  ```http
+  HTTP/1.1 422 Unprocessable Entity
+  Memoire-Sql-Message: UNIQUE%20constraint%20failed%3A%20users.email
+
   {"error": {"code": "sql_error", "classification": "permanent",
-             "sql": {"statement": 1, "sqlite_code": "SQLITE_CONSTRAINT",
-                     "message": "UNIQUE constraint failed: users.email"}}}
+             "details": [{"path": "/statements/1/sql", "code": "sqlite_constraint"}]}}
   ```
 
 memoire's codes:
@@ -119,7 +125,7 @@ memoire's codes:
 | `database_too_large` | 413 | A write or import would pass the 1 GiB file limit |
 | `database_limit` | 422 | Create when the team already has 50 active databases |
 | `read_only` | 422 | A statement in `read` mode tried to write |
-| `sql_error` | 422 | SQLite refused a statement (syntax, constraint, missing table…); see `sql` |
+| `sql_error` | 422 | SQLite refused a statement (syntax, constraint, missing table…); `details` names it, the `Memoire-Sql-Message` header carries SQLite's message |
 | `statement_timeout` | 422 | A statement ran past its deadline and was interrupted |
 | `result_too_large` | 422 | A statement returned more than 10 000 rows, or the response passed 16 MiB |
 | `invalid_import` | 422 | The import body is not a SQLite database or fails `PRAGMA integrity_check` |
@@ -340,10 +346,12 @@ Answers `200` with one result per statement:
   inserted into a rowid table, in the value encoding. It is `null` when the
   statement inserted no such row: not an INSERT or REPLACE, a `WITHOUT
   ROWID` table, a row `OR IGNORE` skipped, or an UPSERT that only updated.
-  The gateway resets SQLite's value to 0 before the statement
-  (`sqlite3_set_last_insert_rowid`) and reads it after, so a value left by
-  an earlier statement never shows; a row inserted with the explicit rowid
-  0 therefore also reports `null`.
+  The gateway compares SQLite's value before and after the statement and
+  reports it only when it moved, so a value left by an earlier statement
+  never shows, while SQL's own `last_insert_rowid()` keeps its meaning
+  across the batch (`INSERT INTO child VALUES (last_insert_rowid())` sees
+  the row the previous statement inserted). A statement whose last insert
+  lands on the rowid the value already held therefore reports `null`.
 
 On failure the batch stops at the failing statement and the response is the
 error alone (`sql_error`, `read_only`, `statement_denied`,
