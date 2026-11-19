@@ -132,7 +132,10 @@ export const TTL_CHOICES = [
 export class CreateDatabaseDialog {
   private readonly api = inject(Api);
   private readonly session = inject(SessionStore);
-  readonly created = output<Database>();
+  /** Bound when the dialog opens: it creates in the team it was opened for. */
+  private readonly memoire = this.api.memoire.forTeam(this.session.teamId());
+  /** The database and the team it was created in. */
+  readonly created = output<{ database: Database; team: string | null }>();
   readonly cancelled = output<void>();
   readonly ttlChoices = TTL_CHOICES;
   readonly kind = signal<Kind>('burstable');
@@ -158,7 +161,7 @@ export class CreateDatabaseDialog {
             ? { name: this.name, kind, idle_ttl_seconds: this.ttl }
             : { name: this.name, kind },
         );
-      this.created.emit(database);
+      this.created.emit({ database, team: this.memoire.team });
     } catch (error) {
       this.error.set(describe(error));
     } finally {

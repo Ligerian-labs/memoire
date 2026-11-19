@@ -89,5 +89,8 @@
 </section>
 
 @if (creating()) {
-  <app-create-database (created)="created($event)" (cancelled)="creating.set(false)" />
+  <app-create-database
+    (created)="created($event.database, $event.team)"
+    (cancelled)="creating.set(false)"
+  />
 }

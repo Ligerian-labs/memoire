@@ -35,7 +35,10 @@ export class Databases implements OnDestroy {
   constructor() {
     effect(() => {
       this.session.teamId();
-      untracked(() => void this.load());
+      untracked(() => {
+        this.creating.set(false);
+        void this.load();
+      });
     });
   }
 
@@ -70,8 +73,10 @@ export class Databases implements OnDestroy {
     void this.router.navigate(['/databases', database.name]);
   }
 
-  async created(database: Database): Promise<void> {
+  async created(database: Database, team: string | null): Promise<void> {
     this.creating.set(false);
-    await this.router.navigate(['/databases', database.name]);
+    // Open it only if its team is still the one shown; otherwise the name could be another team's.
+    if (team === this.session.teamId()) await this.router.navigate(['/databases', database.name]);
+    else void this.load();
   }
 }
