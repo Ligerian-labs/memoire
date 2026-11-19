@@ -12,8 +12,8 @@ use crate::{
 };
 use axum::{
     Json, Router,
-    extract::{Path, Request, State},
-    http::StatusCode,
+    extract::{Path, Query, Request, State},
+    http::{StatusCode, Uri},
     middleware,
     response::{IntoResponse, Response},
     routing::{get, post},
@@ -125,8 +125,7 @@ async fn list(State(routes): State<Routes>, request: Request) -> Response {
         Ok(caller) => caller,
         Err(refusal) => return refusal,
     };
-    let query = request.uri().query().unwrap_or("");
-    let (all, after, limit) = match list_params(query) {
+    let (all, after, limit) = match list_params(request.uri()) {
         Ok(params) => params,
         Err(refusal) => return refusal,
     };
@@ -156,14 +155,18 @@ async fn list(State(routes): State<Routes>, request: Request) -> Response {
     Json(Page { items, next_cursor }).into_response()
 }
 
-/// `state`, `cursor` and `limit`; other parameters are ignored.
-fn list_params(query: &str) -> Result<(bool, Option<String>, usize), Response> {
+/// `state`, `cursor` and `limit`, percent-decoded; other parameters are
+/// ignored.
+fn list_params(uri: &Uri) -> Result<(bool, Option<String>, usize), Response> {
     let mut all = false;
     let mut cursor_text = None;
     let mut limit = DEFAULT_PAGE;
     let mut details = Vec::new();
-    for pair in query.split('&').filter(|p| !p.is_empty()) {
-        let (key, value) = pair.split_once('=').unwrap_or((pair, ""));
+    let Ok(Query(pairs)) = Query::<Vec<(String, String)>>::try_from_uri(uri) else {
+        return Err(invalid(vec![(String::new(), "invalid")]));
+    };
+    for (key, value) in &pairs {
+        let (key, value) = (key.as_str(), value.as_str());
         match key {
             "state" => match value {
                 "active" => all = false,
@@ -311,7 +314,12 @@ async fn remove(
     // Answer once reads see the delete, as every route reads its writes.
     match routes
         .catalog
-        .query(caller.edge(), "ListDatabases", json!({}), Some(&receipt))
+        .query(
+            caller.admitted(),
+            "ListDatabases",
+            json!({}),
+            Some(&receipt),
+        )
         .await
     {
         Ok(_) => no_content(),
@@ -372,10 +380,22 @@ async fn respond(
     after: Option<&merezha_domain::Receipt>,
     status: StatusCode,
 ) -> Response {
-    let answer = routes
-        .catalog
-        .query(caller.edge(), "GetDatabase", json!({"name": name}), after)
-        .await;
+    let payload = json!({"name": name});
+    let answer = match after {
+        // The answer to a change: the caller was admitted to make it.
+        Some(receipt) => {
+            routes
+                .catalog
+                .query(caller.admitted(), "GetDatabase", payload, Some(receipt))
+                .await
+        }
+        None => {
+            routes
+                .catalog
+                .query(caller.edge(), "GetDatabase", payload, None)
+                .await
+        }
+    };
     match answer.map(entry) {
         Ok(Ok(entry)) => (status, Json(entry.database())).into_response(),
         Ok(Err(refusal)) => refusal,
@@ -398,12 +418,14 @@ mod tests {
 
     #[test]
     fn list_parameters_are_checked() {
-        assert_eq!(list_params("").ok(), Some((false, None, DEFAULT_PAGE)));
-        assert_eq!(list_params("state=all&limit=3").ok(), Some((true, None, 3)));
+        let params = |query: &str| list_params(&format!("/databases?{query}").parse().unwrap());
+        assert_eq!(params("").ok(), Some((false, None, DEFAULT_PAGE)));
+        assert_eq!(params("state=all&limit=3").ok(), Some((true, None, 3)));
+        assert_eq!(params("state=%61ll").ok(), Some((true, None, DEFAULT_PAGE)));
         for bad in ["state=deleted", "limit=0", "limit=101", "limit=x"] {
-            assert_eq!(list_params(bad).unwrap_err().status(), 422, "{bad}");
+            assert_eq!(params(bad).unwrap_err().status(), 422, "{bad}");
         }
-        assert_eq!(list_params("cursor=zzz").unwrap_err().status(), 422);
+        assert_eq!(params("cursor=zzz").unwrap_err().status(), 422);
     }
 
     #[test]

@@ -10,6 +10,7 @@ use axum::{
     response::{IntoResponse, Response},
 };
 use memoire_api::limits::MAX_REQUEST_BYTES;
+use merezha_application::{Caller, Scope};
 use merezha_cli::application_http::EdgeCaller;
 use merezha_domain::{Failure, Identity};
 use merezha_platform::{
@@ -51,6 +52,32 @@ impl TeamCaller {
     /// The caller for the application, which checks the route again.
     pub fn edge(&self) -> EdgeCaller {
         EdgeCaller::new(Some(self.principal.clone()), self.policy.clone())
+    }
+
+    /// The same caller for the read that answers a change it was admitted
+    /// to make: a key holding only `memoire.databases.create` still gets
+    /// the database it created, so no second permission is checked.
+    pub fn admitted(&self) -> Admitted {
+        Admitted(self.edge())
+    }
+}
+
+/// A caller whose route the gateway already admitted; see
+/// [`TeamCaller::admitted`].
+pub struct Admitted(EdgeCaller);
+
+impl Caller for Admitted {
+    fn principal(&self, scope: &Scope) -> Option<merezha_domain::Principal> {
+        self.0.principal(scope)
+    }
+    fn tenant(&self) -> Option<Identity> {
+        self.0.tenant()
+    }
+    fn authenticated(&self) -> bool {
+        self.0.authenticated()
+    }
+    fn check(&self, _: &Identity, _: &Scope) -> Result<(), Failure> {
+        Ok(())
     }
 }
 

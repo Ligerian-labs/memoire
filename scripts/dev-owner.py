@@ -27,6 +27,7 @@ import json
 import os
 import secrets
 import sys
+import tempfile
 import time
 import urllib.error
 import urllib.request
@@ -163,12 +164,16 @@ def main():
     }
     out = os.path.abspath(args.out)
     os.makedirs(os.path.dirname(out), mode=0o700, exist_ok=True)
-    temporary = out + ".tmp"
-    descriptor = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
-    with os.fdopen(descriptor, "w") as file:
-        json.dump(record, file, indent=2)
-        file.write("\n")
-    os.replace(temporary, out)
+    # mkstemp creates a new mode 0600 file, never an existing one.
+    descriptor, temporary = tempfile.mkstemp(dir=os.path.dirname(out), prefix=".owner-")
+    try:
+        with os.fdopen(descriptor, "w") as file:
+            json.dump(record, file, indent=2)
+            file.write("\n")
+        os.replace(temporary, out)
+    finally:
+        if os.path.exists(temporary):
+            os.unlink(temporary)
 
     status, body = call(server, "GET", "/v1/memoire/whoami", None, {"Authorization": f"Bearer {body['key']}"})
     body = need(status, body, 200, "whoami with the new key")

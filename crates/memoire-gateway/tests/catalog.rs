@@ -434,6 +434,25 @@ fn permissions_follow_roles_and_keys() {
     assert_eq!((status, code(&body)), (403, "unauthorized"), "{body}");
     assert_eq!(full.call("DELETE", "/databases/tmp", None).0, 204);
 
+    // A key holding only a change's permission gets its answer too.
+    let only = |permission: &str| {
+        let (status, body) = api_key(&gateway, &owner, &team, &[permission], None);
+        assert_eq!(status, 201, "{body}");
+        Client {
+            gateway: &gateway,
+            auth: format!("Bearer {}", body["key"].as_str().unwrap()),
+            team: None,
+        }
+    };
+    let (status, body) =
+        only("memoire.databases.create").create(json!({"name": "narrow", "kind": "burstable"}));
+    assert_eq!((status, &body["name"]), (201, &json!("narrow")), "{body}");
+    let (status, body) =
+        only("memoire.databases.write").call("POST", "/databases/narrow/extend", None);
+    assert_eq!((status, &body["name"]), (200, &json!("narrow")), "{body}");
+    let (status, body) = only("memoire.databases.delete").call("DELETE", "/databases/narrow", None);
+    assert_eq!(status, 204, "{body}");
+
     // A member invited with the `member` role holds all five.
     let (status, roles) = gateway.request(
         "GET",
