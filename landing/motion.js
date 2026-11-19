@@ -37,11 +37,8 @@ if (navigator.clipboard) {
   });
 }
 
-// Parallel slices of the same folded M used in the wordmark.
-const contours = [
-  [[-1,.65],[-.77,-.44],[-.44,-.44],[-.22,-.02],[.25,-.44],[.57,-.44],[.83,.65],[.39,.65],[.26,.11],[-.24,.56],[-.48,.08],[-.61,.65]],
-  [[-.37,-.62],[-.13,-.97],[.28,-.97],[-.08,-.62]],
-];
+// The small wordmark, sculpture and closing impression use one set of outlines.
+const plates = Array.from(document.querySelectorAll("#ligature path"), path => new Path2D(path.getAttribute("d")));
 const canvas = document.querySelector("#field");
 const ctx = canvas.getContext("2d");
 const slider = document.querySelector("#spread");
@@ -59,7 +56,8 @@ if (ctx) {
     elapsed += lastTime ? Math.min(time - lastTime, 45) : 0;
     lastTime = time;
     const wave = motion.matches ? 0 : Math.sin(elapsed / 2100);
-    const separation = Number(slider.value) / 100;
+    const travel = motion.matches ? 0 : Math.min(1, scrollY / Math.max(1, canvas.clientHeight));
+    const separation = Number(slider.value) / 100 + travel * .78;
     const scale = Math.min(width / 3.05, height / 2.55) / (1 + separation * .28);
     if (!scale) return;
     ctx.clearRect(0, 0, width, height);
@@ -78,25 +76,30 @@ if (ctx) {
     const entrance = motion.matches ? 0 : Math.max(0, 1 - elapsed / 1250) ** 2;
     const depth = .45 + separation * .65 + wave * .1 + entrance * .55;
     const angle = -.19 + wave * .055 + tilt * .045;
-    ctx.rotate(angle);
+    ctx.rotate(angle + travel * .32);
     for (let i = 0; i < 27; i++) {
       const z = i / 26 - .5;
       ctx.save();
       ctx.rotate(z * (separation * .96 + entrance * .58 + wave * .14));
       ctx.transform(.91,-.14,.08,.95,z * depth,-z * depth * .52);
-      for (const contour of contours) {
-        ctx.beginPath();
-        contour.forEach(([x,y], j) => j ? ctx.lineTo(x,y) : ctx.moveTo(x,y));
-        ctx.closePath();
-        const ink = ctx.createLinearGradient(-1,-.9,.85,.65);
-        if (i === 26) {
-          ink.addColorStop(0,"#ff754c"); ink.addColorStop(.5,"#e84220"); ink.addColorStop(1,"#ae281a");
-        } else {
-          ink.addColorStop(0,"#95302e"); ink.addColorStop(.55,"#ed5537"); ink.addColorStop(1,"#772924");
-        }
-        ctx.fillStyle = ink; ctx.fill();
-        ctx.strokeStyle = i === 26 ? "#ff9d72" : "#60201c";
-        ctx.lineWidth = .009; ctx.stroke();
+      ctx.scale(.018,.018);
+      ctx.translate(-59,-28);
+      const ink = ctx.createLinearGradient(0,-8,108,61);
+      if (i === 26) {
+        ink.addColorStop(0,"#ff7949");
+        ink.addColorStop(.5,"#e6381b");
+        ink.addColorStop(1,"#a42116");
+      } else {
+        ink.addColorStop(0,"#852222");
+        ink.addColorStop(.55,"#ed5537");
+        ink.addColorStop(1,"#681b18");
+      }
+      ctx.fillStyle = ink;
+      ctx.strokeStyle = i === 26 ? "#ff9d72" : "#60201c";
+      ctx.lineWidth = .36;
+      for (const plate of plates) {
+        ctx.fill(plate, "evenodd");
+        ctx.stroke(plate);
       }
       ctx.restore();
     }
@@ -121,3 +124,27 @@ if (ctx) {
   document.addEventListener("visibilitychange",refresh);
   motion.addEventListener("change",refresh);
 }
+
+const navigation = [...document.querySelectorAll('nav a[href^="#"]')];
+const sections = navigation.map(link => document.querySelector(link.hash));
+const header = document.querySelector(".masthead");
+let scrollFrame = 0;
+function updateNavigation() {
+  scrollFrame = 0;
+  const end = document.documentElement.scrollHeight - innerHeight;
+  header.style.setProperty("--read", end > 0 ? Math.min(1, Math.max(0, scrollY / end)) : 1);
+  sections.forEach((section, index) => {
+    const bounds = section.getBoundingClientRect();
+    if (bounds.top <= innerHeight * .45 && bounds.bottom > innerHeight * .45) {
+      navigation[index].setAttribute("aria-current", "location");
+    } else {
+      navigation[index].removeAttribute("aria-current");
+    }
+  });
+}
+function queueNavigation() {
+  if (!scrollFrame) scrollFrame = requestAnimationFrame(updateNavigation);
+}
+window.addEventListener("scroll", queueNavigation, {passive:true});
+window.addEventListener("resize", queueNavigation);
+updateNavigation();

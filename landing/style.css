@@ -13,7 +13,6 @@ a:focus-visible,button:focus-visible,input:focus-visible {outline:3px solid #007
 .masthead,footer,figcaption,.titlebar {justify-content:space-between}
 .masthead {border-bottom:1px solid var(--ink);height:5.5rem}
 .brand {gap:.25em;font:italic 2.55rem/.9 var(--serif);letter-spacing:-.065em;min-height:44px}
-.mark {position:relative;display:inline-block;width:.83em;height:.72em;background:currentColor;clip-path:polygon(0 100%,14% 30%,33% 30%,46% 58%,70% 30%,87% 30%,100% 100%,75% 100%,69% 67%,43% 96%,30% 64%,24% 100%,0 100%,0 0,68% 0,51% 21%,33% 21%,45% 0,0 0)}
 nav {gap:1.4rem}
 nav a, .button, .eyebrow,figcaption,.titlebar,.steps {font:600 1rem/1.1 Barlow,sans-serif;letter-spacing:.065em;text-transform:uppercase}
 nav a {display:grid;place-items:center;min-height:44px}
@@ -27,13 +26,8 @@ h1 em,h2 em {color:var(--red)}
 .intro,.section-copy p:last-child,.close p:not(.eyebrow),article p {max-width:36ch;margin:1.6rem 0;line-height:1.55}
 .button {display:inline-flex;align-items:center;gap:1.9rem;background:var(--ink);color:var(--paper);padding:1rem 1.15rem;min-height:48px;transition:background .2s}
 .button:hover {background:var(--red)}
-.specimen {margin:0;background:#ecd9d0;position:relative;border:1px solid #beaba3}
-.stage {height:clamp(24rem,37vw,37rem);position:relative;background:radial-gradient(ellipse at 45% 39%,#fff1db 0,#f3e2d3 39%,#e7cccc 84%);overflow:hidden}
-.stage::before,.stage::after {content:"+";position:absolute;font:1.4rem/1 var(--mono);color:#84645e}
-.stage::before {left:.85rem;top:.65rem}
-.stage::after {right:.85rem;bottom:.65rem}
+.stage {height:clamp(24rem,37vw,37rem);position:relative;overflow:hidden}
 canvas {width:100%;height:100%;display:block}
-figcaption {background:#f1e7dd;gap:1rem;padding:0 1.2rem;border-top:1px solid #beaba3;min-height:3.4rem}
 input[type=range] {width:45%;height:44px;accent-color:var(--red);cursor:ew-resize}
 .section {padding-block:clamp(4.2rem,7vw,7.5rem);border-top:1px solid var(--ink)}
 .demo {display:grid;grid-template-columns:.9fr 1.1fr;align-items:center;gap:3vw}
@@ -74,3 +68,52 @@ footer {min-height:6rem}
  }
 }
 @media(prefers-reduced-motion:reduce){html{scroll-behavior:auto}}
+.definitions {position:absolute;width:0;height:0;overflow:hidden}
+.mark {width:1.35em;height:.87em;fill:currentColor}
+.masthead {position:sticky;top:0;z-index:5;background:var(--paper);height:4.6rem}
+.masthead::after {content:"";position:absolute;inset:auto 0 -1px;height:3px;background:var(--red);transform:scaleX(var(--read,0));transform-origin:left}
+section[id] {scroll-margin-top:4.6rem}
+nav a[aria-current="location"] {color:var(--red)}
+.specimen {position:relative;margin:0}
+figcaption {display:flex;justify-content:center;gap:1rem;min-height:44px}
+figcaption label {font-size:.86rem;color:#6e4139}
+input[type=range] {width:min(32%,9rem)}
+.close {position:relative;isolation:isolate;overflow:hidden;text-align:left;padding-right:49%}
+.close .eyebrow {justify-content:flex-start}
+.close p:not(.eyebrow) {margin-inline:0}
+.afterimage {position:absolute;z-index:-1;right:2%;width:44%;inset-block:0;color:#ff7350;pointer-events:none}
+.afterimage svg {position:absolute;top:50%;left:50%;width:78%;overflow:visible;fill:transparent;stroke:currentColor;stroke-width:.4;transform:translate(-50%,-50%) rotate(calc(-24deg + var(--i)*3deg)) translateY(calc(var(--i)*-2px))}
+.afterimage svg:last-child {fill:var(--ink);stroke:#ffac85}
+@media(max-width:720px){
+ .masthead {height:3.9rem}nav{gap:.75rem}nav a{font-size:.83rem}nav .repo{padding-inline:.6rem}
+ .brand{font-size:1.85rem}.hero{gap:.5rem}.stage{height:clamp(14rem,62vw,24rem)}
+ .close{padding-right:4%;padding-bottom:15rem}.afterimage{inset:auto 4% -1rem auto;height:16rem;width:min(80%,31rem)}
+}
+@media(prefers-reduced-motion:no-preference){
+ @supports(animation-timeline:view()){
+  .section h2 em {display:inline-block;animation: italic-drift linear both;animation-timeline:view();animation-range:entry 0% cover 45%}
+  .cards article:nth-child(2){animation-range:entry 0% entry 85%}
+  .close{view-timeline-name:--impression}
+  .afterimage svg{animation:print-fan linear both;animation-timeline:--impression;animation-range:entry 0% cover 80%}
+  @keyframes italic-drift{from{transform:translateX(.25em) skewX(-9deg)}to{transform:none}}
+  @keyframes print-fan{from{transform:translate(-55%,-50%) rotate(-16deg)}to{transform:translate(-50%,-50%) rotate(calc(-52deg + var(--i)*9deg)) translateY(calc(var(--i)*-2px))}}
+ }
+}
+main {overflow-x:clip}
+.card-glyph {position:relative;width:5rem;height:3.5rem;margin-bottom:1.6rem}
+.card-glyph i {position:absolute;display:block;border:1px solid var(--red)}
+.burst i {width:3.3rem;height:.35rem;top:50%;left:.2rem;background:var(--red);transform:rotate(calc(var(--i)*22.5deg))}
+.persist i {width:3.2rem;height:.95rem;left:.2rem;bottom:calc(var(--i)*.24rem);background:#ebe6da;border-radius:50%}
+@media(prefers-reduced-motion:no-preference){
+ @supports(animation-timeline:view()){
+  .cards{view-timeline-name:--storage}
+  .card-glyph i {animation:spool linear both;animation-timeline:--storage;animation-range:entry 0% cover 65%}
+  .persist i {animation-name:stack}
+  @keyframes spool {from{transform:rotate(-42deg)}to{transform:rotate(calc(var(--i)*22.5deg))}}
+  @keyframes stack {from{transform:translateY(calc(var(--i)*.22rem))}to{transform:none}}
+ }
+}
+@media(max-width:360px){
+ .masthead .brand{font-size:1.54rem}
+ nav{gap:.4rem}nav .repo{padding-inline:.38rem}
+}
