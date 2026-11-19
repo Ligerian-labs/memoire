@@ -99,10 +99,31 @@ impl DataPlane {
     }
 
     /// Closes the database and removes its files. Requests already running
-    /// finish on the unlinked file first.
+    /// on it finish first (within twice the busy timeout); then its
+    /// connections close, so none recreates a side file after the unlink.
     pub async fn remove(&self, team: &str, id: &str) -> Result<(), Failure> {
         let path = self.path(team, id)?;
-        self.lock().remove(&path);
+        let handle = self.lock().remove(&path);
+        if let Some(handle) = handle {
+            let drained = tokio::time::timeout(BUSY_TIMEOUT * 2, async {
+                let writer = handle.writer.clone().lock_owned().await;
+                let readers = handle
+                    .slots
+                    .clone()
+                    .acquire_many_owned(READERS as u32)
+                    .await;
+                (writer, readers)
+            })
+            .await;
+            if let Ok((mut writer, _readers)) = drained {
+                *writer = None;
+                handle
+                    .readers
+                    .lock()
+                    .unwrap_or_else(|p| p.into_inner())
+                    .clear();
+            }
+        }
         blocking(move || {
             for suffix in std::iter::once("").chain(SIDE_FILES.iter().copied()) {
                 let mut file = path.clone().into_os_string();
@@ -257,7 +278,11 @@ impl DataPlane {
     /// The schema.
     pub async fn schema(&self, target: &Target) -> Result<Schema, Refused> {
         self.on_reader(target, |opened| {
-            browse::schema(&opened.connection).map_err(|_| Refused::Code("internal"))
+            let connection = &opened.connection;
+            browse::bounded(connection, || {
+                browse::schema(connection).map_err(browse::Refused::from)
+            })
+            .map_err(browse_refusal)
         })
         .await
     }
@@ -272,18 +297,11 @@ impl DataPlane {
     ) -> Result<Rows, Refused> {
         let database = target.id.clone();
         self.on_reader(target, move |opened| {
-            browse::rows(
-                &opened.connection,
-                &database,
-                &object,
-                limit,
-                after.as_deref(),
-            )
-            .map_err(|refused| match refused {
-                browse::Refused::TableNotFound => Refused::Code("table_not_found"),
-                browse::Refused::InvalidPage => Refused::Code("invalid_page"),
-                browse::Refused::Sqlite => Refused::Code("internal"),
+            let connection = &opened.connection;
+            browse::bounded(connection, || {
+                browse::rows(connection, &database, &object, limit, after.as_deref())
             })
+            .map_err(browse_refusal)
         })
         .await
     }
@@ -303,6 +321,16 @@ impl DataPlane {
     pub fn idle_check(&self) -> Duration {
         (self.idle_close / 4).clamp(Duration::from_millis(100), Duration::from_secs(30))
     }
+}
+
+fn browse_refusal(refused: browse::Refused) -> Refused {
+    Refused::Code(match refused {
+        browse::Refused::TableNotFound => "table_not_found",
+        browse::Refused::InvalidPage => "invalid_page",
+        browse::Refused::TooLarge => "result_too_large",
+        browse::Refused::Timeout => "statement_timeout",
+        browse::Refused::Sqlite => "internal",
+    })
 }
 
 async fn blocking<T: Send + 'static>(

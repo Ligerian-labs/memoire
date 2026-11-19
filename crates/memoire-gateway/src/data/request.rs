@@ -39,15 +39,14 @@ type Object = BTreeMap<String, Box<RawValue>>;
 
 /// The `mode` field alone, so the route can check the permission it needs
 /// before it reports field problems. `write` only when it says so.
+/// It reads the body as [`parse`] does, so a repeated `mode` key resolves
+/// the same way for the permission and for the run.
 pub fn mode_of(body: &[u8]) -> QueryMode {
-    #[derive(serde::Deserialize)]
-    struct Mode {
-        #[serde(default)]
-        mode: Option<QueryMode>,
-    }
-    serde_json::from_slice::<Mode>(body)
+    serde_json::from_slice::<Object>(body)
         .ok()
-        .and_then(|m| m.mode)
+        .and_then(|root| root.get("mode").map(|raw| raw.get().to_owned()))
+        .and_then(|raw| serde_json::from_str::<Option<QueryMode>>(&raw).ok())
+        .flatten()
         .unwrap_or_default()
 }
 
@@ -300,5 +299,9 @@ mod tests {
         assert_eq!(mode_of(br#"{"mode": "write"}"#), QueryMode::Write);
         assert_eq!(mode_of(br#"{"mode": "read"}"#), QueryMode::Read);
         assert_eq!(mode_of(b"not json"), QueryMode::Read);
+        // A repeated key: the permission and the run see the same, last one.
+        let twice = br#"{"mode": "read", "mode": "write", "statements": [{"sql": "select 1"}]}"#;
+        assert_eq!(mode_of(twice), QueryMode::Write);
+        assert_eq!(parse(twice).unwrap().mode, QueryMode::Write);
     }
 }

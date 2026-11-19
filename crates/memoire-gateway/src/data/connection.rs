@@ -73,14 +73,30 @@ pub struct Guard {
 }
 
 impl Guard {
-    /// Runs `prepare` with the authorizer on; `true` beside its result
-    /// when the authorizer refused something in it.
-    pub fn client<T>(&self, prepare: impl FnOnce() -> T) -> (T, bool) {
+    /// Turns the authorizer on until the returned scope drops. A client
+    /// statement keeps it on from its preparation to its last step, since
+    /// SQLite prepares again while stepping (a schema change, a table-valued
+    /// pragma).
+    pub fn activate(&self) -> Active<'_> {
         self.denied.store(false, Ordering::SeqCst);
         self.active.store(true, Ordering::SeqCst);
-        let out = prepare();
-        self.active.store(false, Ordering::SeqCst);
-        (out, self.denied.swap(false, Ordering::SeqCst))
+        Active(self)
+    }
+}
+
+/// The authorizer is on while this lives.
+pub struct Active<'a>(&'a Guard);
+
+impl Active<'_> {
+    /// Whether the authorizer refused something since activation.
+    pub fn denied(&self) -> bool {
+        self.0.denied.load(Ordering::SeqCst)
+    }
+}
+
+impl Drop for Active<'_> {
+    fn drop(&mut self) {
+        self.0.active.store(false, Ordering::SeqCst);
     }
 }
 

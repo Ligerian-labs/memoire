@@ -117,11 +117,12 @@ impl LastUse {
         Ok(uses)
     }
 
-    /// Writes the pending uses to the store; on failure they stay pending.
+    /// Writes the pending uses to the store. They stay pending until the
+    /// write committed, so a failed or interrupted flush loses none.
     pub async fn flush(&self, db: &Database) -> Result<(), Failure> {
         let pending: Vec<(Key, u64)> = {
-            let mut map = self.pending.lock().unwrap_or_else(|p| p.into_inner());
-            map.drain().collect()
+            let map = self.pending.lock().unwrap_or_else(|p| p.into_inner());
+            map.iter().map(|(k, v)| (k.clone(), *v)).collect()
         };
         if pending.is_empty() {
             return Ok(());
@@ -142,11 +143,13 @@ impl LastUse {
                 })
             })
             .await;
-        if written.is_err() {
+        if written.is_ok() {
+            // Keep what arrived meanwhile.
             let mut map = self.pending.lock().unwrap_or_else(|p| p.into_inner());
             for (key, at) in pending {
-                let entry = map.entry(key).or_insert(at);
-                *entry = (*entry).max(at);
+                if map.get(&key) == Some(&at) {
+                    map.remove(&key);
+                }
             }
         }
         written

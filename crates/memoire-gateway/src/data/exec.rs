@@ -34,7 +34,8 @@ pub fn run(
     batch: &Batch,
 ) -> Result<Vec<StatementResult>, Refused> {
     let write = batch.mode == QueryMode::Write;
-    let mut budget = MAX_RESULT_BYTES;
+    // `{"results":[…]}` and the separators between results.
+    let mut budget = MAX_RESULT_BYTES - ENVELOPE - batch.statements.len();
     if batch.transaction {
         let begin = if write { "BEGIN IMMEDIATE" } else { "BEGIN" };
         connection
@@ -45,7 +46,10 @@ pub fn run(
             match one(connection, guard, i, statement, write, batch, &mut budget) {
                 Ok(result) => results.push(result),
                 Err(refused) => {
-                    let _ = connection.execute_batch("ROLLBACK");
+                    // SQLite may have rolled back already (`OR ROLLBACK`).
+                    if !connection.is_autocommit() {
+                        let _ = connection.execute_batch("ROLLBACK");
+                    }
                     return Err(refused);
                 }
             }
@@ -66,7 +70,9 @@ pub fn run(
                 .map_err(|e| refusal(i, &e))?;
         }
         let outcome = one(connection, guard, i, statement, write, batch, &mut budget);
-        if savepoint {
+        // A conflict clause of `ROLLBACK` ends every savepoint itself; the
+        // statement's own refusal is the answer then.
+        if savepoint && !connection.is_autocommit() {
             let end = if outcome.is_ok() {
                 "RELEASE memoire_statement"
             } else {
@@ -94,20 +100,43 @@ fn one(
     if vacuum_into(&statement.sql) {
         return Err(Refused::Code("statement_denied"));
     }
-    let (prepared, denied) = guard.client(|| connection.prepare(&statement.sql));
-    let mut prepared = match prepared {
+    let deadline = Instant::now() + batch.timeout;
+    connection
+        .progress_handler(1000, Some(move || Instant::now() >= deadline))
+        .map_err(|e| refusal(i, &e))?;
+    let result = guarded(connection, guard, i, statement, write, budget);
+    finish(connection, result)
+}
+
+/// One statement, the authorizer on from its preparation to its last step.
+/// A plain `VACUUM` steps with it off: SQLite attaches a database of its own
+/// to rebuild the file.
+fn guarded(
+    connection: &Connection,
+    guard: &Guard,
+    i: usize,
+    statement: &Statement,
+    write: bool,
+    budget: &mut usize,
+) -> Result<StatementResult, Refused> {
+    let mut scope = Some(guard.activate());
+    let denied = |scope: &Option<_>| {
+        scope
+            .as_ref()
+            .is_some_and(|s: &crate::data::connection::Active<'_>| s.denied())
+    };
+    let mut prepared = match connection.prepare(&statement.sql) {
         Ok(prepared) => prepared,
-        Err(_) if denied => return Err(Refused::Code("statement_denied")),
+        Err(_) if denied(&scope) => return Err(Refused::Code("statement_denied")),
         Err(error) => return Err(refusal(i, &error)),
     };
     if !write && !prepared.readonly() {
         return Err(Refused::Code("read_only"));
     }
     bind(&mut prepared, i, &statement.params)?;
-    let deadline = Instant::now() + batch.timeout;
-    connection
-        .progress_handler(1000, Some(move || Instant::now() >= deadline))
-        .map_err(|e| refusal(i, &e))?;
+    if vacuum(&statement.sql) {
+        scope = None;
+    }
     let columns: Vec<Column> = prepared
         .columns()
         .iter()
@@ -117,11 +146,20 @@ fn one(
         })
         .collect();
     let count = columns.len();
+    // The result's own fields and its columns, before any row.
+    let overhead = RESULT
+        + columns
+            .iter()
+            .map(|c| text_size(&c.name) + c.decltype.as_deref().map_or(4, text_size) + COLUMN)
+            .sum::<usize>();
+    *budget = budget
+        .checked_sub(overhead)
+        .ok_or(Refused::Code("result_too_large"))?;
     let changes_before = connection.total_changes();
-    // So a value an earlier statement left never shows as this one's.
-    // SAFETY: the handle is this live connection's, used on its own thread
-    // for one call that only resets an integer.
-    unsafe { rusqlite::ffi::sqlite3_set_last_insert_rowid(connection.handle(), 0) };
+    // SQLite's value is left alone, so `last_insert_rowid()` keeps its
+    // meaning across the batch; a statement inserted a rowid row when the
+    // value moved.
+    let rowid_before = connection.last_insert_rowid();
     let mut rows = Vec::new();
     let mut stepped = prepared.raw_query();
     let outcome = loop {
@@ -131,40 +169,59 @@ fn one(
                     break Err(Refused::Code("result_too_large"));
                 }
                 let mut values = Vec::with_capacity(count);
+                let mut cost = ROW;
                 for c in 0..count {
                     let value = match row.get_ref(c) {
                         Ok(value) => to_value(value),
-                        Err(error) => return finish(connection, Err(refusal(i, &error))),
+                        Err(error) => return Err(refusal(i, &error)),
                     };
-                    let cost = size(&value);
-                    if cost > *budget {
-                        return finish(connection, Err(Refused::Code("result_too_large")));
-                    }
-                    *budget -= cost;
+                    cost += size(&value) + 1;
                     values.push(value);
+                }
+                match budget.checked_sub(cost) {
+                    Some(left) => *budget = left,
+                    None => break Err(Refused::Code("result_too_large")),
                 }
                 rows.push(values);
             }
             Ok(None) => break Ok(()),
+            Err(_) if denied(&scope) => break Err(Refused::Code("statement_denied")),
             Err(error) => break Err(refusal(i, &error)),
         }
     };
     drop(stepped);
-    let result = outcome.map(|()| {
+    drop(scope);
+    outcome.map(|()| {
         let changed = connection.total_changes() != changes_before;
         let rowid = connection.last_insert_rowid();
         StatementResult {
             columns,
             rows,
             rows_affected: if changed { connection.changes() } else { 0 },
-            last_insert_rowid: (rowid != 0).then_some(SqlValue::Integer(rowid)),
+            last_insert_rowid: (rowid != rowid_before).then_some(SqlValue::Integer(rowid)),
         }
-    });
-    finish(connection, result)
+    })
+}
+
+/// Bytes of `{"results":[]}`.
+const ENVELOPE: usize = 14;
+/// Upper bound of a result's fields without its columns and rows:
+/// `{"columns":[],"rows":[],"rows_affected":…,"last_insert_rowid":…}`
+/// with the largest numbers.
+const RESULT: usize = 128;
+/// Upper bound of a column's `{"name":,"decltype":},` around its texts.
+const COLUMN: usize = 24;
+/// A row's brackets and the separator before it.
+const ROW: usize = 3;
+
+/// [`finish`] for the browse routes.
+pub(crate) fn finish_browse<T, E>(connection: &Connection, result: Result<T, E>) -> Result<T, E> {
+    let _ = connection.progress_handler(0, None::<fn() -> bool>);
+    result
 }
 
 /// Removes the statement's deadline, then returns `result`.
-fn finish<T>(connection: &Connection, result: Result<T, Refused>) -> Result<T, Refused> {
+pub(crate) fn finish<T>(connection: &Connection, result: Result<T, Refused>) -> Result<T, Refused> {
     let _ = connection.progress_handler(0, None::<fn() -> bool>);
     result
 }
@@ -239,11 +296,28 @@ pub fn to_value(value: ValueRef<'_>) -> SqlValue {
 pub fn size(value: &SqlValue) -> usize {
     match value {
         SqlValue::Null => 4,
-        SqlValue::Integer(_) | SqlValue::Real(_) => 48,
-        // JSON escapes a control character in six bytes.
-        SqlValue::Text(s) => s.len() * 6 + 3,
-        SqlValue::Blob(b) => b.len().div_ceil(3) * 4 + 32,
+        // `{"type":"integer","value":"-9223372036854775808"}` at most.
+        SqlValue::Integer(_) => 48,
+        // The shortest round-trip form is at most 24 bytes; infinity is
+        // `{"type":"real","value":"-Infinity"}`.
+        SqlValue::Real(_) => 40,
+        SqlValue::Text(s) => text_size(s),
+        // `{"type":"blob","value":"…"}` around standard base64.
+        SqlValue::Blob(b) => b.len().div_ceil(3) * 4 + 26,
     }
+}
+
+/// The encoded size of a JSON string: quotes, escapes of `"`, `\\` and
+/// control characters.
+pub fn text_size(text: &str) -> usize {
+    2 + text
+        .bytes()
+        .map(|b| match b {
+            b'"' | b'\\' => 2,
+            0..=0x1f => 6,
+            _ => 1,
+        })
+        .sum::<usize>()
 }
 
 /// The contract's refusal for a SQLite error.
@@ -395,6 +469,17 @@ mod tests {
         ] {
             assert_eq!(code(db.write(&[sql])), "statement_denied", "{sql}");
         }
+        for sql in [
+            "SELECT * FROM pragma_database_list",
+            "SELECT * FROM pragma_journal_mode",
+            "SELECT * FROM pragma_page_count JOIN pragma_database_list",
+        ] {
+            assert_eq!(
+                code(db.run(json!({"statements": [{"sql": sql}]}))),
+                "statement_denied",
+                "{sql}"
+            );
+        }
         // Harmless pragmas and plain VACUUM pass.
         db.write(&["CREATE TABLE t (x)", "PRAGMA foreign_keys = ON", "VACUUM"])
             .unwrap();
@@ -457,6 +542,20 @@ mod tests {
             {"sql": "INSERT INTO t VALUES (10)"}, {"sql": "INSERT INTO t VALUES (11)"},
         ]}))
         .unwrap();
+        assert_eq!(db.count("t"), 3);
+        // SQLite's own rollback (`OR ROLLBACK`) keeps the statement's error.
+        let rolled = db.write(&["INSERT OR ROLLBACK INTO t VALUES (1)"]);
+        assert!(
+            matches!(&rolled, Err(Refused::Sql { sqlite_code, .. }) if sqlite_code == "SQLITE_CONSTRAINT"),
+            "{rolled:?}"
+        );
+        let rolled = db.run(json!({"mode": "write", "transaction": true, "statements": [
+            {"sql": "INSERT INTO t VALUES (20)"}, {"sql": "INSERT OR ROLLBACK INTO t VALUES (1)"},
+        ]}));
+        assert!(
+            matches!(rolled, Err(Refused::Sql { statement: 1, .. })),
+            "{rolled:?}"
+        );
         assert_eq!(db.count("t"), 3);
         // A result limit rolls its statement back too.
         db.write(&["CREATE TABLE many (n)"]).unwrap();
@@ -527,6 +626,20 @@ mod tests {
             "OR IGNORE skipped the row"
         );
         assert_eq!(results[7].last_insert_rowid, None, "WITHOUT ROWID");
+        // SQL's own last_insert_rowid() keeps its meaning across a batch.
+        let results = db
+            .run(json!({"mode": "write", "statements": [
+                {"sql": "CREATE TABLE child (parent INTEGER)"},
+                {"sql": "INSERT INTO notes (body) VALUES ('parent')"},
+                {"sql": "INSERT INTO child VALUES (last_insert_rowid())"},
+                {"sql": "SELECT parent FROM child"},
+            ]}))
+            .unwrap();
+        assert_eq!(
+            results[1].last_insert_rowid,
+            Some(SqlValue::Integer(9007199254740994))
+        );
+        assert_eq!(results[3].rows[0][0], SqlValue::Integer(9007199254740994));
     }
 
     #[test]
@@ -597,6 +710,12 @@ mod tests {
         let slow = db.run(json!({"timeout_ms": 50, "statements": [{"sql":
             "WITH RECURSIVE c(n) AS (SELECT 1 UNION ALL SELECT n + 1 FROM c) SELECT count(*) FROM c"}]}));
         assert_eq!(code(slow), "statement_timeout");
+        // Many small values count by their encoding, separators included.
+        let nulls = db.run(json!({"statements": [{"sql": format!(
+            "WITH RECURSIVE c(n) AS (SELECT 1 UNION ALL SELECT n + 1 FROM c WHERE n < 10000) SELECT {} FROM c",
+            vec!["NULL"; 400].join(", ")
+        )}]}));
+        assert_eq!(code(nulls), "result_too_large");
         let wide = db.run(json!({"statements": [{"sql":
             "WITH RECURSIVE c(n) AS (SELECT 1 UNION ALL SELECT n + 1 FROM c WHERE n < 20) SELECT randomblob(1000000) FROM c"}]}));
         assert_eq!(code(wide), "result_too_large");

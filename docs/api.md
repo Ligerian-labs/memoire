@@ -346,10 +346,12 @@ Answers `200` with one result per statement:
   inserted into a rowid table, in the value encoding. It is `null` when the
   statement inserted no such row: not an INSERT or REPLACE, a `WITHOUT
   ROWID` table, a row `OR IGNORE` skipped, or an UPSERT that only updated.
-  The gateway resets SQLite's value to 0 before the statement
-  (`sqlite3_set_last_insert_rowid`) and reads it after, so a value left by
-  an earlier statement never shows; a row inserted with the explicit rowid
-  0 therefore also reports `null`.
+  The gateway compares SQLite's value before and after the statement and
+  reports it only when it moved, so a value left by an earlier statement
+  never shows, while SQL's own `last_insert_rowid()` keeps its meaning
+  across the batch (`INSERT INTO child VALUES (last_insert_rowid())` sees
+  the row the previous statement inserted). A statement whose last insert
+  lands on the rowid the value already held therefore reports `null`.
 
 On failure the batch stops at the failing statement and the response is the
 error alone (`sql_error`, `read_only`, `statement_denied`,

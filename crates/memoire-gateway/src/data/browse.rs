@@ -1,10 +1,11 @@
 //! `GET …/{name}/schema` and `GET …/{name}/tables/{table}/rows`, on a
 //! reader connection. These run the gateway's own statements, so the
 //! authorizer is off.
-use super::exec::{size, to_value};
+use super::exec::{size, text_size, to_value};
 use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
 use memoire_api::{
-    Column, Index, Rows, Schema, SchemaColumn, SqlValue, Table, View, limits::MAX_RESULT_BYTES,
+    Column, Index, Rows, Schema, SchemaColumn, SqlValue, Table, View,
+    limits::{DEFAULT_TIMEOUT_MS, MAX_RESULT_BYTES},
 };
 use rusqlite::{Connection, OptionalExtension as _, params};
 use serde_json::{Value, json};
@@ -14,13 +15,30 @@ use serde_json::{Value, json};
 pub enum Refused {
     TableNotFound,
     InvalidPage,
+    /// One row alone passes the response cap.
+    TooLarge,
+    /// The default statement deadline passed (a slow view).
+    Timeout,
     Sqlite,
 }
 
 impl From<rusqlite::Error> for Refused {
-    fn from(_: rusqlite::Error) -> Self {
-        Self::Sqlite
+    fn from(error: rusqlite::Error) -> Self {
+        match error.sqlite_error_code() {
+            Some(rusqlite::ErrorCode::OperationInterrupted) => Self::Timeout,
+            _ => Self::Sqlite,
+        }
     }
+}
+
+/// Runs `work` under the contract's default statement deadline.
+pub fn bounded<T>(
+    connection: &Connection,
+    work: impl FnOnce() -> Result<T, Refused>,
+) -> Result<T, Refused> {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_millis(DEFAULT_TIMEOUT_MS);
+    connection.progress_handler(1000, Some(move || std::time::Instant::now() >= deadline))?;
+    super::exec::finish_browse(connection, work())
 }
 
 const USER_OBJECTS: &str = "name NOT LIKE 'sqlite\\_%' ESCAPE '\\'";
@@ -114,8 +132,9 @@ fn indexes(connection: &Connection, table: &str) -> rusqlite::Result<Vec<Index>>
 enum Order {
     /// By a rowid alias no column shadows.
     Rowid(&'static str),
-    /// A `WITHOUT ROWID` table, by its primary key columns.
-    Key(Vec<String>),
+    /// A `WITHOUT ROWID` table, by its primary key columns and the
+    /// collation each uses in the key.
+    Key(Vec<(String, String)>),
     /// A view, or a table whose columns shadow every rowid alias.
     Offset,
 }
@@ -168,7 +187,14 @@ pub fn rows(
         (Order::Key(columns), position) => {
             let list = columns
                 .iter()
-                .map(|c| quote(c))
+                .map(|(c, _)| quote(c))
+                .collect::<Vec<_>>()
+                .join(", ");
+            // The key's own collations, so the order and the continuation
+            // are the index's.
+            let keyed = columns
+                .iter()
+                .map(|(c, collation)| format!("{} COLLATE {}", quote(c), quote(collation)))
                 .collect::<Vec<_>>()
                 .join(", ");
             let mut bound = vec![fetch.into()];
@@ -183,12 +209,12 @@ pub fn rows(
                         .map(|n| format!("?{}", n + 2))
                         .collect::<Vec<_>>()
                         .join(", ");
-                    format!("WHERE ({list}) > ({marks})")
+                    format!("WHERE ({keyed}) > ({marks})")
                 }
                 Some(_) => return Err(Refused::InvalidPage),
             };
             (
-                format!("SELECT {list}, * FROM {quoted} {filter} ORDER BY {list} LIMIT ?1"),
+                format!("SELECT {list}, * FROM {quoted} {filter} ORDER BY {keyed} LIMIT ?1"),
                 bound,
                 columns.len(),
             )
@@ -224,7 +250,13 @@ pub fn rows(
     let mut rows = Vec::new();
     let mut last_key = None;
     let mut more = false;
-    let mut budget = MAX_RESULT_BYTES;
+    // `{"columns":[…],"rows":[…],"next_after":"…"}` around the rows.
+    let mut budget = MAX_RESULT_BYTES
+        - 256
+        - columns
+            .iter()
+            .map(|c| text_size(&c.name) + c.decltype.as_deref().map_or(4, text_size) + 24)
+            .sum::<usize>();
     while let Some(row) = found.next()? {
         if rows.len() == limit {
             more = true;
@@ -236,14 +268,17 @@ pub fn rows(
         let values: Vec<SqlValue> = (keys..keys + width)
             .map(|c| row.get_ref(c).map(to_value))
             .collect::<rusqlite::Result<_>>()?;
-        let cost: usize = values.iter().map(size).sum();
-        // A short page rather than a response past the cap; at least one
-        // row, so paging always moves.
-        if cost > budget && !rows.is_empty() {
+        let cost: usize = 3 + values.iter().map(|v| size(v) + 1).sum::<usize>();
+        // A short page rather than a response past the cap, ending at a row
+        // that fits; a row that alone passes it is refused.
+        if cost > budget {
+            if rows.is_empty() {
+                return Err(Refused::TooLarge);
+            }
             more = true;
             break;
         }
-        budget = budget.saturating_sub(cost);
+        budget -= cost;
         last_key = Some(key);
         rows.push(values);
     }
@@ -288,9 +323,18 @@ fn order(connection: &Connection, object: &str, kind: &str) -> Result<Order, Ref
         .query_map(params![object], |row| Ok((row.get(0)?, row.get(1)?)))?
         .collect::<rusqlite::Result<_>>()?;
     if without_rowid {
-        let mut key: Vec<_> = columns.into_iter().filter(|(_, pk)| *pk > 0).collect();
-        key.sort_by_key(|(_, pk)| *pk);
-        return Ok(Order::Key(key.into_iter().map(|(name, _)| name).collect()));
+        let index: String = connection.query_row(
+            "SELECT name FROM pragma_index_list(?1) WHERE origin = 'pk'",
+            [object],
+            |row| row.get(0),
+        )?;
+        let mut keys = connection.prepare(
+            "SELECT name, coll FROM pragma_index_xinfo(?1) WHERE key = 1 ORDER BY seqno",
+        )?;
+        let key = keys
+            .query_map([&index], |row| Ok((row.get(0)?, row.get(1)?)))?
+            .collect::<rusqlite::Result<_>>()?;
+        return Ok(Order::Key(key));
     }
     Ok(["rowid", "oid", "_rowid_"]
         .into_iter()
@@ -367,6 +411,8 @@ mod tests {
              CREATE TABLE odd (rowid TEXT, x INT);
              INSERT INTO odd VALUES ('z', 1), ('y', 2);
              CREATE VIEW recent AS SELECT body FROM notes WHERE id > 2;
+             CREATE TABLE ci (k TEXT, PRIMARY KEY (k COLLATE NOCASE)) WITHOUT ROWID;
+             INSERT INTO ci VALUES ('b'), ('A'), ('c'), ('B2');
              CREATE TABLE \"we\"\"ird / name\" (x);
              INSERT INTO \"we\"\"ird / name\" VALUES (1);",
         );
@@ -387,10 +433,31 @@ mod tests {
             [("a", 1), ("a", 2), ("b", 2), ("c", 0)]
                 .map(|(k, n)| (SqlValue::Text(k.into()), SqlValue::Integer(n)))
         );
+        assert_eq!(
+            all(&connection, "ci", 1).len(),
+            4,
+            "pages by the key's collation"
+        );
         assert_eq!(all(&connection, "shadow", 2).len(), 3);
         assert_eq!(all(&connection, "odd", 1).len(), 2, "pages by oid");
         assert_eq!(all(&connection, "recent", 2).len(), 3);
         assert_eq!(all(&connection, "we\"ird / name", 10).len(), 1);
+    }
+
+    #[test]
+    fn a_slow_view_meets_the_default_deadline() {
+        let connection = database(
+            "CREATE VIEW forever AS WITH RECURSIVE c(n) AS (SELECT 1 UNION ALL SELECT n + 1 FROM c)
+             SELECT n FROM c WHERE n < 0;",
+        );
+        let started = std::time::Instant::now();
+        let refused = bounded(&connection, || {
+            rows(&connection, "db_1", "forever", 10, None)
+        });
+        assert_eq!(refused.unwrap_err(), Refused::Timeout);
+        assert!(started.elapsed() < std::time::Duration::from_secs(10));
+        // The deadline is gone afterwards.
+        assert!(schema(&connection).is_ok());
     }
 
     #[test]
