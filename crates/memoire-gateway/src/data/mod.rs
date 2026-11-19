@@ -430,32 +430,44 @@ impl DataPlane {
     ) -> Result<(), Refused> {
         let handle = self.handle(target)?;
         let used = self.now();
+        // The task owns the staged file and the safety copy: whatever
+        // fails, the staged file goes, and the copy too unless it was
+        // recorded.
         let section = tokio::spawn(async move {
-            let (mut writer, readers) = tokio::time::timeout(BUSY_TIMEOUT * 2, drain(&handle))
-                .await
-                .map_err(|_| Refused::Code("sqlite_busy"))?;
-            let _readers = readers.map_err(|_| Refused::Code("internal"))?;
-            *writer = None;
-            handle
-                .readers
-                .lock()
-                .unwrap_or_else(|p| p.into_inner())
-                .clear();
-            let (path, kept) = (handle.path.clone(), keep.clone());
-            let size = tokio::task::spawn_blocking(move || copy_file(&path, &kept))
-                .await
-                .map_err(|_| Refused::Code("internal"))??;
-            if record(size).await.is_err() {
-                let _ = std::fs::remove_file(&keep);
-                return Err(Refused::Code("internal"));
+            let mut recorded = false;
+            let result = async {
+                let (mut writer, readers) = tokio::time::timeout(BUSY_TIMEOUT * 2, drain(&handle))
+                    .await
+                    .map_err(|_| Refused::Code("sqlite_busy"))?;
+                let _readers = readers.map_err(|_| Refused::Code("internal"))?;
+                *writer = None;
+                handle
+                    .readers
+                    .lock()
+                    .unwrap_or_else(|p| p.into_inner())
+                    .clear();
+                let (path, kept) = (handle.path.clone(), keep.clone());
+                let size = tokio::task::spawn_blocking(move || copy_file(&path, &kept))
+                    .await
+                    .map_err(|_| Refused::Code("internal"))??;
+                record(size).await.map_err(|_| Refused::Code("internal"))?;
+                recorded = true;
+                let (inner, staged) = (handle.clone(), source.clone());
+                let swapped = tokio::task::spawn_blocking(move || swap(&inner, &staged))
+                    .await
+                    .map_err(|_| Refused::Code("internal"))?;
+                handle.used.store(used, Ordering::Relaxed);
+                drop(writer);
+                swapped
             }
-            let inner = handle.clone();
-            let swapped = tokio::task::spawn_blocking(move || swap(&inner, &source))
-                .await
-                .map_err(|_| Refused::Code("internal"))?;
-            handle.used.store(used, Ordering::Relaxed);
-            drop(writer);
-            swapped
+            .await;
+            if result.is_err() {
+                let _ = std::fs::remove_file(&source);
+                if !recorded {
+                    let _ = std::fs::remove_file(&keep);
+                }
+            }
+            result
         });
         section.await.map_err(|_| Refused::Code("internal"))?
     }
