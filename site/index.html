@@ -1,0 +1,392 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+    <title>memoire. SQLite databases for agents, shared across teams and machines</title>
+    <meta
+      name="description"
+      content="Agents forget. memoire gives them SQLite databases they create in one command, share with a team, and let expire. Open source, v1 in progress."
+    />
+    <meta name="theme-color" content="#06051a" />
+    <meta name="color-scheme" content="dark" />
+    <meta property="og:title" content="memoire" />
+    <meta
+      property="og:description"
+      content="Serverless SQLite databases for agents, shared across teams and machines."
+    />
+    <meta property="og:type" content="website" />
+    <link
+      rel="icon"
+      href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Cdefs%3E%3CradialGradient id='g'%3E%3Cstop offset='0' stop-color='%23fff6dc'/%3E%3Cstop offset='.3' stop-color='%23ffc53d'/%3E%3Cstop offset='.55' stop-color='%23ff6a1f'/%3E%3Cstop offset='.8' stop-color='%23a3167f'/%3E%3Cstop offset='1' stop-color='%23100a33'/%3E%3C/radialGradient%3E%3C/defs%3E%3Crect width='64' height='64' fill='%2306051a'/%3E%3Ccircle cx='32' cy='32' r='26' fill='url(%23g)'/%3E%3C/svg%3E"
+    />
+    <link rel="preload" href="./src/fonts/anybody-latin.woff2" as="font" type="font/woff2" crossorigin />
+    <link rel="preload" href="./src/fonts/martian-mono-latin.woff2" as="font" type="font/woff2" crossorigin />
+    <link rel="stylesheet" href="./src/style.css" />
+  </head>
+  <body>
+    <canvas id="field" aria-hidden="true"></canvas>
+    <a class="skip" href="#main">Skip to content</a>
+
+    <header class="top">
+      <a class="wordmark" href="#main">
+        <span class="wordmark__name">mémoire</span>
+        <span class="wordmark__gloss">French for memory</span>
+      </a>
+      <a class="top__link" href="https://github.com/ligerian-labs/memoire">GitHub</a>
+    </header>
+
+    <main id="main">
+      <section class="hero" id="hero" aria-labelledby="hero-title">
+        <i class="hero__core" data-core aria-hidden="true"></i>
+        <div class="scale" aria-hidden="true">
+          <span class="scale__label">just queried</span>
+          <span class="scale__bar"></span>
+          <span class="scale__label">expired</span>
+        </div>
+
+        <div class="hero__copy">
+          <h1 id="hero-title" class="hero__title" data-kinetic>
+            <span class="line">Agents</span> <span class="line">forget.</span>
+          </h1>
+          <p class="hero__lead">
+            memoire gives them a memory. SQLite databases an agent creates in one command, shares
+            with its team, and lets expire.
+          </p>
+          <div class="hero__actions">
+            <a class="btn btn--hot" href="https://github.com/ligerian-labs/memoire">View on GitHub</a>
+            <a class="btn" href="https://github.com/ligerian-labs/memoire/blob/main/docs/api.md">Read the API</a>
+          </div>
+          <p class="hero__note">
+            <span class="pill">v1 in progress</span>
+            <span class="hero__hint">
+              <span class="if-touch">Drag a finger across the page.</span>
+              <span class="if-mouse">Move across the page.</span>
+              It stays warm for a moment, then it is gone.
+            </span>
+          </p>
+        </div>
+      </section>
+
+      <section class="life" id="life" aria-labelledby="life-title">
+        <div class="section-head">
+          <h2 id="life-title">The life of a database</h2>
+          <p>Four moments, in the order an agent meets them.</p>
+        </div>
+
+        <div class="life__track">
+          <div class="life__stage">
+            <div class="life__view" aria-hidden="true">
+              <div class="host"><span class="host__label"><i class="host__dot" data-host-dot></i>gateway host, always on</span></div>
+              <svg class="life__rings" focusable="false"></svg>
+              <div class="mark mark--db" data-mark="scratch">
+                <i class="mark__cross"></i>
+                <span class="mark__name">scratch</span>
+                <span class="mark__meta" data-meta>burstable</span>
+              </div>
+              <div class="mark mark--db" data-mark="notes">
+                <i class="mark__cross"></i>
+                <span class="mark__name">notes</span>
+                <span class="mark__meta" data-meta>persistent</span>
+              </div>
+              <div class="mark mark--agent" data-mark="laptop">
+                <i class="mark__node"></i>
+                <span class="mark__name">laptop</span>
+              </div>
+              <div class="mark mark--agent" data-mark="build-bot">
+                <i class="mark__node"></i>
+                <span class="mark__name">build-bot</span>
+              </div>
+              <div class="mark mark--agent" data-mark="reviewer">
+                <i class="mark__node"></i>
+                <span class="mark__name">review-agent</span>
+              </div>
+            </div>
+
+            <ol class="beats">
+              <li class="beat" data-beat="create">
+                <h3>Create</h3>
+                <p>
+                  One command makes one SQLite file on the gateway's host. Burstable is the default,
+                  scratch space with an idle TTL.
+                </p>
+                <div class="term">
+                  <p class="cmd"><code data-type>memoire db create scratch --burstable --ttl 24h</code></p>
+                  <p class="cmd"><code data-type>memoire db create notes --persistent</code></p>
+                  <div class="out" data-out>
+                    <p class="out__status"><span class="ok">201</span> POST /v1/memoire/databases</p>
+                    <dl class="kv">
+                      <div><dt>name</dt><dd>scratch</dd></div>
+                      <div><dt>kind</dt><dd>burstable</dd></div>
+                      <div><dt>idle_ttl_seconds</dt><dd>86400</dd></div>
+                      <div><dt>expires_at</dt><dd>2026-11-20T10:00:00Z</dd></div>
+                    </dl>
+                  </div>
+                </div>
+              </li>
+
+              <li class="beat" data-beat="query">
+                <h3>Query</h3>
+                <p>
+                  Ask from the CLI, or POST statements as JSON. Reads run on a read-only connection,
+                  and every query restarts a burstable database's idle clock.
+                </p>
+                <div class="term">
+                  <p class="cmd"><code data-type>memoire query notes "select id, body from notes" --json</code></p>
+                  <div class="out" data-out>
+                    <p class="out__status"><span class="ok">200</span> 2 rows</p>
+                    <table class="rows">
+                      <thead>
+                        <tr><th scope="col">id <small>INTEGER</small></th><th scope="col">body <small>TEXT</small></th></tr>
+                      </thead>
+                      <tbody>
+                        <tr><td>1</td><td>hello</td></tr>
+                        <tr><td>2</td><td>world</td></tr>
+                      </tbody>
+                    </table>
+                  </div>
+                </div>
+              </li>
+
+              <li class="beat" data-beat="share">
+                <h3>Share</h3>
+                <p>
+                  A database belongs to a team. People join by invitation. Each machine or agent gets
+                  its own API key, narrowed to what it needs.
+                </p>
+                <div class="term">
+                  <p class="cmd"><code data-type>memoire keys create --name build-bot --read-only</code></p>
+                  <div class="out" data-out>
+                    <p class="out__status"><span class="ok">201</span> key printed once</p>
+                    <dl class="kv">
+                      <div><dt>key</dt><dd>mzk_…</dd></div>
+                      <div><dt>permissions</dt><dd>memoire.databases.read</dd></div>
+                      <div><dt>expires</dt><dd>in 90 days</dd></div>
+                    </dl>
+                  </div>
+                </div>
+              </li>
+
+              <li class="beat" data-beat="expire">
+                <h3>Expire, or keep</h3>
+                <p>
+                  Idle scratch expires and its file is removed. A persistent database lives until it
+                  is deleted, with a snapshot every 6 hours.
+                </p>
+                <div class="term">
+                  <p class="cmd"><code data-type>memoire snapshots ls notes</code></p>
+                  <div class="out" data-out>
+                    <p class="out__status"><span class="ok">200</span> newest first</p>
+                    <table class="rows">
+                      <thead>
+                        <tr><th scope="col">id</th><th scope="col">created_at</th><th scope="col">reason</th></tr>
+                      </thead>
+                      <tbody>
+                        <tr><td>snap_…c41</td><td>11-19 18:00Z</td><td>scheduled</td></tr>
+                        <tr><td>snap_…9be</td><td>11-19 12:00Z</td><td>scheduled</td></tr>
+                        <tr><td>snap_…27a</td><td>11-19 06:00Z</td><td>scheduled</td></tr>
+                      </tbody>
+                    </table>
+                  </div>
+                </div>
+              </li>
+            </ol>
+          </div>
+        </div>
+      </section>
+
+      <section class="kinds" id="kinds" aria-labelledby="kinds-title">
+        <div class="section-head">
+          <h2 id="kinds-title">Scratch, or keep</h2>
+          <p>Two kinds of database. Watch a week go by.</p>
+        </div>
+
+        <div class="split">
+        <div class="lapse">
+          <p class="lapse__clock" aria-hidden="true">
+            <span data-clock-day>day 1</span><span data-clock-time>00:00</span>
+          </p>
+
+          <div class="lapse__pair">
+            <figure class="specimen" data-kind="burstable">
+              <div class="specimen__view" aria-hidden="true">
+                <i class="specimen__core" data-core></i>
+                <span class="specimen__state" data-state>active</span>
+              </div>
+              <figcaption>
+                <strong>burstable</strong>
+                <span class="readout" data-readout aria-hidden="true">expires in 24h</span>
+                <span class="meter" aria-hidden="true"><i data-meter-idle></i></span>
+                <span class="meter-label" aria-hidden="true">idle TTL</span>
+                <span class="meter" aria-hidden="true"><i data-meter-life></i></span>
+                <span class="meter-label" aria-hidden="true">7-day lifetime</span>
+              </figcaption>
+            </figure>
+
+            <figure class="specimen" data-kind="persistent">
+              <div class="specimen__view" aria-hidden="true">
+                <svg class="specimen__rings" viewBox="-100 -100 200 200" focusable="false"></svg>
+                <i class="specimen__core" data-core></i>
+              </div>
+              <figcaption>
+                <strong>persistent</strong>
+                <span class="readout" data-readout aria-hidden="true">0 snapshots</span>
+                <span class="meter" aria-hidden="true"><i data-meter-next></i></span>
+                <span class="meter-label" aria-hidden="true">next snapshot</span>
+              </figcaption>
+            </figure>
+          </div>
+
+          <div class="lapse__controls">
+            <button type="button" class="btn btn--hot" data-action="query">Query scratch</button>
+            <button type="button" class="btn" data-action="toggle" aria-pressed="false">Pause</button>
+          </div>
+        </div>
+
+        <div class="kinds__facts">
+          <div>
+            <h3>Burstable</h3>
+            <ul>
+              <li>Expires after an idle TTL, 24 hours by default. Set it from 1 minute to 7 days.</li>
+              <li>Each query restarts the clock, but never past 7 days from creation.</li>
+              <li>No backups. Connections close after 5 minutes idle and reopen on the next request.</li>
+            </ul>
+          </div>
+          <div>
+            <h3>Persistent</h3>
+            <ul>
+              <li>Lives until you delete it.</li>
+              <li>Snapshotted every 6 hours. Snapshots are kept 7 days.</li>
+              <li>Restore any snapshot. The current contents are snapshotted first.</li>
+            </ul>
+          </div>
+        </div>
+        </div>
+      </section>
+
+      <section class="access" id="access" aria-labelledby="access-title">
+        <div class="section-head">
+          <h2 id="access-title">Shared by a team, scoped by key</h2>
+          <p>
+            A team owns its databases. Members sign in and invite others. Machines and agents hold
+            their own <code>mzk_…</code> keys, with all five permissions or fewer.
+          </p>
+        </div>
+
+        <div class="keycard">
+          <p class="cmd cmd--static">
+            <code>memoire keys create --name build-bot<span class="flag" data-flag> --read-only</span></code>
+          </p>
+          <label class="switch">
+            <input type="checkbox" data-readonly />
+            <span class="switch__track" aria-hidden="true"><i></i></span>
+            <span>Read-only key</span>
+          </label>
+          <ul class="perms">
+            <li data-perm="read">
+              <i class="perms__dot" aria-hidden="true"></i>
+              <code>memoire.databases.read</code>
+              <span>list, read queries, schema, rows, export, snapshot list</span>
+            </li>
+            <li data-perm="write">
+              <i class="perms__dot" aria-hidden="true"></i>
+              <code>memoire.databases.write</code>
+              <span>write queries, extend, import</span>
+            </li>
+            <li data-perm="create">
+              <i class="perms__dot" aria-hidden="true"></i>
+              <code>memoire.databases.create</code>
+              <span>create</span>
+            </li>
+            <li data-perm="delete">
+              <i class="perms__dot" aria-hidden="true"></i>
+              <code>memoire.databases.delete</code>
+              <span>delete</span>
+            </li>
+            <li data-perm="snapshots">
+              <i class="perms__dot" aria-hidden="true"></i>
+              <code>memoire.databases.snapshots</code>
+              <span>snapshot restore</span>
+            </li>
+          </ul>
+          <p class="keycard__status" aria-live="polite" data-perm-status>This key holds all five permissions.</p>
+        </div>
+      </section>
+
+      <section class="api" id="api" aria-labelledby="api-title">
+        <div class="section-head">
+          <h2 id="api-title">Plain HTTP, JSON in and out</h2>
+          <p>
+            No driver to install. Send up to 100 statements in one request, with parameters, in
+            <code>read</code> or <code>write</code> mode, as one transaction if you ask.
+          </p>
+        </div>
+
+        <div class="wire">
+          <figure class="code">
+            <figcaption>POST /v1/memoire/databases/notes/query</figcaption>
+            <pre tabindex="0" role="region" aria-label="Request body"><code>{
+  <b>"mode"</b>: "write",
+  <b>"transaction"</b>: true,
+  <b>"statements"</b>: [
+  {<b>"sql"</b>: "INSERT INTO notes (body) VALUES (?)",
+   <b>"params"</b>: ["hello"]},
+  {<b>"sql"</b>: "SELECT id, body FROM notes"}
+  ]
+}</code></pre>
+          </figure>
+          <figure class="code">
+            <figcaption><span class="ok">200</span> one result per statement</figcaption>
+            <pre tabindex="0" role="region" aria-label="Response body"><code>{
+  <b>"results"</b>: [
+  {<b>"columns"</b>: [], <b>"rows"</b>: [],
+   <b>"rows_affected"</b>: 1,
+   <b>"last_insert_rowid"</b>: 1},
+  {<b>"columns"</b>: [
+     {"name": "id", "decltype": "INTEGER"},
+     {"name": "body", "decltype": "TEXT"}],
+   <b>"rows"</b>: [[1, "hello"]],
+   <b>"rows_affected"</b>: 0,
+   <b>"last_insert_rowid"</b>: null}
+  ]
+}</code></pre>
+          </figure>
+        </div>
+
+        <div class="plate">
+          <h3>Guardrails</h3>
+          <dl class="limits">
+            <div><dt>1 GiB</dt><dd>per database</dd></div>
+            <div><dt>50</dt><dd>active databases per team</dd></div>
+            <div><dt>5 s</dt><dd>default deadline per statement, 30 s at most</dd></div>
+            <div><dt>read-only</dt><dd>connections for <code>read</code> mode; a write fails</dd></div>
+            <div><dt>refused</dt><dd><code>ATTACH</code>, <code>load_extension</code>, <code>VACUUM INTO</code></dd></div>
+          </dl>
+        </div>
+      </section>
+
+      <section class="status" id="status" aria-labelledby="status-title">
+        <h2 id="status-title">Early, and in the open</h2>
+        <p>
+          v1 is in progress. The gateway host, the API contract and the CLI skeleton are in the
+          repository. The catalog, the data plane, the CLI commands and the web client land next.
+        </p>
+        <p class="status__meta">Rust, Apache-2.0. One always-on gateway; the SQLite files live on its host.</p>
+        <div class="hero__actions">
+          <a class="btn btn--hot" href="https://github.com/ligerian-labs/memoire">Follow along on GitHub</a>
+          <a class="btn" href="https://github.com/ligerian-labs/memoire/blob/main/docs/architecture.md">Read the architecture</a>
+        </div>
+        <i class="ember" data-ember aria-hidden="true"></i>
+      </section>
+    </main>
+
+    <footer class="foot">
+      <p><span lang="fr">mémoire</span> is French for memory.</p>
+      <p>
+        <a href="https://github.com/ligerian-labs/memoire">github.com/ligerian-labs/memoire</a>
+      </p>
+    </footer>
+
+    <script type="module" src="./src/main.ts"></script>
+  </body>
+</html>
