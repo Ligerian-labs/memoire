@@ -306,7 +306,7 @@ fn signed_in(gateway: &Gateway) -> (String, String, Memoire) {
 }
 
 #[test]
-fn every_command_works_against_a_real_gateway() {
+fn catalog_and_data_commands_work_against_a_real_gateway() {
     let Some(db) = TestDatabase::create() else {
         eprintln!("skipped: MEREZHA_TEST_DATABASE_URL is unset");
         return;
