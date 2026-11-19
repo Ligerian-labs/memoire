@@ -1,0 +1,113 @@
+<div class="console" [class.writing]="ctx.mode() === 'write'">
+  <div class="bar">
+    <div class="segmented" role="group" aria-label="Mode">
+      <button type="button" [attr.aria-pressed]="ctx.mode() === 'read'" (click)="setMode('read')">
+        Read
+      </button>
+      <button
+        type="button"
+        class="write"
+        [attr.aria-pressed]="ctx.mode() === 'write'"
+        (click)="setMode('write')"
+      >
+        Write
+      </button>
+    </div>
+    @if (ctx.mode() === 'write') {
+      <span class="write-note">Statements can change data</span>
+    } @else {
+      <span class="faint">Read-only connection</span>
+    }
+    <span class="spacer"></span>
+    <label class="check">
+      <input type="checkbox" name="transaction" [(ngModel)]="ctx.transaction" />
+      One transaction
+    </label>
+    <button
+      class="btn small ghost"
+      type="button"
+      (click)="showParams.set(!showParams())"
+      [attr.aria-expanded]="showParams()"
+    >
+      Parameters
+    </button>
+  </div>
+  <label class="sr-only" for="sql">SQL</label>
+  <textarea
+    id="sql"
+    class="editor"
+    name="sql"
+    rows="8"
+    spellcheck="false"
+    autocomplete="off"
+    placeholder="SELECT * FROM sqlite_master;"
+    [(ngModel)]="ctx.sql"
+    (keydown)="onKey($event)"
+  ></textarea>
+  @if (showParams()) {
+    <label class="params">
+      <span>Parameters (JSON array or object, single statement)</span>
+      <input
+        type="text"
+        name="params"
+        class="mono"
+        spellcheck="false"
+        placeholder='[1, "hello"]  or  {"id": 1}'
+        [(ngModel)]="ctx.params"
+      />
+    </label>
+  }
+  <div class="run">
+    <button
+      class="btn"
+      [class.primary]="ctx.mode() === 'read'"
+      [class.write]="ctx.mode() === 'write'"
+      type="button"
+      (click)="run()"
+      [disabled]="running() || !ctx.sql.trim()"
+    >
+      {{ running() ? 'Running…' : ctx.mode() === 'write' ? 'Run write' : 'Run' }} <kbd>Ctrl ↵</kbd>
+    </button>
+    @if (ctx.lastRun(); as run) {
+      <span class="faint">
+        {{ run.results.length }} statement{{ run.results.length === 1 ? '' : 's' }} in
+        {{ run.ms }} ms, {{ run.mode }} mode
+      </span>
+    }
+  </div>
+</div>
+
+@if (error()) {
+  <div class="alert" role="alert" data-testid="console-error">
+    {{ error() }}
+    @if (failedSql(); as sql) {
+      <code class="failed">{{ sql }}</code>
+    }
+  </div>
+}
+
+@if (ctx.lastRun(); as run) {
+  <div class="results" data-testid="results">
+    @for (result of run.results; track $index; let i = $index) {
+      <section class="result">
+        <header>
+          <span class="n">{{ i + 1 }}</span>
+          <code class="stmt" [title]="run.statements[i]">{{ run.statements[i] }}</code>
+          @if (result.columns.length) {
+            <span class="stat"
+              >{{ result.rows.length }} row{{ result.rows.length === 1 ? '' : 's' }}</span
+            >
+          } @else {
+            <span class="stat">{{ result.rows_affected }} changed</span>
+            @if (result.last_insert_rowid !== null) {
+              <span class="stat">rowid {{ cell(result.last_insert_rowid).text }}</span>
+            }
+          }
+        </header>
+        @if (result.columns.length) {
+          <app-grid [columns]="result.columns" [rows]="result.rows" maxHeight="420px" />
+        }
+      </section>
+    }
+  </div>
+}

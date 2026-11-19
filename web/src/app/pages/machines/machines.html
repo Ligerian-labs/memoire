@@ -1,0 +1,244 @@
+<section class="page">
+  <div class="page-head">
+    <h1>Machines and API keys</h1>
+    <span class="faint">{{ session.team()?.name }}</span>
+    <span class="spacer"></span>
+    <button class="btn" type="button" (click)="load()" [disabled]="loading()">Refresh</button>
+  </div>
+  <p class="muted lede">
+    A machine is a team identity for an agent or a server, with the team's member role. Give each
+    one its own API key, then run
+    <code>memoire login --server {{ origin }}</code> on it.
+  </p>
+  @if (error()) {
+    <p class="alert" role="alert">{{ error() }}</p>
+  }
+
+  <section class="panel">
+    <header>
+      <h2>Machines</h2>
+      <span class="spacer"></span>
+      <button class="btn small primary" type="button" (click)="openMachine()">New machine</button>
+    </header>
+    <table class="data">
+      <thead>
+        <tr>
+          <th scope="col">Name</th>
+          <th scope="col">Description</th>
+          <th scope="col">Status</th>
+          <th scope="col">Created</th>
+          <th scope="col"><span class="sr-only">Actions</span></th>
+        </tr>
+      </thead>
+      <tbody>
+        @for (machine of machines(); track machine.id) {
+          <tr>
+            <td class="mono">{{ machine.name }}</td>
+            <td class="muted">{{ machine.description ?? '' }}</td>
+            <td>{{ machine.status }}</td>
+            <td [title]="timestamp(machine.created_at)">
+              {{ relative(machine.created_at, now()) }}
+            </td>
+            <td class="num">
+              <button class="btn small" type="button" (click)="openKey(machine.id)">New key</button>
+            </td>
+          </tr>
+        } @empty {
+          <tr>
+            <td colspan="5">
+              <div class="empty">{{ loading() ? 'Loading…' : 'No machines yet.' }}</div>
+            </td>
+          </tr>
+        }
+      </tbody>
+    </table>
+  </section>
+
+  <section class="panel">
+    <header>
+      <h2>API keys</h2>
+      <label class="check">
+        <input
+          type="checkbox"
+          [checked]="showRevoked()"
+          (change)="showRevoked.set(!showRevoked())"
+        />
+        Show revoked
+      </label>
+      <span class="spacer"></span>
+      <button class="btn small primary" type="button" (click)="openKey()">New API key</button>
+    </header>
+    <table class="data">
+      <thead>
+        <tr>
+          <th scope="col">Name</th>
+          <th scope="col">Holder</th>
+          <th scope="col">Access</th>
+          <th scope="col">Expires</th>
+          <th scope="col">Last used</th>
+          <th scope="col">Id</th>
+          <th scope="col"><span class="sr-only">Actions</span></th>
+        </tr>
+      </thead>
+      <tbody>
+        @for (key of visibleKeys(); track key.id) {
+          <tr [class.revoked]="key.revoked_at">
+            <td>{{ key.name }}</td>
+            <td>{{ owner(key) }}</td>
+            <td>
+              <span class="badge" [class.persistent]="access(key) === 'full'">{{
+                access(key)
+              }}</span>
+            </td>
+            <td [title]="timestamp(key.expires_at)">{{ relative(key.expires_at, now()) }}</td>
+            <td [title]="timestamp(key.last_used_at)">{{ relative(key.last_used_at, now()) }}</td>
+            <td class="mono faint">{{ key.id }}</td>
+            <td class="num">
+              @if (key.revoked_at) {
+                <span class="badge revoked">revoked</span>
+              } @else {
+                <button class="btn small danger" type="button" (click)="revoking.set(key)">
+                  Revoke
+                </button>
+              }
+            </td>
+          </tr>
+        } @empty {
+          <tr>
+            <td colspan="7">
+              <div class="empty">{{ loading() ? 'Loading…' : 'No API keys yet.' }}</div>
+            </td>
+          </tr>
+        }
+      </tbody>
+    </table>
+  </section>
+</section>
+
+@if (dialog() === 'machine') {
+  <dialog appModal [locked]="busy()" (closed)="closeDialog()" aria-labelledby="machine-title">
+    <form (ngSubmit)="createMachine()">
+      <header><h2 id="machine-title">New machine</h2></header>
+      <label class="field">
+        <span>Name</span>
+        <input
+          type="text"
+          name="name"
+          required
+          maxlength="100"
+          [(ngModel)]="machineName"
+          autofocus
+        />
+      </label>
+      <label class="field">
+        <span>Description</span>
+        <input type="text" name="description" maxlength="500" [(ngModel)]="machineDescription" />
+        <small>Optional. Where it runs or what it does.</small>
+      </label>
+      @if (formError()) {
+        <p class="alert" role="alert">{{ formError() }}</p>
+      }
+      <footer>
+        <button class="btn" type="button" (click)="closeDialog()" [disabled]="busy()">
+          Cancel
+        </button>
+        <button class="btn primary" type="submit" [disabled]="busy() || !machineName.trim()">
+          Create machine
+        </button>
+      </footer>
+    </form>
+  </dialog>
+}
+
+@if (dialog() === 'key') {
+  <dialog appModal [locked]="busy()" (closed)="closeDialog()" aria-labelledby="key-title">
+    @if (minted(); as minted) {
+      <div class="body">
+        <header>
+          <h2 id="key-title">Key {{ minted.name }} created</h2>
+        </header>
+        <p>Copy it now. The gateway shows it only once.</p>
+        <div class="secret">
+          <code data-testid="minted-key">{{ minted.key }}</code>
+          <button class="btn small" type="button" (click)="copy(minted.key)">
+            {{ copied() ? 'Copied' : 'Copy' }}
+          </button>
+        </div>
+        <p class="faint">
+          On the machine: <code>memoire login --server {{ origin }}</code
+          >, then paste the key, or set <code>MEMOIRE_API_KEY</code>.
+        </p>
+        <footer>
+          <button class="btn primary" type="button" (click)="closeDialog()">Done</button>
+        </footer>
+      </div>
+    } @else {
+      <form (ngSubmit)="createKey()">
+        <header><h2 id="key-title">New API key</h2></header>
+        <label class="field">
+          <span>Name</span>
+          <input type="text" name="name" required maxlength="100" [(ngModel)]="keyName" autofocus />
+        </label>
+        <label class="field">
+          <span>Holder</span>
+          <select name="owner" [(ngModel)]="keyOwner">
+            <option value="">You ({{ session.user()?.email }})</option>
+            @for (machine of machines(); track machine.id) {
+              <option [value]="machine.id">Machine {{ machine.name }}</option>
+            }
+          </select>
+        </label>
+        <fieldset class="access">
+          <legend>Access</legend>
+          <label class="check">
+            <input type="radio" name="access" value="full" [(ngModel)]="keyAccess" />
+            Full: read, write, create, delete and restore snapshots
+          </label>
+          <label class="check">
+            <input type="radio" name="access" value="read" [(ngModel)]="keyAccess" />
+            Read-only: list and read queries
+          </label>
+        </fieldset>
+        <label class="field">
+          <span>Expires in</span>
+          <select name="days" [(ngModel)]="keyDays">
+            @for (days of expiryDays; track days) {
+              <option [ngValue]="days">{{ days }} days</option>
+            }
+          </select>
+        </label>
+        @if (formError()) {
+          <p class="alert" role="alert">{{ formError() }}</p>
+        }
+        <footer>
+          <button class="btn" type="button" (click)="closeDialog()" [disabled]="busy()">
+            Cancel
+          </button>
+          <button class="btn primary" type="submit" [disabled]="busy() || !keyName.trim()">
+            Create key
+          </button>
+        </footer>
+      </form>
+    }
+  </dialog>
+}
+
+@if (revoking(); as key) {
+  <dialog appModal (closed)="revoking.set(null)" aria-labelledby="revoke-title">
+    <div class="body">
+      <header>
+        <h2 id="revoke-title">Revoke {{ key.name }}</h2>
+      </header>
+      <p>Anything using this key loses access at once. This cannot be undone.</p>
+      @if (formError()) {
+        <p class="alert" role="alert">{{ formError() }}</p>
+      }
+      <footer>
+        <button class="btn" type="button" (click)="revoking.set(null)">Cancel</button>
+        <button class="btn danger solid" type="button" (click)="revoke(key)" [disabled]="busy()">
+          Revoke key
+        </button>
+      </footer>
+    </div>
+  </dialog>
+}

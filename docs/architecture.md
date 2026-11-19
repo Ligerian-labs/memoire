@@ -200,7 +200,7 @@ paths stay inside the manifest's directory).
 | `guests/` | WASM guests, a separate Cargo workspace; `guests/runtime.toml` lists them and is the gateway's runtime manifest |
 | `config/dev/` | The development gateway configuration: `memoire.toml` and the catalog application |
 | `scripts/` | Development gateway, throwaway PostgreSQL, guest build and a development owner with a team and an API key |
-| `web/` | The Angular debugger (to come) |
+| `web/` | The Angular debugger and its static server (`web/README.md`) |
 
 ## Hosting
 

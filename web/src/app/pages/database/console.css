@@ -1,0 +1,124 @@
+:host,
+.results,
+.result {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  min-width: 0;
+}
+:host {
+  gap: 12px;
+}
+.console {
+  display: grid;
+  border: 1px solid var(--rule-strong);
+  border-radius: var(--radius);
+  background: var(--surface);
+  overflow: hidden;
+}
+.console.writing {
+  border-color: var(--write);
+  box-shadow: 0 0 0 1px var(--write);
+}
+.bar,
+.run {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px;
+  padding: 6px 8px;
+  background: var(--surface-2);
+}
+.bar {
+  border-bottom: 1px solid var(--rule);
+}
+.writing .bar {
+  background: var(--write-soft);
+  border-bottom-color: #efc58f;
+}
+.write-note {
+  font-size: 12.5px;
+  font-weight: 600;
+  color: var(--write);
+}
+.bar .faint {
+  font-size: 12.5px;
+}
+.spacer {
+  flex: 1;
+}
+.editor {
+  display: block;
+  width: 100%;
+  min-height: 150px;
+  padding: 10px 12px;
+  border: 0;
+  border-radius: 0;
+  background: var(--surface);
+  font-family: var(--mono);
+  font-size: 13px;
+  line-height: 1.55;
+  tab-size: 2;
+}
+.editor:focus {
+  box-shadow: none;
+  background: #fcfdfe;
+}
+.params {
+  display: grid;
+  gap: 4px;
+  padding: 8px 12px;
+  border-top: 1px dashed var(--rule);
+}
+.params span {
+  font-size: 12px;
+  color: var(--ink-2);
+}
+.run {
+  border-top: 1px solid var(--rule);
+}
+.run .faint {
+  font-size: 12.5px;
+}
+.results {
+  display: grid;
+  gap: 12px;
+}
+.result {
+  display: grid;
+  gap: 6px;
+}
+.result header {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  min-width: 0;
+}
+.n {
+  flex: none;
+  min-width: 20px;
+  font-family: var(--mono);
+  font-size: 12px;
+  color: var(--ink-3);
+}
+.stmt {
+  overflow: hidden;
+  color: var(--ink-2);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.stat {
+  flex: none;
+  padding: 0 6px;
+  border-radius: 3px;
+  background: var(--sunken);
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+}
+.failed {
+  display: block;
+  max-height: 8em;
+  margin-top: 4px;
+  overflow: auto;
+  color: #5c140c;
+  white-space: pre-wrap;
+}

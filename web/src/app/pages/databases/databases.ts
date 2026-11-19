@@ -1,0 +1,82 @@
+import { Component, OnDestroy, effect, inject, signal, untracked } from '@angular/core';
+import { FormsModule } from '@angular/forms';
+import { Router } from '@angular/router';
+import { Api } from '../../api/api';
+import { Database } from '../../api/memoire';
+import { bytes, duration, relative, timestamp } from '../../format';
+import { describe } from '../../messages';
+import { SessionStore } from '../../session';
+import { CreateDatabaseDialog } from './create-dialog';
+
+@Component({
+  selector: 'app-databases',
+  imports: [FormsModule, CreateDatabaseDialog],
+  templateUrl: './databases.html',
+})
+export class Databases implements OnDestroy {
+  private readonly api = inject(Api);
+  private readonly router = inject(Router);
+  readonly session = inject(SessionStore);
+  readonly items = signal<Database[]>([]);
+  readonly next = signal<string | null>(null);
+  readonly loading = signal(true);
+  readonly error = signal('');
+  readonly creating = signal(false);
+  readonly now = signal(Date.now());
+  showExpired = false;
+  /** Only the latest request may fill the table: a team switch or filter change supersedes the rest. */
+  private generation = 0;
+  private readonly tick = setInterval(() => this.now.set(Date.now()), 15_000);
+  readonly bytes = bytes;
+  readonly relative = relative;
+  readonly timestamp = timestamp;
+  readonly duration = duration;
+
+  constructor() {
+    effect(() => {
+      this.session.teamId();
+      untracked(() => {
+        this.creating.set(false);
+        void this.load();
+      });
+    });
+  }
+
+  ngOnDestroy(): void {
+    clearInterval(this.tick);
+  }
+
+  async load(more = false): Promise<void> {
+    const generation = ++this.generation;
+    if (!more) {
+      this.items.set([]);
+      this.next.set(null);
+    }
+    this.loading.set(true);
+    this.error.set('');
+    try {
+      const page = await this.api.memoire
+        .forTeam(this.session.teamId())
+        .list(this.showExpired ? 'all' : 'active', more ? this.next() : null);
+      if (generation !== this.generation) return;
+      this.items.update((items) => (more ? [...items, ...page.items] : page.items));
+      this.next.set(page.next_cursor);
+      this.now.set(Date.now());
+    } catch (error) {
+      if (generation === this.generation) this.error.set(describe(error));
+    } finally {
+      if (generation === this.generation) this.loading.set(false);
+    }
+  }
+
+  open(database: Database): void {
+    void this.router.navigate(['/databases', database.name]);
+  }
+
+  async created(database: Database, team: string | null): Promise<void> {
+    this.creating.set(false);
+    // Open it only if its team is still the one shown; otherwise the name could be another team's.
+    if (team === this.session.teamId()) await this.router.navigate(['/databases', database.name]);
+    else void this.load();
+  }
+}

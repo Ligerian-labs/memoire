@@ -63,3 +63,66 @@ jobs:
           cargo fmt --all --check
           cargo clippy --locked --workspace --all-targets -- -D warnings
           cargo test --locked --workspace
+
+  web:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    services:
+      postgres:
+        image: postgres:17
+        env:
+          POSTGRES_PASSWORD: postgres
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U postgres" --health-interval 5s --health-timeout 5s --health-retries 20
+    env:
+      CARGO_TERM_COLOR: never
+    defaults:
+      run:
+        working-directory: web
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - uses: pnpm/action-setup@v4
+        with:
+          package_json_file: web/package.json
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm lint
+      - run: pnpm test
+      - run: pnpm typecheck
+      - run: pnpm build
+      # The journey runs against a real gateway built from this commit.
+      - name: Toolchain from rust-toolchain.toml
+        working-directory: .
+        run: rustup show active-toolchain
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+            guests/target
+          key: web-rust-${{ runner.os }}-${{ hashFiles('Cargo.lock', 'guests/Cargo.lock', 'rust-toolchain.toml') }}
+          restore-keys: web-rust-${{ runner.os }}-
+      - name: Gateway build
+        working-directory: .
+        run: cargo build --locked -p memoire-gateway
+      - run: pnpm exec playwright install --with-deps chromium
+      - name: Playwright against the gateway
+        env:
+          MEMOIRE_GATEWAY_BIN: ${{ github.workspace }}/target/debug/memoire-gateway
+          MEMOIRE_E2E_DATABASE_URL: postgres://postgres:postgres@127.0.0.1:5432/postgres
+          MEMOIRE_E2E_REUSE_BUILD: "1"
+        run: pnpm e2e
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: web-e2e
+          path: |
+            web/test-results/
+            !web/test-results/e2e-runtime/secrets/
+            !web/test-results/e2e-runtime/pg/
+            !web/test-results/e2e-runtime/data/
+          retention-days: 14

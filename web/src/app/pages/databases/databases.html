@@ -1,0 +1,96 @@
+<section class="page">
+  <div class="page-head">
+    <h1>Databases</h1>
+    <span class="faint">{{ session.team()?.name }}</span>
+    <span class="spacer"></span>
+    <label class="check">
+      <input type="checkbox" [(ngModel)]="showExpired" (ngModelChange)="load()" />
+      Show expired
+    </label>
+    <button class="btn" type="button" (click)="load()" [disabled]="loading()">Refresh</button>
+    <button class="btn primary" type="button" (click)="creating.set(true)">New database</button>
+  </div>
+
+  @if (error()) {
+    <p class="alert" role="alert">{{ error() }}</p>
+  }
+
+  <div class="table-wrap">
+    <table class="data">
+      <thead>
+        <tr>
+          <th scope="col">Name</th>
+          <th scope="col">Kind</th>
+          <th scope="col">State</th>
+          <th scope="col">Expires</th>
+          <th scope="col" class="num">Size</th>
+          <th scope="col">Last used</th>
+          <th scope="col">Created</th>
+        </tr>
+      </thead>
+      <tbody>
+        @for (db of items(); track db.id) {
+          <tr class="link" (click)="open(db)">
+            <td>
+              <a class="mono" [href]="'/databases/' + db.name" (click)="$event.preventDefault()">{{
+                db.name
+              }}</a>
+            </td>
+            <td>
+              <span class="badge" [class]="db.kind">{{ db.kind }}</span>
+            </td>
+            <td>
+              <span class="badge" [class]="db.state"><span class="dot"></span>{{ db.state }}</span>
+            </td>
+            <td [title]="db.expires_at ? timestamp(db.expires_at) : ''">
+              @if (db.kind === 'persistent') {
+                <span class="faint">never</span>
+              } @else if (db.state === 'expired') {
+                <span class="faint">expired</span>
+              } @else {
+                {{ relative(db.expires_at, now()) }}
+                <span class="faint idle">idle {{ duration(db.idle_ttl_seconds ?? 0) }}</span>
+              }
+            </td>
+            <td class="num">{{ bytes(db.size_bytes) }}</td>
+            <td [title]="timestamp(db.last_used_at)">{{ relative(db.last_used_at, now()) }}</td>
+            <td class="faint" [title]="timestamp(db.created_at)">
+              {{ relative(db.created_at, now()) }}
+            </td>
+          </tr>
+        } @empty {
+          <tr>
+            <td colspan="7">
+              <div class="empty">
+                @if (loading()) {
+                  <p>Loading…</p>
+                } @else if (error()) {
+                  <p>The list could not be loaded.</p>
+                } @else {
+                  <p>No databases in this team yet.</p>
+                  <button class="btn primary" type="button" (click)="creating.set(true)">
+                    Create the first one
+                  </button>
+                }
+              </div>
+            </td>
+          </tr>
+        }
+      </tbody>
+    </table>
+  </div>
+  @if (next()) {
+    <div>
+      <button class="btn" type="button" (click)="load(true)" [disabled]="loading()">
+        Load more
+      </button>
+    </div>
+  }
+</section>
+
+@if (creating()) {
+  <app-create-database
+    (created)="created($event.database, $event.team)"
+    (cancelled)="creating.set(false)"
+  />
+}

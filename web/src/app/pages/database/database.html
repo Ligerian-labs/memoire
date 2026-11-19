@@ -1,0 +1,180 @@
+<section class="page">
+  <div class="page-head">
+    <a class="back" routerLink="/databases">Databases</a>
+    <span class="faint">/</span>
+    <h1 class="mono">{{ ctx.name() }}</h1>
+    @if (ctx.database(); as db) {
+      <span class="badge" [class]="db.kind">{{ db.kind }}</span>
+      <span class="badge" [class]="db.state"><span class="dot"></span>{{ db.state }}</span>
+    }
+    <span class="spacer"></span>
+    @if (ctx.database(); as db) {
+      @if (db.kind === 'burstable' && db.state === 'active') {
+        <button class="btn" type="button" (click)="openDialog('extend')">Extend</button>
+      }
+      @if (db.state === 'active') {
+        <button class="btn" type="button" (click)="exportFile()">Export</button>
+      }
+      <button class="btn danger" type="button" (click)="openDialog('delete')">Delete</button>
+    }
+  </div>
+
+  @if (ctx.error()) {
+    <p class="alert" role="alert">{{ ctx.error() }}</p>
+  }
+
+  @if (ctx.database(); as db) {
+    <dl class="facts">
+      <div>
+        <dt>Size</dt>
+        <dd>{{ bytes(db.size_bytes) }}</dd>
+      </div>
+      @if (db.kind === 'burstable') {
+        <div>
+          <dt>Expires</dt>
+          <dd [title]="timestamp(db.expires_at)">
+            {{ db.state === 'expired' ? 'expired' : relative(db.expires_at, now()) }}
+          </dd>
+        </div>
+        <div>
+          <dt>Idle TTL</dt>
+          <dd>{{ duration(db.idle_ttl_seconds ?? 0) }}</dd>
+        </div>
+        <div>
+          <dt>Lifetime ends</dt>
+          <dd [title]="timestamp(db.expires_at_max)">{{ relative(db.expires_at_max, now()) }}</dd>
+        </div>
+      }
+      <div>
+        <dt>Last used</dt>
+        <dd [title]="timestamp(db.last_used_at)">{{ relative(db.last_used_at, now()) }}</dd>
+      </div>
+      <div>
+        <dt>Created</dt>
+        <dd>{{ timestamp(db.created_at) }}</dd>
+      </div>
+      <div>
+        <dt>Id</dt>
+        <dd class="mono">{{ db.id }}</dd>
+      </div>
+    </dl>
+
+    @if (db.state === 'expired') {
+      <div class="panel empty">
+        <p>This database expired and its file was removed.</p>
+        <p class="faint">
+          Delete it to free the name, or create a new database under the same name.
+        </p>
+      </div>
+    } @else {
+      <div class="workbench">
+        <aside class="objects" aria-label="Tables and views">
+          <h3>Tables</h3>
+          <ul>
+            @for (table of ctx.schema()?.tables ?? []; track table.name) {
+              <li>
+                <a class="mono" [routerLink]="['tables', table.name]" routerLinkActive="on">{{
+                  table.name
+                }}</a>
+              </li>
+            } @empty {
+              <li class="faint none">{{ ctx.schema() ? 'None yet' : 'Loading…' }}</li>
+            }
+          </ul>
+          @if (ctx.schema()?.views?.length) {
+            <h3>Views</h3>
+            <ul>
+              @for (view of ctx.schema()!.views; track view.name) {
+                <li>
+                  <a class="mono" [routerLink]="['tables', view.name]" routerLinkActive="on">{{
+                    view.name
+                  }}</a>
+                </li>
+              }
+            </ul>
+          }
+          @if (ctx.schemaError()) {
+            <p class="faint small">{{ ctx.schemaError() }}</p>
+          }
+        </aside>
+        <div class="tabs-area">
+          <nav class="tabs" aria-label="Database views">
+            <a routerLink="console" routerLinkActive="on">Console</a>
+            <a routerLink="schema" routerLinkActive="on">Schema</a>
+            <a routerLink="snapshots" routerLinkActive="on">Snapshots</a>
+          </nav>
+          <router-outlet />
+        </div>
+      </div>
+    }
+  }
+</section>
+
+@if (dialog() === 'extend' && ctx.database(); as db) {
+  <dialog appModal (closed)="dialog.set(null)" aria-labelledby="extend-title">
+    <form (ngSubmit)="extend()">
+      <header>
+        <h2 id="extend-title">Extend {{ db.name }}</h2>
+      </header>
+      <p class="muted">
+        Restarts the idle clock now. Expiry never passes the end of its 7-day lifetime ({{
+          timestamp(db.expires_at_max)
+        }}).
+      </p>
+      <label class="field">
+        <span>Idle TTL</span>
+        <select name="ttl" [(ngModel)]="extendTtl">
+          <option [ngValue]="null">Keep {{ duration(db.idle_ttl_seconds ?? 0) }}</option>
+          @for (choice of ttlChoices; track choice.seconds) {
+            <option [ngValue]="choice.seconds">{{ choice.label }}</option>
+          }
+        </select>
+      </label>
+      @if (actionError()) {
+        <p class="alert" role="alert">{{ actionError() }}</p>
+      }
+      <footer>
+        <button class="btn" type="button" (click)="dialog.set(null)">Cancel</button>
+        <button class="btn primary" type="submit" [disabled]="busy()">Extend</button>
+      </footer>
+    </form>
+  </dialog>
+}
+
+@if (dialog() === 'delete' && ctx.database(); as db) {
+  <dialog appModal (closed)="dialog.set(null)" aria-labelledby="delete-title">
+    <form (ngSubmit)="remove()">
+      <header>
+        <h2 id="delete-title">Delete {{ db.name }}</h2>
+      </header>
+      <p>
+        This removes the database file{{
+          db.kind === 'persistent' ? ' and all its snapshots' : ''
+        }}. It cannot be undone.
+      </p>
+      <label class="field">
+        <span>Type the name to confirm</span>
+        <input
+          type="text"
+          name="confirm"
+          class="mono"
+          autocomplete="off"
+          [(ngModel)]="confirmName"
+        />
+      </label>
+      @if (actionError()) {
+        <p class="alert" role="alert">{{ actionError() }}</p>
+      }
+      <footer>
+        <button class="btn" type="button" (click)="dialog.set(null)">Cancel</button>
+        <button
+          class="btn danger solid"
+          type="submit"
+          [disabled]="busy() || confirmName !== db.name"
+        >
+          Delete database
+        </button>
+      </footer>
+    </form>
+  </dialog>
+}

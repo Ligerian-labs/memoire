@@ -1,0 +1,40 @@
+.lede {
+  max-width: 72ch;
+  font-size: 13px;
+}
+.panel .data th {
+  position: static;
+}
+.panel > header .spacer {
+  flex: 1;
+}
+tr.revoked td {
+  color: var(--ink-3);
+}
+.access {
+  display: grid;
+  gap: 6px;
+  margin: 0;
+  padding: 0;
+  border: 0;
+}
+legend {
+  margin-bottom: 4px;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--ink-2);
+}
+.secret {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 10px;
+  border: 1px solid var(--rule-strong);
+  border-radius: var(--radius);
+  background: var(--surface-2);
+}
+.secret code {
+  flex: 1;
+  overflow-wrap: anywhere;
+  user-select: all;
+}
