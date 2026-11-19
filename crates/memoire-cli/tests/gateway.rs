@@ -474,7 +474,6 @@ fn catalog_and_data_commands_work_against_a_real_gateway() {
 
 /// Export, import and snapshots, the gateway's last routes.
 #[test]
-#[ignore = "needs the gateway's export, import and snapshot routes"]
 fn files_and_snapshots_work_against_a_real_gateway() {
     let Some(db) = TestDatabase::create() else {
         eprintln!("skipped: MEREZHA_TEST_DATABASE_URL is unset");
