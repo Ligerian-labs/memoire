@@ -17,23 +17,33 @@ pub struct Cli {
 
 #[derive(Debug, Subcommand)]
 pub enum Command {
-    /// Store the gateway URL and an API key (read from standard input or
-    /// MEMOIRE_API_KEY) in ~/.config/memoire/ with mode 0600.
+    /// Check an API key against a gateway, then store both in
+    /// ~/.config/memoire/credentials.json with mode 0600. The key comes from
+    /// --key-file, else MEMOIRE_API_KEY, else standard input (a prompt
+    /// without echo on a terminal); never from an argument.
     Login {
         #[arg(long, value_name = "URL")]
         server: String,
+        /// Read the API key from this file instead.
+        #[arg(long, value_name = "FILE")]
+        key_file: Option<PathBuf>,
     },
     /// Show the caller and its team.
     Whoami,
     /// Manage databases.
     #[command(subcommand)]
     Db(DbCommand),
-    /// Run one SQL statement.
+    /// Run one SQL statement in read mode, or on the writer with --write.
     Query(QueryArgs),
-    /// Open an interactive SQL shell.
+    /// Open an interactive SQL shell. Statements end with `;`; `.help`
+    /// lists the dot commands. Reading a script from standard input, it
+    /// stops at the first error.
     Shell {
         #[arg(value_parser = database_name)]
         db: String,
+        /// Start on the writer connection (`.mode write` in the shell).
+        #[arg(long)]
+        write: bool,
     },
     /// Download a consistent copy of a database.
     Export {
@@ -124,15 +134,29 @@ pub struct QueryArgs {
     pub write: bool,
 }
 
+impl QueryArgs {
+    pub fn mode(&self) -> memoire_api::QueryMode {
+        if self.write {
+            memoire_api::QueryMode::Write
+        } else {
+            memoire_api::QueryMode::Read
+        }
+    }
+}
+
 #[derive(Debug, Subcommand)]
 pub enum SnapshotsCommand {
+    /// List a persistent database's snapshots, newest first.
     Ls {
         #[arg(value_parser = database_name)]
         db: String,
     },
+    /// Replace a persistent database with one of its snapshots, after
+    /// taking a `pre_restore` snapshot of the current contents.
     Restore {
         #[arg(value_parser = database_name)]
         db: String,
+        /// The snapshot id (`snap_…`).
         id: String,
     },
 }
