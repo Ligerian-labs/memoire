@@ -3,6 +3,7 @@
 // failure path; boxing it would buy nothing.
 #![allow(clippy::result_large_err)]
 mod data;
+mod lifecycle;
 
 use crate::{
     catalog::{Catalog, random_hex},
@@ -40,6 +41,7 @@ pub mod permission {
     pub const WRITE: &str = "memoire.databases.write";
     pub const CREATE: &str = "memoire.databases.create";
     pub const DELETE: &str = "memoire.databases.delete";
+    pub const SNAPSHOTS: &str = "memoire.databases.snapshots";
 }
 
 #[derive(Clone)]
@@ -61,6 +63,16 @@ pub fn router(routes: Routes) -> Router {
         .route("/databases/{name}/query", post(data::query))
         .route("/databases/{name}/schema", get(data::schema))
         .route("/databases/{name}/tables/{table}/rows", get(data::rows))
+        .route("/databases/{name}/snapshots", get(lifecycle::snapshots))
+        .route(
+            "/databases/{name}/snapshots/{id}/restore",
+            post(lifecycle::restore),
+        )
+        .route("/databases/{name}/export", get(lifecycle::export))
+        .route(
+            "/databases/{name}/import",
+            axum::routing::put(lifecycle::import),
+        )
         .with_state(routes)
         .layer(middleware::map_response(no_store))
 }
@@ -87,13 +99,13 @@ async fn whoami(request: Request) -> Response {
 /// One entry of the `databases` projection (the guest's `Entry`).
 #[derive(Debug, Deserialize)]
 pub(crate) struct Entry {
-    id: String,
-    name: String,
-    kind: DatabaseKind,
-    state: DatabaseState,
-    created_unix_ms: u64,
-    idle_ttl_seconds: Option<u64>,
-    extended_unix_ms: Option<u64>,
+    pub(crate) id: String,
+    pub(crate) name: String,
+    pub(crate) kind: DatabaseKind,
+    pub(crate) state: DatabaseState,
+    pub(crate) created_unix_ms: u64,
+    pub(crate) idle_ttl_seconds: Option<u64>,
+    pub(crate) extended_unix_ms: Option<u64>,
 }
 
 impl Entry {
@@ -122,6 +134,23 @@ impl Entry {
             expires_at: expires.map(timestamp),
             expires_at_max: burstable.then(|| timestamp(max)),
         }
+    }
+
+    /// When a burstable entry expires, given the data plane's last use:
+    /// the catalog guest's own rule. `None` for a persistent entry.
+    pub(crate) fn expires_unix_ms(&self, last_used: Option<u64>) -> Option<u64> {
+        let ttl = self
+            .idle_ttl_seconds
+            .filter(|_| self.kind == DatabaseKind::Burstable)?;
+        let anchor = self
+            .created_unix_ms
+            .max(self.extended_unix_ms.unwrap_or(0))
+            .max(last_used.unwrap_or(0));
+        Some(
+            anchor
+                .saturating_add(ttl.saturating_mul(1000))
+                .min(self.created_unix_ms + MAX_LIFETIME_SECONDS * 1000),
+        )
     }
 
     /// The data plane's target for this entry.
@@ -287,6 +316,11 @@ async fn create(State(routes): State<Routes>, request: Request) -> Response {
         payload["idle_ttl_seconds"] =
             json!(ttl.unwrap_or(routes.settings.default_idle_ttl_seconds));
     }
+    // The team is recorded first, so the sweeper and the reconciler visit
+    // it even when the file below is never written.
+    if let Err(failure) = crate::store::add_team(&routes.database, caller.team.as_str()).await {
+        return refuse(failure);
+    }
     let receipt = match routes
         .catalog
         .command(caller.edge(), "CreateDatabase", payload)
@@ -379,6 +413,10 @@ async fn remove(
         return refuse(failure);
     }
     let _ = routes.last_used.forget(&routes.database, team, &id).await;
+    if let Err(failure) = routes.data.remove_snapshots(team, &id).await {
+        return refuse(failure);
+    }
+    let _ = crate::store::delete_snapshots_of(&routes.database, team, &id).await;
     no_content()
 }
 

@@ -69,9 +69,10 @@ pub async fn query(
         Err(refusal) => return refusal,
     };
     let team = caller.team.as_str();
-    let outcome = routes.data.query(&entry.target(team), batch).await;
-    // Any query is a use, whatever it answered.
+    // Any query is a use, whatever it answers; recorded before it runs, so
+    // a sweep deciding meanwhile sees it.
     routes.last_used.touch(team, &entry.id, now_unix_ms());
+    let outcome = routes.data.query(&entry.target(team), batch).await;
     match outcome {
         Ok(results) => Json(QueryResponse { results }).into_response(),
         Err(refused) => refusal(refused),
@@ -146,7 +147,11 @@ pub async fn rows(
 /// The database `name` when it is active: `404 database_not_found`
 /// otherwise, `410 database_expired` once it expired. The caller was
 /// admitted to the route, so the lookup checks no second permission.
-async fn active(routes: &Routes, caller: &TeamCaller, name: &str) -> Result<Entry, Response> {
+pub(super) async fn active(
+    routes: &Routes,
+    caller: &TeamCaller,
+    name: &str,
+) -> Result<Entry, Response> {
     if !valid_name(name) {
         return Err(refuse(Failure::permanent("database_not_found")));
     }
@@ -168,7 +173,7 @@ async fn active(routes: &Routes, caller: &TeamCaller, name: &str) -> Result<Entr
 }
 
 /// The response for a refused batch or page.
-fn refusal(refused: Refused) -> Response {
+pub(super) fn refusal(refused: Refused) -> Response {
     match refused {
         Refused::Invalid { path, code } => invalid(vec![(path, code)]),
         Refused::Code(code) => refuse(match code {
@@ -200,7 +205,7 @@ fn refusal(refused: Refused) -> Response {
     }
 }
 
-fn now_unix_ms() -> u64 {
+pub(super) fn now_unix_ms() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map(|d| u64::try_from(d.as_millis()).unwrap_or(u64::MAX))

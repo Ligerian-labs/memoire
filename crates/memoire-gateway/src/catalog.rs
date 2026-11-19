@@ -168,6 +168,45 @@ impl Catalog {
     }
 }
 
+/// The gateway itself acting in one team: the sweeper, the snapshots and
+/// the reconciler. A `system` principal (`sys_memoire`) on the team, which
+/// may read the catalog and run the routes that need only a principal
+/// (`ExpireDatabase`, whose guest accepts system principals only).
+pub struct System(merezha_domain::Principal);
+
+impl System {
+    pub fn new(team: &str) -> Result<Self, Failure> {
+        Ok(Self(merezha_domain::Principal::new(
+            Identity::new("sys_memoire")?,
+            merezha_domain::PrincipalKind::System,
+            Some(Identity::new(team)?),
+            Vec::new(),
+        )?))
+    }
+}
+
+impl Caller for System {
+    fn principal(&self, _: &merezha_application::Scope) -> Option<merezha_domain::Principal> {
+        Some(self.0.clone())
+    }
+    fn tenant(&self) -> Option<Identity> {
+        self.0.tenant.clone()
+    }
+    fn authenticated(&self) -> bool {
+        true
+    }
+    /// Only reading the catalog: every change it makes goes through a
+    /// route that checks no permission and a guest that wants a system
+    /// principal.
+    fn check(&self, permission: &Identity, _: &merezha_application::Scope) -> Result<(), Failure> {
+        if permission.as_str() == crate::routes::permission::READ {
+            Ok(())
+        } else {
+            Err(Failure::permanent("unauthorized"))
+        }
+    }
+}
+
 /// The application blocks on the runtime handle, so every call runs on a
 /// blocking thread.
 async fn blocking<T: Send + 'static>(

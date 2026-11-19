@@ -15,6 +15,7 @@ use connection::{BUSY_TIMEOUT, Opened};
 use exec::Refused;
 use memoire_api::{Rows, Schema, StatementResult};
 use merezha_domain::Failure;
+use merezha_platform::BoxFuture;
 use std::{
     collections::HashMap,
     path::{Path, PathBuf},
@@ -52,6 +53,7 @@ struct Handle {
 
 /// The data plane.
 pub struct DataPlane {
+    root: PathBuf,
     teams: PathBuf,
     max_bytes: u64,
     idle_close: Duration,
@@ -60,9 +62,12 @@ pub struct DataPlane {
 }
 
 impl DataPlane {
-    pub fn new(teams: PathBuf, max_bytes: u64, idle_close: Duration) -> Self {
+    /// The plane over `<root>/teams`, with snapshots under
+    /// `<root>/snapshots` and scratch files under `<root>/tmp`.
+    pub fn new(root: PathBuf, max_bytes: u64, idle_close: Duration) -> Self {
         Self {
-            teams,
+            teams: root.join("teams"),
+            root,
             max_bytes,
             idle_close,
             epoch: Instant::now(),
@@ -93,6 +98,11 @@ impl DataPlane {
             if let Some(dir) = path.parent() {
                 private_dir(dir).map_err(|_| Failure::transient("data_dir_unavailable"))?;
             }
+            // Side files without their main file are stale: SQLite would
+            // replay them into the new one.
+            if !path.exists() {
+                remove_side_files(&path).map_err(|_| Failure::transient("data_dir_unavailable"))?;
+            }
             connection::create(&path).map_err(|_| Failure::transient("data_dir_unavailable"))
         })
         .await
@@ -105,16 +115,7 @@ impl DataPlane {
         let path = self.path(team, id)?;
         let handle = self.lock().remove(&path);
         if let Some(handle) = handle {
-            let drained = tokio::time::timeout(BUSY_TIMEOUT * 2, async {
-                let writer = handle.writer.clone().lock_owned().await;
-                let readers = handle
-                    .slots
-                    .clone()
-                    .acquire_many_owned(READERS as u32)
-                    .await;
-                (writer, readers)
-            })
-            .await;
+            let drained = tokio::time::timeout(BUSY_TIMEOUT * 2, drain(&handle)).await;
             let Ok((mut writer, _readers)) = drained else {
                 // Still in use: the files stay, and the startup reconciler
                 // removes them, as it does any file the catalog no longer
@@ -202,7 +203,7 @@ impl DataPlane {
     async fn on_writer<T: Send + 'static>(
         &self,
         target: &Target,
-        work: impl FnOnce(&Opened) -> Result<T, Refused> + Send + 'static,
+        work: impl FnOnce(&mut Opened) -> Result<T, Refused> + Send + 'static,
     ) -> Result<T, Refused> {
         let handle = self.handle(target)?;
         let mut writer = tokio::time::timeout(BUSY_TIMEOUT, handle.writer.clone().lock_owned())
@@ -217,7 +218,7 @@ impl DataPlane {
                 );
             }
             let opened = writer
-                .as_ref()
+                .as_mut()
                 .ok_or(Refused::Code("database_unavailable"))?;
             work(opened)
         })
@@ -272,11 +273,16 @@ impl DataPlane {
         batch: request::Batch,
     ) -> Result<Vec<StatementResult>, Refused> {
         let write = batch.mode == memoire_api::QueryMode::Write;
-        let work = move |opened: &Opened| exec::run(&opened.connection, &opened.guard, &batch);
         if write {
-            self.on_writer(target, work).await
+            self.on_writer(target, move |opened| {
+                exec::run(&opened.connection, &opened.guard, &batch)
+            })
+            .await
         } else {
-            self.on_reader(target, work).await
+            self.on_reader(target, move |opened| {
+                exec::run(&opened.connection, &opened.guard, &batch)
+            })
+            .await
         }
     }
 
@@ -311,6 +317,227 @@ impl DataPlane {
         .await
     }
 
+    /// A fresh path under `<root>/tmp` for a file being built.
+    pub fn scratch(&self) -> Result<PathBuf, Failure> {
+        let dir = self.root.join("tmp");
+        private_dir(&dir).map_err(|_| Failure::transient("data_dir_unavailable"))?;
+        Ok(dir.join(format!("{}.sqlite", crate::catalog::random_hex()?)))
+    }
+
+    /// `<root>/snapshots/<team>/<db>/<snapshot>.sqlite`.
+    pub fn snapshot_path(&self, team: &str, id: &str, snapshot: &str) -> Result<PathBuf, Failure> {
+        let database = self.path(team, id)?;
+        let ok = snapshot
+            .strip_prefix("snap_")
+            .is_some_and(|hex| hex.len() == 32 && hex.bytes().all(|b| b.is_ascii_hexdigit()));
+        if !ok {
+            return Err(Failure::permanent("invalid_database_path"));
+        }
+        let _ = database;
+        Ok(self
+            .root
+            .join("snapshots")
+            .join(team)
+            .join(id)
+            .join(format!("{snapshot}.sqlite")))
+    }
+
+    /// Removes every snapshot file of a database.
+    pub async fn remove_snapshots(&self, team: &str, id: &str) -> Result<(), Failure> {
+        self.path(team, id)?;
+        let dir = self.root.join("snapshots").join(team).join(id);
+        blocking(move || match std::fs::remove_dir_all(&dir) {
+            Ok(()) => Ok(()),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+            Err(_) => Err(Failure::transient("data_dir_unavailable")),
+        })
+        .await
+    }
+
+    /// A consistent copy of the database at `destination` (SQLite's online
+    /// backup in one pass, from a reader); its size.
+    pub async fn copy_to(&self, target: &Target, destination: PathBuf) -> Result<u64, Refused> {
+        self.on_reader(target, move |opened| {
+            let failed = |_| Refused::Code("data_dir_unavailable");
+            if let Some(dir) = destination.parent() {
+                private_dir(dir).map_err(failed)?;
+            }
+            let mut copy = rusqlite::Connection::open(&destination)
+                .map_err(|_| Refused::Code("data_dir_unavailable"))?;
+            let done = rusqlite::backup::Backup::new(&opened.connection, &mut copy)
+                .and_then(|backup| backup.step(-1))
+                .map(|step| step == rusqlite::backup::StepResult::Done);
+            drop(copy);
+            if !matches!(done, Ok(true)) {
+                let _ = std::fs::remove_file(&destination);
+                return Err(Refused::Code("sqlite_busy"));
+            }
+            std::fs::metadata(&destination)
+                .map(|m| m.len())
+                .map_err(|_| Refused::Code("data_dir_unavailable"))
+        })
+        .await
+    }
+
+    /// Whether the database holds no user object.
+    pub async fn is_empty(&self, target: &Target) -> Result<bool, Refused> {
+        self.on_reader(target, |opened| {
+            is_empty(&opened.connection).map_err(|_| Refused::Code("internal"))
+        })
+        .await
+    }
+
+    /// Replaces the database with the file at `source` in one step (a
+    /// rename), once every request on it finished, and only while it holds
+    /// no user object (`database_not_empty`): an import.
+    pub async fn replace_with(&self, target: &Target, source: PathBuf) -> Result<(), Refused> {
+        let handle = self.handle(target)?;
+        let (mut writer, readers) = tokio::time::timeout(BUSY_TIMEOUT * 2, drain(&handle))
+            .await
+            .map_err(|_| Refused::Code("sqlite_busy"))?;
+        let readers = readers.map_err(|_| Refused::Code("internal"))?;
+        let (inner, max_bytes) = (handle.clone(), self.max_bytes);
+        // The guards move into the blocking work: a cancelled request cannot
+        // release them while the swap runs.
+        let result = tokio::task::spawn_blocking(move || {
+            let _readers = readers;
+            let opened = connection::open(&inner.path, false, max_bytes)
+                .map_err(|_| Refused::Code("database_unavailable"))?;
+            if !is_empty(&opened.connection).map_err(|_| Refused::Code("internal"))? {
+                return Err(Refused::Code("database_not_empty"));
+            }
+            drop(opened);
+            *writer = None;
+            swap(&inner, &source)
+        })
+        .await
+        .map_err(|_| Refused::Code("internal"))?;
+        handle.used.store(self.now(), Ordering::Relaxed);
+        result
+    }
+
+    /// A restore, as one critical section no request runs in: a
+    /// consistent copy of the current contents goes to `keep`, `record`
+    /// lists it (nothing changes when it fails), then the file at `source`
+    /// replaces the database. It runs to its end even when the request that
+    /// asked for it goes away.
+    pub async fn restore(
+        &self,
+        target: &Target,
+        source: PathBuf,
+        keep: PathBuf,
+        record: impl FnOnce(u64) -> BoxFuture<'static, Result<(), Failure>> + Send + 'static,
+    ) -> Result<(), Refused> {
+        let handle = self.handle(target)?;
+        let used = self.now();
+        // The task owns the staged file and the safety copy: whatever
+        // fails, the staged file goes, and the copy too unless it was
+        // recorded.
+        let section = tokio::spawn(async move {
+            let mut recorded = false;
+            let result = async {
+                let (mut writer, readers) = tokio::time::timeout(BUSY_TIMEOUT * 2, drain(&handle))
+                    .await
+                    .map_err(|_| Refused::Code("sqlite_busy"))?;
+                let _readers = readers.map_err(|_| Refused::Code("internal"))?;
+                *writer = None;
+                handle
+                    .readers
+                    .lock()
+                    .unwrap_or_else(|p| p.into_inner())
+                    .clear();
+                let (path, kept) = (handle.path.clone(), keep.clone());
+                let size = tokio::task::spawn_blocking(move || copy_file(&path, &kept))
+                    .await
+                    .map_err(|_| Refused::Code("internal"))??;
+                record(size).await.map_err(|_| Refused::Code("internal"))?;
+                recorded = true;
+                let (inner, staged) = (handle.clone(), source.clone());
+                let swapped = tokio::task::spawn_blocking(move || swap(&inner, &staged))
+                    .await
+                    .map_err(|_| Refused::Code("internal"))?;
+                handle.used.store(used, Ordering::Relaxed);
+                drop(writer);
+                swapped
+            }
+            .await;
+            if result.is_err() {
+                let _ = std::fs::remove_file(&source);
+                if !recorded {
+                    let _ = std::fs::remove_file(&keep);
+                }
+            }
+            result
+        });
+        section.await.map_err(|_| Refused::Code("internal"))?
+    }
+
+    /// The databases of `team` with a snapshot directory.
+    pub fn snapshot_dirs(&self, team: &str) -> Vec<String> {
+        std::fs::read_dir(self.root.join("snapshots").join(team))
+            .into_iter()
+            .flatten()
+            .filter_map(|entry| entry.ok()?.file_name().into_string().ok())
+            .collect()
+    }
+
+    /// Gives a database whose file is missing a copy of `source`.
+    pub async fn recreate_from(
+        &self,
+        team: &str,
+        id: &str,
+        source: PathBuf,
+    ) -> Result<(), Failure> {
+        let path = self.path(team, id)?;
+        let scratch = self.scratch()?;
+        blocking(move || {
+            let failed = |_| Failure::transient("data_dir_unavailable");
+            if let Some(dir) = path.parent() {
+                private_dir(dir).map_err(failed)?;
+            }
+            std::fs::copy(&source, &scratch).map_err(failed)?;
+            if path.exists() {
+                let _ = std::fs::remove_file(&scratch);
+                return Ok(());
+            }
+            remove_side_files(&path).map_err(failed)?;
+            std::fs::rename(&scratch, &path).map_err(failed)?;
+            connection::wal(&path).map_err(|_| Failure::transient("internal"))
+        })
+        .await
+    }
+
+    /// The teams with a directory under `<root>/teams`.
+    pub fn team_dirs(&self) -> Vec<String> {
+        std::fs::read_dir(&self.teams)
+            .into_iter()
+            .flatten()
+            .filter_map(|entry| entry.ok()?.file_name().into_string().ok())
+            .collect()
+    }
+
+    /// The database files of `team`: each id and how long ago the file
+    /// last changed.
+    pub fn team_files(&self, team: &str) -> Vec<(String, Duration)> {
+        std::fs::read_dir(self.teams.join(team))
+            .into_iter()
+            .flatten()
+            .filter_map(|entry| {
+                let entry = entry.ok()?;
+                let name = entry.file_name().into_string().ok()?;
+                let id = name.strip_suffix(".sqlite")?.to_owned();
+                let age = entry
+                    .metadata()
+                    .ok()?
+                    .modified()
+                    .ok()?
+                    .elapsed()
+                    .unwrap_or_default();
+                Some((id, age))
+            })
+            .collect()
+    }
+
     /// Closes the connections of burstable databases idle for
     /// `idle_close` that no request holds.
     pub fn close_idle(&self) {
@@ -325,6 +552,102 @@ impl DataPlane {
     /// How often [`DataPlane::close_idle`] should run.
     pub fn idle_check(&self) -> Duration {
         (self.idle_close / 4).clamp(Duration::from_millis(100), Duration::from_secs(30))
+    }
+}
+
+/// Waits for every request on `handle` to finish: its writer and every
+/// reader slot, held until the guards drop.
+async fn drain(
+    handle: &Handle,
+) -> (
+    tokio::sync::OwnedMutexGuard<Option<Opened>>,
+    Result<tokio::sync::OwnedSemaphorePermit, tokio::sync::AcquireError>,
+) {
+    let writer = handle.writer.clone().lock_owned().await;
+    let readers = handle
+        .slots
+        .clone()
+        .acquire_many_owned(READERS as u32)
+        .await;
+    (writer, readers)
+}
+
+/// Puts the staged file at `source` in WAL mode, then renames it over the
+/// database's file. The database's connections are closed and no request
+/// runs.
+fn swap(handle: &Handle, source: &Path) -> Result<(), Refused> {
+    handle
+        .readers
+        .lock()
+        .unwrap_or_else(|p| p.into_inner())
+        .clear();
+    // Ready before the rename, so nothing can fail after it.
+    connection::wal(source).map_err(|_| Refused::Code("invalid_import"))?;
+    remove_side_files(source).map_err(|_| Refused::Code("data_dir_unavailable"))?;
+    remove_side_files(&handle.path).map_err(|_| Refused::Code("data_dir_unavailable"))?;
+    std::fs::rename(source, &handle.path).map_err(|_| Refused::Code("data_dir_unavailable"))
+}
+
+/// A consistent copy of the closed database at `source` (its WAL
+/// included) to `destination`, through SQLite's backup in one pass; its
+/// size.
+fn copy_file(source: &Path, destination: &Path) -> Result<u64, Refused> {
+    let failed = |_: std::io::Error| Refused::Code("data_dir_unavailable");
+    if let Some(dir) = destination.parent() {
+        private_dir(dir).map_err(failed)?;
+    }
+    let from = rusqlite::Connection::open_with_flags(
+        source,
+        rusqlite::OpenFlags::SQLITE_OPEN_READ_WRITE | rusqlite::OpenFlags::SQLITE_OPEN_NO_MUTEX,
+    )
+    .map_err(|_| Refused::Code("database_unavailable"))?;
+    let mut to = rusqlite::Connection::open(destination)
+        .map_err(|_| Refused::Code("data_dir_unavailable"))?;
+    let done = rusqlite::backup::Backup::new(&from, &mut to)
+        .and_then(|backup| backup.step(-1))
+        .map(|step| step == rusqlite::backup::StepResult::Done);
+    drop(to);
+    if !matches!(done, Ok(true)) {
+        let _ = std::fs::remove_file(destination);
+        return Err(Refused::Code("sqlite_busy"));
+    }
+    std::fs::metadata(destination)
+        .map(|m| m.len())
+        .map_err(failed)
+}
+
+/// Whether a database holds no user table, view, index or trigger.
+fn is_empty(connection: &rusqlite::Connection) -> rusqlite::Result<bool> {
+    connection.query_row(
+        "SELECT count(*) = 0 FROM sqlite_schema WHERE name NOT LIKE 'sqlite\\_%' ESCAPE '\\'",
+        [],
+        |row| row.get(0),
+    )
+}
+
+/// Removes a database file's side files.
+fn remove_side_files(path: &Path) -> std::io::Result<()> {
+    for suffix in SIDE_FILES {
+        let mut file = path.to_path_buf().into_os_string();
+        file.push(suffix);
+        match std::fs::remove_file(&file) {
+            Ok(()) => {}
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+            Err(e) => return Err(e),
+        }
+    }
+    Ok(())
+}
+
+/// A refusal as a classified failure, for callers outside a route.
+pub fn refusal_failure(refused: Refused) -> Failure {
+    match refused {
+        Refused::Code(
+            code @ ("sqlite_busy" | "database_unavailable" | "internal" | "data_dir_unavailable"),
+        ) => Failure::transient(code),
+        Refused::Code(code) => Failure::permanent(code),
+        Refused::Invalid { .. } => Failure::permanent("validation_failed"),
+        Refused::Sql { .. } => Failure::permanent("sql_error"),
     }
 }
 

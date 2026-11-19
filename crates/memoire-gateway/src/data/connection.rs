@@ -152,6 +152,17 @@ pub fn create(path: &Path) -> rusqlite::Result<()> {
     Ok(())
 }
 
+/// Puts an existing file in WAL mode.
+pub fn wal(path: &Path) -> rusqlite::Result<()> {
+    let connection = Connection::open_with_flags(
+        path,
+        OpenFlags::SQLITE_OPEN_READ_WRITE
+            | OpenFlags::SQLITE_OPEN_NO_MUTEX
+            | OpenFlags::SQLITE_OPEN_NOFOLLOW,
+    )?;
+    connection.pragma_update(None, "journal_mode", "wal")
+}
+
 fn configure(connection: &Connection, write: bool, max_bytes: u64) -> rusqlite::Result<()> {
     connection.busy_timeout(BUSY_TIMEOUT)?;
     connection.set_db_config(DbConfig::SQLITE_DBCONFIG_DEFENSIVE, true)?;

@@ -130,6 +130,31 @@ Data plane specifics:
 - Last use lives in `memoire.last_used` (team, database, Unix
   milliseconds), flushed every `last_used_flush_seconds` and on shutdown.
 
+Lifecycle:
+
+- The sweep and the snapshots are Merezha jobs (`memoire.sweep`,
+  `memoire.snapshot`) on the `memoire` queue. Each run first enqueues the
+  next slot of its interval, deduplicated by the slot, so retries and
+  several instances still make one job per slot; the module's start seeds
+  both.
+- The sweep visits every team (`memoire.teams`, recorded at create, and the
+  team directories). For each active burstable database past
+  `min((last use or created) + idle TTL, created + 7 days)` it sends
+  `ExpireDatabase` as the system principal `sys_memoire` with `now` and the
+  last use; the guest decides, then the file goes. It also removes files the
+  catalog no longer holds as active, once left alone for five minutes.
+- Snapshots are taken at each slot of `snapshot_interval_seconds` for every
+  active persistent database: one-pass online backups to
+  `<data_dir>/snapshots/<team>/<db>/<snap>.sqlite`, recorded in
+  `memoire.snapshots`, and pruned past `snapshot_retention_seconds`.
+  Restore takes a `pre_restore` snapshot, then swaps a copy of the snapshot
+  in by rename once the requests on the database finished; import swaps the
+  uploaded file in the same way, after `PRAGMA integrity_check`, while the
+  database is empty. Export streams a one-pass backup.
+- At startup the reconciler also gives an active database whose file is
+  missing its latest snapshot, or an empty file. Only the startup pass does
+  this: under a lagging read, a missing file may be one being deleted.
+
 Merezha's edge rewrites any error body whose `error` object carries a
 member beyond `code`, `classification` and `details`, so `sql_error` sends
 SQLite's message in the `Memoire-Sql-Message` header. Letting a module add
@@ -157,6 +182,9 @@ its own error member is a later upstream improvement.
 | `max_database_bytes` | 1 073 741 824 | Largest file (65 536 to 1 GiB), through `max_page_count` |
 | `idle_close_seconds` | 300 | A burstable database's connections close after this long without a request |
 | `last_used_flush_seconds` | 60 | How often last use reaches PostgreSQL |
+| `sweep_interval_seconds` | 60 | How often the sweeper runs |
+| `snapshot_interval_seconds` | 21 600 | How often persistent databases are snapshotted |
+| `snapshot_retention_seconds` | 604 800 | How long snapshots are kept |
 
 The gateway also needs `[application] path` naming the catalog
 application, and `[runtime] manifest` naming `guests/runtime.toml` (component

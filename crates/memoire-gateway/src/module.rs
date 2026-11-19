@@ -4,7 +4,8 @@ use crate::{
     config::Settings,
     data::DataPlane,
     last_used::{self, LastUse},
-    routes,
+    lifecycle::{self, Lifecycle, Task, Tick},
+    routes, store,
 };
 use axum::Router;
 use merezha_domain::Failure;
@@ -29,7 +30,10 @@ const INTERNAL: &[ErrorCode] = &[
 ];
 
 /// The statement lists the module runs.
-const STATEMENTS: &[&[merezha_postgres::Statement]] = &[last_used::STATEMENTS];
+const STATEMENTS: &[&[merezha_postgres::Statement]] = &[last_used::STATEMENTS, store::STATEMENTS];
+
+/// The module's schema, `memoire`, in order.
+const MIGRATIONS: &[Migration] = &[last_used::MIGRATION, store::MIGRATION];
 
 /// memoire's error codes (docs/api.md, "Errors") in Merezha's registry
 /// form, and the internal ones.
@@ -54,6 +58,7 @@ pub struct MemoireModule {
     data: OnceLock<Arc<DataPlane>>,
     last_used: Arc<LastUse>,
     database: OnceLock<merezha_platform::Database>,
+    lifecycle: OnceLock<Arc<Lifecycle>>,
     tasks: Mutex<Vec<tokio::task::AbortHandle>>,
 }
 
@@ -95,7 +100,16 @@ impl Module for MemoireModule {
     }
 
     fn migrations(&self) -> &[Migration] {
-        last_used::MIGRATIONS
+        MIGRATIONS
+    }
+
+    /// Import reads up to the database size limit itself.
+    fn body_limits(&self) -> Vec<merezha_platform::module::RouteBodyLimit> {
+        vec![merezha_platform::module::RouteBodyLimit {
+            method: axum::http::Method::PUT,
+            path: "/databases/{name}/import",
+            limit: usize::try_from(memoire_api::limits::MAX_DATABASE_BYTES).unwrap_or(usize::MAX),
+        }]
     }
 
     fn statements(&self) -> &[&'static [merezha_postgres::Statement]] {
@@ -120,13 +134,74 @@ impl Module for MemoireModule {
             let _ = self.catalog.set(catalog);
             let settings = self.settings()?;
             let data = Arc::new(DataPlane::new(
-                teams,
+                settings.data_dir.clone(),
                 settings.max_database_bytes,
                 Duration::from_secs(settings.idle_close_seconds),
             ));
             let _ = self.data.set(data.clone());
             let _ = self.database.set(ctx.database().clone());
+            let lifecycle = Arc::new(Lifecycle::new(
+                self.catalog
+                    .get()
+                    .cloned()
+                    .ok_or_else(|| Failure::transient("internal"))?,
+                data.clone(),
+                self.last_used.clone(),
+                ctx.database().clone(),
+                settings.clone(),
+            ));
+            let _ = self.lifecycle.set(lifecycle.clone());
+            // The recurring sweep and snapshots: handlers now, before the
+            // jobs runtime starts; their first slots once it runs.
+            let jobs = ctx.jobs(NAME)?;
+            for task in [Task::Sweep, Task::Snapshot] {
+                jobs.register(
+                    task.kind(),
+                    lifecycle::QUEUE,
+                    Arc::new(Tick {
+                        lifecycle: lifecycle.clone(),
+                        jobs: jobs.clone(),
+                        task,
+                    }),
+                    merezha_platform::ports::KindOptions::default(),
+                )?;
+            }
+            let (seeder, seeds) = (lifecycle.clone(), jobs.clone());
             let mut tasks = self.tasks.lock().unwrap_or_else(|p| p.into_inner());
+            // The startup reconciler, then the first slots. It retries while
+            // the catalog's projection warms up.
+            tasks.push(
+                tokio::spawn(async move {
+                    for attempt in 0u32.. {
+                        match seeder.reconcile(lifecycle::ORPHAN_AGE).await {
+                            Ok(()) => break,
+                            Err(_) if attempt < 30 => {
+                                tokio::time::sleep(Duration::from_secs(1)).await;
+                            }
+                            Err(failure) => {
+                                merezha_telemetry::event!(
+                                    WARN,
+                                    "memoire.reconcile_failed",
+                                    code = failure.code.as_str()
+                                );
+                                break;
+                            }
+                        }
+                    }
+                    for task in [Task::Sweep, Task::Snapshot] {
+                        for _ in 0..30 {
+                            if lifecycle::schedule(&seeder, &seeds, task, None)
+                                .await
+                                .is_ok()
+                            {
+                                break;
+                            }
+                            tokio::time::sleep(Duration::from_secs(1)).await;
+                        }
+                    }
+                })
+                .abort_handle(),
+            );
             let every = data.idle_check();
             tasks.push(
                 tokio::spawn(async move {
@@ -174,8 +249,13 @@ impl Module for MemoireModule {
     }
 
     fn routes(&self, ctx: &AppContext) -> Router {
-        match (self.catalog.get(), self.data.get(), self.settings()) {
-            (Some(catalog), Some(data), Ok(settings)) => routes::router(routes::Routes {
+        match (
+            self.catalog.get(),
+            self.data.get(),
+            self.lifecycle.get(),
+            self.settings(),
+        ) {
+            (Some(catalog), Some(data), Some(_), Ok(settings)) => routes::router(routes::Routes {
                 catalog: catalog.clone(),
                 data: data.clone(),
                 last_used: self.last_used.clone(),
