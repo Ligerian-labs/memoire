@@ -3407,7 +3407,7 @@ fn remember_supersedes_keeps_what_the_flags_do_not_give() {
         )
     );
 
-    // Without --json: the memory as usual, and a note naming the old one.
+    // Without --json: the memory as usual, naming the old one.
     let second = id_of(&remember(&a, "Beta builds use the shared runner", &acme));
     let run = a
         .run(
@@ -3428,8 +3428,6 @@ fn remember_supersedes_keeps_what_the_flags_do_not_give() {
         .ok();
     assert!(run.stdout.contains("supersedes"), "{}", run.stdout);
     assert!(run.stdout.contains(&second), "{}", run.stdout);
-    assert!(run.stderr.contains(&second), "{}", run.stderr);
-    assert_eq!(run.stderr.lines().count(), 1, "{}", run.stderr);
     let replaced = show(&a, &second)["memory"]["superseded_by"].clone();
     let current = ok(&a, &["memory", "show", replaced.as_str().unwrap()])["memory"].clone();
     assert_eq!(

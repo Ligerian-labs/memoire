@@ -275,8 +275,7 @@ otherwise). `OLD_ID` must be current; a disputed memory may be replaced.
 - The log gets a `remember` event on the new memory, then a `supersede` event
   on `OLD_ID`.
 
-Prints the memory object, the new memory with `supersedes` set. Without
-`--json`, a note on standard error names the replaced memory. Errors:
+Prints the memory object, the new memory with `supersedes` set. Errors:
 `memory_duplicate`, `memory_secret_detected`, `memory_too_large`; with
 `--supersedes`, also `memory_not_found` (for a purged id, its message says
 when it was purged), `memory_not_current` (`OLD_ID` superseded or

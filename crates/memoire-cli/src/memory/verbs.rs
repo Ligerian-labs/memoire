@@ -273,14 +273,7 @@ pub fn remember(ctx: &Context<'_>, args: RememberArgs) -> Result<()> {
             );
         }
     };
-    let memory = written(&results)?;
-    print_memory(ctx, &memory)?;
-    if let Some(old) = &old
-        && !ctx.out.json
-    {
-        ctx.out.note(&format!("Superseded {}", old.id));
-    }
-    Ok(())
+    print_memory(ctx, &written(&results)?)
 }
 
 /// The error for a replace whose guard failed: what is true of the old
