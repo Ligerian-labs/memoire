@@ -102,7 +102,7 @@ recent sign-in, which an API key is not. It reads the email and password
 from the terminal (the password without echo), or as two lines of standard
 input. Then it creates the machine, gives it the team role `member` (a
 machine holds no permission without a role), and creates its key with the
-five memoire permissions, or only `memoire.databases.read` with
+five `memoire.databases.*` permissions, or only `memoire.databases.read` with
 `--read-only`. With `--memory`, the key holds only `memoire.memory.read` and
 `memoire.memory.write` (only `memoire.memory.read` with `--read-only`): an
 agent on it can use the memory and nothing else, see

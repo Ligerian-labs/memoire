@@ -71,7 +71,7 @@ cargo test --locked --workspace
 cluster when it is set. Development secrets and data live in `.memoire-dev/`
 (ignored by Git). `scripts/dev-owner.py` registers a synthetic account through
 identity and the capture mail driver, creates a team and mints a key with
-memoire's five permissions; the secrets go to `.memoire-dev/owner.json`
+memoire's five database permissions; the secrets go to `.memoire-dev/owner.json`
 (mode 0600), never to the terminal:
 
 ```sh
