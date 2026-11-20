@@ -5,7 +5,7 @@ use super::model::Event;
 use super::store::{self, After, Batch, EventFilter};
 use super::{Context, render};
 use crate::config::io_error;
-use crate::error::Result;
+use crate::error::{Error, Result, exit};
 use serde_json::json;
 use std::io::Write as _;
 use std::path::Path;
@@ -17,8 +17,9 @@ const EXPORT_PAGE: i64 = 500;
 pub fn log(ctx: &Context<'_>, args: &crate::cli::LogArgs) -> Result<()> {
     let scopes = (!args.scopes.is_empty()).then_some(args.scopes.as_slice());
     if args.unseen {
-        let reader = args.reader.as_deref().filter(|r| !r.is_empty());
-        return unseen(ctx, scopes, reader, args.limit);
+        let reader = crate::cli::reader_name(args.reader.as_deref().unwrap_or_default())
+            .map_err(|message| Error::local("invalid_argument", exit::USAGE, message))?;
+        return unseen(ctx, scopes, reader.as_deref(), args.limit);
     }
     let mut batch = Batch::new();
     let events = store::select_events(

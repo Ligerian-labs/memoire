@@ -630,8 +630,8 @@ cursor, then moves the cursor once they are printed:
   reviewer, for example) and continues where its last run stopped;
   `session:ID` when the session (`--session`, `MEMOIRE_SESSION`) is set and
   not empty; else `machine`. `NAME` has the syntax of a tag; another value
-  exits 2, with or without `--unseen`. An empty `MEMOIRE_READER` counts as
-  unset. Without `--unseen`, a valid reader is ignored.
+  exits 2. An empty `MEMOIRE_READER` counts as unset. Without `--unseen`,
+  the reader is ignored, whatever it holds.
 - There is one cursor per server URL, database, scope filter (the sorted
   `--scope` list) and reader. Sessions on one machine each have their own
   cursor, so one does not consume another's news. A filtered read keeps its
@@ -640,8 +640,10 @@ cursor, then moves the cursor once they are printed:
 - A reader with no cursor for the store has a first look (`first: true`;
   without `--json`, a note on standard error says so). It starts at the
   events of the last 24 hours on the store's clock: `after` is the highest
-  `seq` among older events, 0 when there is none. It shows at most `--limit`
-  of them, like any read. `log --since 72h` reads older events.
+  `seq` among older events, 0 when there is none. This takes the events'
+  times to follow their `seq`, as they do while the gateway host's clock does
+  not step backwards. It shows at most `--limit` of them, like any read.
+  `log --since 72h` reads older events.
 - `after` is where the read started: the cursor, or the first look's start.
   The read returns the newest `--limit` events after it, and `skipped` counts
   the older ones beyond the limit, which will not be shown as unseen again.
@@ -650,6 +652,8 @@ cursor, then moves the cursor once they are printed:
   first look that shows nothing still leaves a cursor, and the next read
   shows only newer events. Within one store a cursor never moves backwards,
   so of two runs at once, the one that read less does not undo the other.
+  Two runs of one reader at the same moment may both show the same events:
+  the cursor is not a queue.
 - Each cursor remembers the store's `store_id`. When the database is deleted
   and created again under the same name, the new store has a new id and the
   reader gets a first look again.

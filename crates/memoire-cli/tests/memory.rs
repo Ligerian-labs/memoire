@@ -2604,6 +2604,8 @@ fn a_named_reader_continues_across_sessions() {
     assert!(bad.stderr.contains("a reader is"), "{}", bad.stderr);
     let bad_env = same_machine(&s1, dir.path(), Some("s-6")).env("MEMOIRE_READER", "Night");
     assert_eq!(bad_env.run(&["memory", "log", "--unseen"], "").code, 2);
+    // Only --unseen reads the reader: a bad one does not break a plain log.
+    bad_env.run(&["memory", "log", "--since", "24h"], "").ok();
 }
 
 #[test]
