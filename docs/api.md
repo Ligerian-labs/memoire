@@ -514,7 +514,9 @@ the limits are in memory.md; this section gives the HTTP form.
   or `memoire.databases.write`. A key that may run SQL on a database can
   already do all of this, so keys minted before the memory permissions keep
   working. A key holding only `memoire.memory.*` gets `403 unauthorized` on
-  every other database route. A write route answers with the memory it
+  every other database route (`query` reads its body to learn the mode, so
+  a body over the limit answers `413 body_limit` first, as for any
+  caller). A write route answers with the memory it
   wrote or touched, so a write permission shows a caller the memories it
   names by id. The refusals come in the usual order:
   `401 unauthenticated`, `403 tenant_required`, `403 unauthorized`, before
@@ -529,10 +531,10 @@ the limits are in memory.md; this section gives the HTTP form.
 - `{id}` is a memory id: `mem_` and 26 Crockford base32 characters, in
   either case; answers carry it in upper case. Anything else answers
   `404 memory_not_found`, without `data`.
-- Who writes: every write records the authenticated caller's subject as its
-  principal (`key_…` for an API key, `usr_…` for a member signed in), never a
-  value from the body. Every body of a write that records a memory or an
-  event (all but `init`) may carry `agent` (at most 64
+- Who writes: every write that records a memory or an event (all but
+  `init`) records the authenticated caller's subject as its principal
+  (`key_…` for an API key, `usr_…` for a member signed in), never a value
+  from the body. Its body may carry `agent` (at most 64
   characters) and `session` (at most 128), without control characters,
   reported by the client and stored as given; both default to `""`. The
   author rules of memory.md (a confirmation counts from another principal or
