@@ -1,0 +1,49 @@
+# memoire web debugger: the static build with its client-side route fallback
+# and the headers of web/server/serve.mjs. TLS and the /v1 and /health routes
+# to the gateway belong to the platform proxy in front of it.
+{
+	admin off
+	auto_https off
+	persist_config off
+}
+
+(security_headers) {
+	header {
+		Content-Security-Policy "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self'; font-src 'self'; object-src 'none'; base-uri 'self'; form-action 'self'; frame-ancestors 'none'"
+		X-Content-Type-Options "nosniff"
+		Referrer-Policy "no-referrer"
+		X-Frame-Options "DENY"
+	}
+}
+
+:8080 {
+	root * /srv
+	encode zstd gzip
+	import security_headers
+
+	# A missing script or stylesheet is a 404, never the app's HTML. Hashed
+	# bundles are cached for a year; everything else revalidates.
+	@asset path_regexp asset \.(js|css|map|svg|ico|png|jpg|webp|woff|woff2|txt|json)$
+	handle @asset {
+		@hashed {
+			path_regexp hashed -[A-Z0-9]+\.(js|css)$
+			file
+		}
+		@unhashed not path_regexp unhashed -[A-Z0-9]+\.(js|css)$
+		header @hashed Cache-Control "public, max-age=31536000, immutable"
+		header @unhashed Cache-Control "no-cache"
+		file_server
+	}
+
+	handle {
+		header Cache-Control "no-cache"
+		try_files {path} /index.html
+		file_server
+	}
+
+	handle_errors {
+		import security_headers
+		header Cache-Control "no-store"
+		respond "{err.status_code} {err.status_text}"
+	}
+}

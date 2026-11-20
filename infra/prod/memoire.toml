@@ -1,0 +1,61 @@
+# memoire production configuration for https://app.memoire.network, baked
+# into the gateway image at /etc/memoire/memoire.toml. No secret appears
+# here: every secret is an { env = "NAME" } reference, and a top-level module
+# key can be overridden with MEREZHA_MODULES__<MODULE>__<KEY>
+# (docs/deploy/dokploy.md).
+[app]
+id = "memoire"
+name = "memoire"
+
+[http]
+listen = "0.0.0.0:8080"
+public = true
+# Dokploy's proxy reaches the container over Docker's private networks.
+trusted_proxies = ["10.0.0.0/8", "172.16.0.0/12"]
+
+[database]
+url = { env = "MEMOIRE_DATABASE_URL" }
+migrate = true
+# The catalog runs a second application instance on this pool.
+pool_size = 24
+
+[runtime]
+manifest = "guests/runtime.toml"
+
+[application]
+path = "application.toml"
+
+[modules.identity]
+app_origin = "https://app.memoire.network"
+secret_key = { env = "MEMOIRE_IDENTITY_KEY" }
+# Invite-only: "open" only while the owner enrolls
+# (MEREZHA_MODULES__IDENTITY__REGISTRATION=open), then closed again.
+registration = "closed"
+
+# The team roles hold memoire's seven permissions; API keys carry a subset.
+[modules.identity.rbac.builtin_grants]
+admin = ["memoire.databases.*", "memoire.memory.*"]
+member = ["memoire.databases.*", "memoire.memory.*"]
+
+[modules.identity.password]
+
+[modules.notifications]
+secret_key = { env = "MEMOIRE_NOTIFICATIONS_KEY" }
+public_base_url = "https://app.memoire.network"
+
+# Template preview routes are refused on a public listener.
+[modules.notifications.templates]
+preview = false
+
+[modules.notifications.email]
+driver = "brevo"
+from = "memoire <memoire@ligerianlabs.fr>"
+
+[modules.notifications.brevo]
+api_key = { env = "BREVO_API_KEY" }
+webhook_token = { env = "MEMOIRE_BREVO_WEBHOOK_TOKEN" }
+webhook_allowed_cidrs = ["1.179.112.0/20", "172.246.240.0/20"]
+
+[modules.memoire]
+# A persistent volume: every team's SQLite files and snapshots.
+data_dir = "/var/lib/memoire"

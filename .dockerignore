@@ -1,0 +1,13 @@
+# Build contexts for infra/docker/*.Dockerfile: the repository root, without
+# local build output, dependencies or development state.
+.git
+target
+guests/target
+guests/components/*.wasm
+.memoire-dev
+**/node_modules
+web/dist
+web/.angular
+site/dist
+**/test-results
+**/playwright-report
