@@ -1,11 +1,11 @@
 //! `log` and `export`: what happened in the store, and its memories as a
 //! file. Both only read, so a read-only key can use them.
-use super::cursor::{self, Cursor, Cursors};
+use super::cursor::{self, Cursor, Cursors, FIRST_LOOK_SECONDS};
 use super::model::Event;
-use super::store::{self, Batch, EventFilter};
+use super::store::{self, After, Batch, EventFilter};
 use super::{Context, render};
 use crate::config::io_error;
-use crate::error::Result;
+use crate::error::{Error, Result, exit};
 use serde_json::json;
 use std::io::Write as _;
 use std::path::Path;
@@ -17,7 +17,9 @@ const EXPORT_PAGE: i64 = 500;
 pub fn log(ctx: &Context<'_>, args: &crate::cli::LogArgs) -> Result<()> {
     let scopes = (!args.scopes.is_empty()).then_some(args.scopes.as_slice());
     if args.unseen {
-        return unseen(ctx, scopes, args.limit);
+        let reader = crate::cli::reader_name(args.reader.as_deref().unwrap_or_default())
+            .map_err(|message| Error::local("invalid_argument", exit::USAGE, message))?;
+        return unseen(ctx, scopes, reader.as_deref(), args.limit);
     }
     let mut batch = Batch::new();
     let events = store::select_events(
@@ -25,7 +27,7 @@ pub fn log(ctx: &Context<'_>, args: &crate::cli::LogArgs) -> Result<()> {
         &EventFilter {
             scopes,
             since_seconds: args.since,
-            after: None,
+            after: After::Start,
         },
         args.limit,
     );
@@ -45,18 +47,30 @@ fn print_events(ctx: &Context<'_>, events: &[Event], none: &str) -> Result<()> {
     ctx.out.line(&render::log(events))
 }
 
-/// `log --unseen`: the events after this machine's cursor, then the
-/// cursor moves past them, once they are printed.
-fn unseen(ctx: &Context<'_>, scopes: Option<&[String]>, limit: i64) -> Result<()> {
+/// `log --unseen`: the events after this reader's cursor, or of the
+/// last [`FIRST_LOOK_SECONDS`] on its first look, then the cursor moves to
+/// the store's newest event, once they are printed.
+fn unseen(
+    ctx: &Context<'_>,
+    scopes: Option<&[String]>,
+    reader: Option<&str>,
+    limit: i64,
+) -> Result<()> {
     let cursors = Cursors::new(ctx.env)?;
-    let key = cursor::key(ctx.client.server(), &ctx.db, scopes.unwrap_or_default());
+    let key = cursor::Key::new(
+        ctx.client.server(),
+        &ctx.db,
+        scopes.unwrap_or_default(),
+        cursor::reader(reader, &ctx.session),
+    );
     let saved = cursors.saved(&key)?;
     let filter = EventFilter {
         scopes,
         since_seconds: None,
-        after: saved.as_ref(),
+        after: saved.as_ref().map_or(After::FirstLook, After::Cursor),
     };
-    // The store id and the events in one read, so they agree.
+    // The store id, the events and where they start in one read, so they
+    // agree.
     let mut batch = Batch::new();
     let store_id = store::select_store_id(&mut batch);
     let events = store::select_events(&mut batch, &filter, limit);
@@ -64,24 +78,31 @@ fn unseen(ctx: &Context<'_>, scopes: Option<&[String]>, limit: i64) -> Result<()
     let results = ctx.store().read(batch)?;
     let store_id = store::store_id_of(&results[store_id])?;
     let events = store::all(&results[events], |row| row.event())?;
-    let (matching, newest) = store::rows(&results[counted])
+    let row = store::rows(&results[counted])
         .next()
-        .map(|row| Ok::<_, crate::error::Error>((row.int("events")?, row.opt_int("newest")?)))
-        .transpose()?
-        .unwrap_or((0, None));
-    // A cursor of another store (the database was created again) starts
-    // over, as the query did.
-    let after = saved
-        .filter(|c| c.store_id == store_id)
-        .map_or(0, |c| c.seq);
-    let through = newest.unwrap_or(after);
-    let skipped = matching - events.len() as i64;
+        .ok_or_else(|| store::invalid_response("the count of events"))?;
+    let (matching, after, top) = (row.int("events")?, row.int("after")?, row.int("top")?);
+    // A cursor of another store (the database was created again) is a
+    // first look, as the query took it.
+    let first = saved.is_none_or(|c| c.store_id != store_id);
+    let through = top.max(after);
+    // The two statements read the clock apart: an event that crossed the
+    // first look's start between them is in one and not the other.
+    let skipped = (matching - events.len() as i64).max(0);
     if ctx.out.json {
         ctx.out.json(&json!({
             "events": events,
-            "unseen": {"after": after, "through": through, "skipped": skipped},
+            "unseen": {"reader": key.reader, "first": first, "after": after,
+                       "through": through, "skipped": skipped},
         }))?;
     } else {
+        if first {
+            ctx.out.note(&format!(
+                "First look for {}: events of the last {} hours.",
+                key.reader,
+                FIRST_LOOK_SECONDS / 3600
+            ));
+        }
         print_events(ctx, &events, "No new events.")?;
         if skipped > 0 {
             ctx.out.note(&format!(

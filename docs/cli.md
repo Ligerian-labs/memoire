@@ -61,7 +61,7 @@ as well.
 | `memory resolve ID --reason REASON` | Close a memory's open disputes |
 | `memory supersede ID --by NEW_ID --reason REASON` | Replace a memory by another |
 | `memory forget ID --reason REASON [--purge]` | Leave a tombstone, or erase the memory and its history |
-| `memory log [--since 24h \| --unseen] [--scope SCOPE]... [--limit 50]` | List the store's events, newest first |
+| `memory log [--since 24h \| --unseen [--reader NAME]] [--scope SCOPE]... [--limit 50]` | List the store's events, newest first; `--unseen`: those this session or reader has not seen |
 | `memory export [--scope SCOPE]... -o FILE` | Write the memories as JSON Lines |
 | `skill install --claude \| --codex \| --dir PATH [--force]` | Install the memoire skill for coding agents |
 

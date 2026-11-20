@@ -15,12 +15,12 @@ The CLI needs a server and an API key. Either `MEMOIRE_SERVER` and `MEMOIRE_API_
 memoire login --server https://memoire.example --key-file key.txt
 ```
 
-Choose a session id once, at the start of the run, and write it as a literal. It must be unique to this run and never shared with another agent, because two agents on one key with the same session count as one writer. Use the same literal for every command of the run. Never compute it in the command with `$(date)` or `$$`, because a shell that starts a new process per command would give each command a new session. If your shell does not keep the environment between commands, set both variables on each command or pass `--agent` and `--session`.
+Choose a session id once, at the start of the run, and write it as a literal. It must be unique to this run and never shared with another agent, because two agents on one key with the same session count as one writer and share one `log --unseen` cursor. Do not invent the unique part: agents pick the same letters. Run `od -An -N8 -tx8 /dev/urandom` once and copy the sixteen characters it prints into the id. Use the same literal for every command of the run. Never compute it in the command with `$(date)` or `$$`, because a shell that starts a new process per command would give each command a new session. If your shell does not keep the environment between commands, set both variables on each command or pass `--agent` and `--session`.
 
 ```sh
 export MEMOIRE_AGENT=claude-opus-5-5           # your model id
-export MEMOIRE_SESSION=widgets-20261119-a7     # an example: make up your own, then keep it for the whole run
-MEMOIRE_AGENT=claude-opus-5-5 MEMOIRE_SESSION=widgets-20261119-a7 memoire memory recall "deploy" --json  # when the shell forgets the environment
+export MEMOIRE_SESSION=widgets-5f3a9c1e07b2d4a6   # an example: a name and the characters `od` printed for you, kept for the whole run
+MEMOIRE_AGENT=claude-opus-5-5 MEMOIRE_SESSION=widgets-5f3a9c1e07b2d4a6 memoire memory recall "deploy" --json  # when the shell forgets the environment
 ```
 
 - Every write records the key's principal (the server says who it is; `memoire whoami --json` prints it as `subject`), your agent and your session. A confirmation counts only from another key or another session than the one that wrote the text. Without `MEMOIRE_SESSION`, every run of a key is the same writer and can never confirm its earlier text.
@@ -32,7 +32,7 @@ MEMOIRE_AGENT=claude-opus-5-5 MEMOIRE_SESSION=widgets-20261119-a7 memoire memory
 At the start of a session:
 
 ```sh
-memoire memory log --unseen --json                 # what changed since this machine last looked
+memoire memory log --unseen --json                 # the store's recent events, then only what is new
 memoire memory recall "deploy staging vpn" --json  # words from your task
 ```
 
@@ -57,7 +57,7 @@ Before you act on a remembered operational fact (a port, a path, a version, who 
 - `--kind K` (repeatable, any of them), `--tag T` (repeatable, all of them), `--limit N` (1 to 100, default 10). Without a query, newest first.
 - `score` only orders the results of one query. Its size means nothing, and it can be tiny on a small store.
 - No result means nothing matched those words in the scopes and statuses searched. Try other words or `--all-scopes` before you conclude the team has not recorded it. Then do the work and write what you verified.
-- `log --unseen` keeps one cursor per machine, so another agent on this machine may have seen events first. `log --since 24h --json` shows a fixed window.
+- `log --unseen` follows your `MEMOIRE_SESSION`. A session's first look shows the events of the last 24 hours, the newest `--limit` of them, 50 by default; later looks show only what is new. `log --since 72h --json` shows a fixed window. A role that runs as many sessions, such as a nightly reviewer, passes `--reader NAME` or sets `MEMOIRE_READER` to continue where its last run stopped.
 
 ## What to write
 

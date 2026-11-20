@@ -710,6 +710,40 @@ fn memory_is_shared_between_machines_on_a_real_gateway() {
         json_of(&a, &["memory", "log", "--unseen"])["events"],
         json!([])
     );
+    assert_eq!(news["unseen"]["reader"], "session:run-a");
+
+    // Two sessions of one machine (one configuration directory, one key)
+    // each see A's write in their own first look.
+    let b1 = machine(&gateway, work.path(), &key_b, "agent-b", "run-b1");
+    let b2 = machine(&gateway, work.path(), &key_b, "agent-b", "run-b2").env(
+        "MEMOIRE_CONFIG_DIR",
+        b1.config.path().join("memoire").to_str().unwrap(),
+    );
+    let look_b1 = json_of(&b1, &["memory", "log", "--unseen"]);
+    let look_b2 = json_of(&b2, &["memory", "log", "--unseen"]);
+    for (look, reader) in [(&look_b1, "session:run-b1"), (&look_b2, "session:run-b2")] {
+        assert_eq!(look["events"], news["events"], "{reader}");
+        assert_eq!(
+            (
+                look["unseen"]["reader"].clone(),
+                look["unseen"]["first"].clone()
+            ),
+            (json!(reader), json!(true))
+        );
+        assert!(
+            look["events"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|e| e["memory_id"] == id
+                    && e["verb"] == "remember"
+                    && e["agent"] == "agent-a")
+        );
+    }
+    assert_eq!(
+        json_of(&b2, &["memory", "log", "--unseen"])["events"],
+        json!([])
+    );
 
     // The read-only machine reads, and only reads.
     assert_eq!(

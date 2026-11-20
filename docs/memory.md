@@ -457,7 +457,7 @@ See [Forgetting and purging](#forgetting-and-purging).
 ### log
 
 ```sh
-memoire memory log [--since DURATION | --unseen] [--scope SCOPE]... [--limit N]
+memoire memory log [--since DURATION | --unseen [--reader NAME]] [--scope SCOPE]... [--limit N]
 ```
 
 What happened in the store, newest first; every scope unless `--scope`.
@@ -479,7 +479,10 @@ clock.
 | `supersede` | `by NEW_ID: reason`, on the replaced memory, from `supersede` or `remember --supersedes`; `by NEW_ID` once `NEW_ID` is purged |
 | `purge` | `null`; `rev` and `scope` are `null` too |
 
-`--unseen` is described in [The log and cursors](#the-log-and-cursors).
+`--unseen` shows what this reader has not seen yet and adds an `unseen`
+object; `--reader NAME` (or `MEMOIRE_READER`) names a long-lived reader and
+matters only with `--unseen`. Both are described in
+[The log and cursors](#the-log-and-cursors).
 
 ### export
 
@@ -614,38 +617,73 @@ A writer kept busy past the gateway's busy timeout answers `sqlite_busy`
 ## The log and cursors
 
 Every write appends one event to `memoire_memory_events`, numbered by an
-increasing `seq`. `log --unseen` shows the events after this machine's
-cursor, then moves the cursor past them once they are printed:
+increasing `seq`. `log --unseen` shows the events after the reader's
+cursor, then moves the cursor once they are printed:
 
 ```json
-{"events": [ … ], "unseen": {"after": 12, "through": 40, "skipped": 0}}
+{"events": [ … ], "unseen": {"reader": "session:s-41", "first": false,
+                             "after": 12, "through": 40, "skipped": 0}}
 ```
 
+- The reader is, in this order: `name:NAME` when `--reader NAME` is given or
+  `MEMOIRE_READER` is set, for a role that runs as many sessions (a nightly
+  reviewer, for example) and continues where its last run stopped;
+  `session:ID` when the session (`--session`, `MEMOIRE_SESSION`) is set and
+  not empty; else `machine`. `NAME` has the syntax of a tag; another value
+  exits 2. An empty `MEMOIRE_READER` counts as unset. Without `--unseen`,
+  the reader is ignored, whatever it holds.
+- There is one cursor per server URL, database, scope filter (the sorted
+  `--scope` list) and reader. Sessions on one machine each have their own
+  cursor, so one does not consume another's news. A filtered read keeps its
+  own cursor, so it never hides other scopes' events from a later unfiltered
+  read.
+- A reader with no cursor for the store has a first look (`first: true`;
+  without `--json`, a note on standard error says so). It starts at the
+  events of the last 24 hours on the store's clock: `after` is the highest
+  `seq` among older events, 0 when there is none. This takes the events'
+  times to follow their `seq`, as they do while the gateway host's clock does
+  not step backwards. It shows at most `--limit` of them, like any read.
+  `log --since 72h` reads older events.
+- `after` is where the read started: the cursor, or the first look's start.
+  The read returns the newest `--limit` events after it, and `skipped` counts
+  the older ones beyond the limit, which will not be shown as unseen again.
+- Once the events are printed, the cursor moves to the highest `seq` in the
+  store at the time of the read, `through`, whatever the scope filter. A
+  first look that shows nothing still leaves a cursor, and the next read
+  shows only newer events. Within one store a cursor never moves backwards,
+  so of two runs at once, the one that read less does not undo the other.
+  Two runs of one reader at the same moment may both show the same events:
+  the cursor is not a queue.
+- Each cursor remembers the store's `store_id`. When the database is deleted
+  and created again under the same name, the new store has a new id and the
+  reader gets a first look again.
 - The cursors file is `memory-cursors.json` in the CLI's configuration
   directory, beside the credentials (`~/.config/memoire/` by default,
   `MEMOIRE_CONFIG_DIR` or `$XDG_CONFIG_HOME/memoire` to move it). The
   directory is mode 0700 and the file 0600, replaced atomically. A file that
   others can read is refused (`insecure_cursors`), and one the CLI cannot read
-  is refused too (`invalid_cursors`).
+  is refused too (`invalid_cursors`). It is version 2:
+
+  ```json
+  {"version": 2,
+   "cursors": [{"server": "https://memoire.example", "db": "memory", "scopes": [],
+                "reader": "session:s-41", "store_id": "mst_…", "seq": 40,
+                "seen_at": 1795170000}]}
+  ```
+
+  `seen_at` is this machine's clock, in unix seconds, at the last
+  `log --unseen` that used the cursor, whether or not it moved.
 - A `memory-cursors.lock` file beside it serializes concurrent runs on one
   machine. Each run holds an exclusive file lock on it while it reads the
   cursors file, merges its cursor in and replaces the file, so agents that
   share the directory do not lose each other's cursors.
-- There is one cursor per server URL, database and scope filter (the sorted
-  `--scope` list). A filtered read keeps its own cursor, so it never hides
-  other scopes' events from a later unfiltered read.
-- The cursor belongs to the machine's configuration directory, not to an
-  agent, so agents that share one directory share the cursors. Give an agent its
-  own `MEMOIRE_CONFIG_DIR` to give it its own. The stored login lives in
-  that directory too, so the agent then needs `MEMOIRE_SERVER` and
-  `MEMOIRE_API_KEY` in its environment, or its own `memoire login`.
-- Each cursor remembers the store's `store_id`. When the database is deleted
-  and created again under the same name, the new store has a new id and the
-  cursor starts over.
-- The read returns the newest `--limit` unseen events and moves the cursor to
-  the newest one. Within one store a cursor never moves backwards, so of two
-  runs at once, the one that read less does not undo the other. `skipped` counts the older unseen events beyond the limit,
-  which will not be shown as unseen again.
+- Every write of the file drops the `session:` cursors not used for 7 days.
+  A session that looks again after that gets a first look. Named and
+  `machine` cursors are kept.
+- A version 1 file, from an earlier CLI, is read as version 2: each of its
+  cursors becomes a `machine` cursor, and an entry whose key the CLI cannot
+  parse is dropped. The file is rewritten as version 2 at the next `log --unseen`. An
+  earlier CLI refuses a version 2 file with `invalid_cursors`.
 - A purge event has no scope, so a log filtered by `--scope` does not show
   it.
 

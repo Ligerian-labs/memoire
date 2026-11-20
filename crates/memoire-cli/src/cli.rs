@@ -297,10 +297,15 @@ pub struct LogArgs {
     /// Only events this recent, such as 24h.
     #[arg(long, value_name = "DURATION", value_parser = parse_seconds, conflicts_with = "unseen")]
     pub since: Option<u64>,
-    /// Only events this machine has not shown yet, then remember them as
-    /// seen.
+    /// Only events this reader has not seen yet (on a first look, those of
+    /// the last 24 hours), then remember them as seen.
     #[arg(long)]
     pub unseen: bool,
+    /// Whose cursor `--unseen` follows: a role that runs as many sessions,
+    /// such as a nightly reviewer. Without it, the session's, else the
+    /// machine's. Ignored without `--unseen`.
+    #[arg(long, value_name = "NAME", env = "MEMOIRE_READER")]
+    pub reader: Option<String>,
     /// Only events of this scope; repeatable.
     #[arg(long = "scope", value_name = "SCOPE", value_parser = model::parse_scope)]
     pub scopes: Vec<String>,
@@ -450,6 +455,19 @@ fn key_lifetime(text: &str) -> Result<u64, String> {
         return Err("a key lives at most 365d".into());
     }
     Ok(seconds)
+}
+
+/// `--reader` / `MEMOIRE_READER`: the syntax of a tag; `None` when empty,
+/// so an exported empty `MEMOIRE_READER` is the same as unset. Checked by
+/// `log --unseen`, the only reader of it, not by clap: a bad exported
+/// value must not break a plain `log`.
+pub fn reader_name(text: &str) -> Result<Option<String>, String> {
+    if text.is_empty() {
+        return Ok(None);
+    }
+    model::parse_tag(text).map(Some).map_err(|_| {
+        "a reader is 1-48 characters: a lowercase letter or digit, then lowercase letters, digits or . _ -".into()
+    })
 }
 
 fn database_name(text: &str) -> Result<String, String> {
@@ -836,6 +854,7 @@ mod tests {
             panic!("log");
         };
         assert_eq!((args.limit, args.since, args.unseen), (50, None, false));
+        assert_eq!(args.reader, None);
         let MemoryCommand::Log(args) = memory(&[
             "log", "--since", "24h", "--scope", "global", "--limit", "1000",
         ])
@@ -849,6 +868,37 @@ mod tests {
         assert!(memory(&["log", "--since", "1h", "--unseen"]).is_err());
         assert!(memory(&["log", "--limit", "1001"]).is_err());
         assert!(memory(&["log", "--limit", "0"]).is_err());
+        let MemoryCommand::Log(args) = memory(&["log", "--unseen", "--reader", "nightly.review-2"])
+            .unwrap()
+            .command
+        else {
+            panic!("log");
+        };
+        assert!(args.unseen);
+        assert_eq!(args.reader.as_deref(), Some("nightly.review-2"));
+        // Only --unseen reads it, but it does not refuse a fixed window.
+        let MemoryCommand::Log(args) = memory(&["log", "--since", "24h", "--reader", "nightly"])
+            .unwrap()
+            .command
+        else {
+            panic!("log");
+        };
+        assert_eq!(
+            (args.since, args.reader.as_deref()),
+            (Some(86_400), Some("nightly"))
+        );
+        assert_eq!(reader_name(""), Ok(None));
+        assert_eq!(reader_name(&"n".repeat(48)), Ok(Some("n".repeat(48))));
+        for bad in ["Nightly", "-x", "night ly", &"n".repeat(49)] {
+            let error = reader_name(bad).unwrap_err();
+            assert!(error.contains("a reader is"), "{bad}: {error}");
+            // clap takes it: only `log --unseen` reads and checks it.
+            assert!(
+                memory(&["log", &format!("--reader={bad}")]).is_ok(),
+                "{bad}"
+            );
+        }
+        assert!(memory(&["recall", "--reader", "nightly"]).is_err());
         let MemoryCommand::Export { output, scopes } =
             memory(&["export", "-o", "out.jsonl", "--scope", "run:1"])
                 .unwrap()
