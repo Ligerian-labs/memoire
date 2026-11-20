@@ -7,6 +7,7 @@ import { describe } from '../../messages';
 import { Modal } from '../../ui/modal';
 import { TTL_CHOICES } from '../databases/create-dialog';
 import { DatabaseContext } from './context';
+import { MEMORY_PREFIX } from './groups';
 
 @Component({
   selector: 'app-database',
@@ -32,6 +33,7 @@ export class DatabasePage implements OnDestroy {
   readonly relative = relative;
   readonly timestamp = timestamp;
   readonly duration = duration;
+  readonly prefix = MEMORY_PREFIX;
 
   constructor() {
     effect(() => {

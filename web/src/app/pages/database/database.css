@@ -73,6 +73,38 @@ h1.mono {
   color: #0a4d62;
   box-shadow: inset 2px 0 0 var(--accent);
 }
+.objects a:has(> .tag) {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+}
+.objects .name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.objects .tag {
+  flex: none;
+  margin-left: auto;
+  font-family: var(--sans);
+  font-size: 11px;
+}
+.store {
+  padding-top: 8px;
+  border-top: 1px solid var(--rule);
+}
+.store summary {
+  padding: 4px 12px;
+  color: var(--ink-3);
+  font-size: 12px;
+  cursor: pointer;
+}
+.store summary:hover {
+  color: var(--ink);
+}
+.store details ul {
+  margin-bottom: 0;
+}
 .none,
 .small {
   padding: 2px 12px;

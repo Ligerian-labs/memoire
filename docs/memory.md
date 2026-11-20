@@ -692,9 +692,10 @@ So a purged secret must still be rotated.
 
 FTS5 keeps the index in five more tables: `memoire_memory_fts_config`,
 `memoire_memory_fts_content`, `memoire_memory_fts_data`,
-`memoire_memory_fts_docsize` and `memoire_memory_fts_idx`. `GET schema`, the
-shell's `.tables` and the web debugger list them as ordinary tables. They are
-the index's own storage, and the gateway refuses direct writes to them.
+`memoire_memory_fts_docsize` and `memoire_memory_fts_idx`. `GET schema` and
+the shell's `.tables` list them as ordinary tables. The web debugger groups the
+store's tables under "Memory store" and folds these five away. They are the
+index's own storage, and the gateway refuses direct writes to them.
 
 The store records its version in `memoire_memory_meta` as `schema_version`;
 this CLI's version is 1. `init` applies each missing version as one
