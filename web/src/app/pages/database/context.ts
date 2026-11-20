@@ -1,8 +1,9 @@
-import { Injectable, inject, signal } from '@angular/core';
+import { Injectable, computed, inject, signal } from '@angular/core';
 import { Api } from '../../api/api';
 import { Database, Mode, Schema, StatementResult } from '../../api/memoire';
 import { describe } from '../../messages';
 import { SessionStore } from '../../session';
+import { groupSchema } from './groups';
 
 export interface ConsoleRun {
   statements: string[];
@@ -21,6 +22,11 @@ export class DatabaseContext {
   readonly name = signal('');
   readonly database = signal<Database | null>(null);
   readonly schema = signal<Schema | null>(null);
+  /** The schema's tables split into the application's, the memory store's and FTS5's own. */
+  readonly groups = computed(() => {
+    const schema = this.schema();
+    return schema ? groupSchema(schema) : null;
+  });
   readonly error = signal('');
   readonly schemaError = signal('');
 

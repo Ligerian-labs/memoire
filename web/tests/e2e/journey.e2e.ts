@@ -201,6 +201,45 @@ INSERT INTO notes (body, score) SELECT 'note ' || i, i * 0.5 FROM n;`,
     await expect(page.getByText('Burstable databases have no snapshots.')).toBeVisible();
   });
 
+  await test.step('a memory store is grouped apart from the application tables', async () => {
+    await page.getByRole('link', { name: 'Console' }).click();
+    await page.getByRole('button', { name: 'Write', exact: true }).click();
+    await runSql(
+      page,
+      `CREATE TABLE memoire_memory_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+CREATE TABLE memoire_memory_memories (seq INTEGER PRIMARY KEY, id TEXT NOT NULL, title TEXT NOT NULL);
+CREATE VIRTUAL TABLE memoire_memory_fts USING fts5(title, body);`,
+    );
+    await expect(page.getByTestId('results').locator('.result')).toHaveCount(3);
+    const objects = page.getByRole('complementary', { name: 'Tables and views' });
+    const tables = objects.locator('h3:text-is("Tables") + ul');
+    await expect(tables.getByRole('link')).toHaveText(['notes']);
+    const store = objects.locator('.store');
+    await expect(store.getByRole('heading', { name: 'Memory store' })).toBeVisible();
+    await expect(store.getByRole('link', { name: 'memoire_memory_memories' })).toBeVisible();
+    await expect(
+      store.getByRole('link', { name: 'memoire_memory_fts', exact: true }),
+    ).toBeVisible();
+    const internal = store.getByRole('link', { name: 'memoire_memory_fts_data' });
+    await expect(internal).toBeHidden();
+    await screenshot(page, 'memory-store-list');
+    await store.getByText('Search index internals (5)').click();
+    await expect(internal).toBeVisible();
+
+    await page.getByRole('link', { name: 'Schema' }).click();
+    const schema = page.locator('app-schema');
+    await expect(schema.getByRole('heading', { name: 'Memory store' })).toBeVisible();
+    const badge = schema.locator('.badge', { hasText: 'FTS5 internal' }).first();
+    await expect(badge).toBeHidden();
+    await schema.getByText('Search index internals (5)').click();
+    await expect(badge).toBeVisible();
+    await expect(schema.locator('.badge', { hasText: 'FTS5 internal' })).toHaveCount(5);
+    await schema
+      .locator('details.internals')
+      .evaluate((el) => el.scrollIntoView({ block: 'start' }));
+    await screenshot(page, 'memory-store-schema');
+  });
+
   await test.step('snapshot a persistent database, restore it and export it', async () => {
     await page
       .getByRole('navigation', { name: 'Main' })

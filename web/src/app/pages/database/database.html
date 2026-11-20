@@ -71,14 +71,25 @@
         <aside class="objects" aria-label="Tables and views">
           <h3>Tables</h3>
           <ul>
-            @for (table of ctx.schema()?.tables ?? []; track table.name) {
+            @for (table of ctx.groups()?.tables ?? []; track table.name) {
               <li>
-                <a class="mono" [routerLink]="['tables', table.name]" routerLinkActive="on">{{
-                  table.name
-                }}</a>
+                <a class="mono" [routerLink]="['tables', table.name]" routerLinkActive="on"
+                  ><span class="name">{{ table.name }}</span>
+                  @if (ctx.groups()!.ftsInternals.has(table.name)) {
+                    <span class="faint tag" title="Storage of a full-text search index">fts5</span>
+                  }
+                </a>
               </li>
             } @empty {
-              <li class="faint none">{{ ctx.schema() ? 'None yet' : 'Loading…' }}</li>
+              <li class="faint none">
+                {{
+                  !ctx.schema()
+                    ? 'Loading…'
+                    : ctx.groups()?.memory
+                      ? 'Only the memory store'
+                      : 'None yet'
+                }}
+              </li>
             }
           </ul>
           @if (ctx.schema()?.views?.length) {
@@ -92,6 +103,51 @@
                 </li>
               }
             </ul>
+          }
+          @if (ctx.groups()?.memory; as memory) {
+            <div class="store">
+              <h3 title="Tables kept by memoire memory">Memory store</h3>
+              <!-- The names drop the shared prefix so they fit; links keep the full name. -->
+              <p class="faint small mono">{{ prefix }}*</p>
+              <ul>
+                @for (table of memory.tables; track table.name) {
+                  <li>
+                    <a
+                      class="mono"
+                      [routerLink]="['tables', table.name]"
+                      routerLinkActive="on"
+                      [title]="table.name"
+                      [attr.aria-label]="table.name"
+                      >{{ table.name.slice(prefix.length) }}</a
+                    >
+                  </li>
+                }
+              </ul>
+              @if (memory.internals.length) {
+                <!-- Opens by itself when one of its tables is the one shown. -->
+                <details
+                  #internals
+                  routerLinkActive
+                  (isActiveChange)="$event && (internals.open = true)"
+                >
+                  <summary>Search index internals ({{ memory.internals.length }})</summary>
+                  <ul>
+                    @for (table of memory.internals; track table.name) {
+                      <li>
+                        <a
+                          class="mono"
+                          [routerLink]="['tables', table.name]"
+                          routerLinkActive="on"
+                          [title]="table.name"
+                          [attr.aria-label]="table.name"
+                          >{{ table.name.slice(prefix.length) }}</a
+                        >
+                      </li>
+                    }
+                  </ul>
+                </details>
+              }
+            </div>
           }
           @if (ctx.schemaError()) {
             <p class="faint small">{{ ctx.schemaError() }}</p>
