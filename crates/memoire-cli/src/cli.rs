@@ -357,13 +357,15 @@ pub struct RememberArgs {
     #[arg(long, value_name = "FILE")]
     pub body_file: Option<PathBuf>,
     /// Such as fact (the default), decision, procedure, preference, pitfall
-    /// or handoff.
-    #[arg(long, default_value = model::DEFAULT_KIND, value_parser = model::parse_kind)]
-    pub kind: String,
-    /// Defaults to the git checkout's project scope, else `global`.
+    /// or handoff. With --supersedes, the old memory's kind.
+    #[arg(long, value_parser = model::parse_kind)]
+    pub kind: Option<String>,
+    /// Defaults to the git checkout's project scope, else `global`. With
+    /// --supersedes, the old memory's scope.
     #[arg(long, value_parser = model::parse_scope)]
     pub scope: Option<String>,
-    /// Repeatable; at most 10.
+    /// Repeatable; at most 10. With --supersedes, any --tag replaces the
+    /// old memory's tags, which it keeps otherwise.
     #[arg(long = "tag", value_name = "TAG", value_parser = model::parse_tag)]
     pub tags: Vec<String>,
     /// Where this comes from: a path, a URL, a command. Repeatable.
@@ -372,6 +374,13 @@ pub struct RememberArgs {
     /// Record it even when a memory in the scope has a similar title.
     #[arg(long)]
     pub force: bool,
+    /// Replace this memory in the same write: it becomes superseded by the
+    /// new one. Needs --reason.
+    #[arg(long, value_name = "OLD_ID", value_parser = model::parse_memory_id, requires = "reason")]
+    pub supersedes: Option<String>,
+    /// Why the new memory replaces the old one, for both histories.
+    #[arg(long, requires = "supersedes")]
+    pub reason: Option<String>,
 }
 
 #[derive(Debug, Args)]
@@ -614,16 +623,51 @@ mod tests {
         else {
             panic!("remember");
         };
-        assert_eq!(args.kind, "fact");
+        // No --kind is visible as such; the verb applies the default.
+        assert_eq!(args.kind, None);
         assert_eq!(args.tags, ["deploy", "ci"]);
         assert_eq!(args.scope, None);
         assert!(!args.force);
+        assert_eq!((args.supersedes, args.reason), (None, None));
         assert!(memory(&["remember"]).is_err());
         for bad in [
             &["--kind", "F"][..],
             &["--scope", "Project:x"],
             &["--tag", "No Tag"],
             &["--body", "b", "--body-file", "f"],
+        ] {
+            let mut args = vec!["remember", "--title", "t"];
+            args.extend_from_slice(bad);
+            assert!(memory(&args).is_err(), "{bad:?}");
+        }
+    }
+
+    #[test]
+    fn remember_supersedes_needs_a_reason_and_the_reason_an_old_id() {
+        let lower = format!("mem_{}", ID[4..].to_ascii_lowercase());
+        let MemoryCommand::Remember(args) = memory(&[
+            "remember",
+            "--title",
+            "t",
+            "--supersedes",
+            &lower,
+            "--reason",
+            "newer",
+            "--force",
+        ])
+        .unwrap()
+        .command
+        else {
+            panic!("remember");
+        };
+        assert_eq!(args.supersedes.as_deref(), Some(ID));
+        assert_eq!(args.reason.as_deref(), Some("newer"));
+        assert!(args.force);
+        assert_eq!(args.kind, None);
+        for bad in [
+            &["--supersedes", ID][..],
+            &["--reason", "newer"],
+            &["--supersedes", "mem_x", "--reason", "newer"],
         ] {
             let mut args = vec!["remember", "--title", "t"];
             args.extend_from_slice(bad);

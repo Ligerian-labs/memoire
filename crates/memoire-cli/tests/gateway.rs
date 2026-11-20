@@ -1006,6 +1006,54 @@ fn memory_is_shared_between_machines_on_a_real_gateway() {
         (json!("memory_secret_detected"), json!("body"))
     );
 
+    // B replaces one of A's memories in one step, under a near-identical
+    // title and without --force; A's recall then finds only the new one.
+    let staging = json_of(
+        &a,
+        &[
+            "memory",
+            "remember",
+            "--title",
+            "Staging deploys need the VPN connected",
+            "--tag",
+            "staging",
+        ],
+    );
+    let staging = staging["id"].as_str().unwrap().to_owned();
+    let replacement = json_of(
+        &b,
+        &[
+            "memory",
+            "remember",
+            "--title",
+            "Staging deploys need the VPN connected first",
+            "--supersedes",
+            &staging,
+            "--reason",
+            "the order matters",
+            "--evidence",
+            "make deploy-staging",
+        ],
+    );
+    let replacement_id = replacement["id"].as_str().unwrap().to_owned();
+    assert_eq!(
+        (
+            replacement["supersedes"].clone(),
+            replacement["tags"].clone(),
+            replacement["rev"].clone()
+        ),
+        (json!(staging), json!(["staging"]), json!(1))
+    );
+    assert_eq!(
+        ids(&json_of(&a, &["memory", "recall", "staging deploys vpn"])),
+        [replacement_id.as_str()]
+    );
+    let old = json_of(&a, &["memory", "show", &staging])["memory"].clone();
+    assert_eq!(
+        (old["status"].clone(), old["superseded_by"].clone()),
+        (json!("superseded"), json!(replacement_id))
+    );
+
     a.run(&["db", "create", "plain"], "").ok();
     assert_eq!(
         failing(&a, &["memory", "recall", "--db", "plain"], 6)["code"],

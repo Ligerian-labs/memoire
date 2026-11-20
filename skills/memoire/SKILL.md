@@ -93,7 +93,7 @@ Prefer improving an existing memory over adding a near-duplicate.
 - `memoire memory confirm ID --rev N --evidence "what you ran" --json` when you re-verified it yourself. `N` is the `rev` from the recall or show output you verified. If the text changed since that revision, it exits 6 `memory_conflict` instead of confirming text you did not read. You cannot confirm text you wrote in this session. Your evidence is stored on the confirmation, listed under `confirmations` by `memoire memory show ID --json`; the memory's own `evidence` does not change. When you verified a memory and found nothing new, this confirmation is your write-back. Do not write a second memory. It prints the memory, whose `status` and `confirmers` show the effect, so you need no `show` to check, and it marks the memory as fresh for ranking.
 - `memoire memory dispute ID --rev N --reason "what reality shows" --evidence "how you saw it" --json` when reality disagrees, with `N` the `rev` you read. The memory stays in recall, flagged. Then fix it with one of the next verbs.
 - `memoire memory revise ID --reason R --json` with `--title`, `--body`, `--body-file`, `--kind`, `--scope`, `--add-tag`, `--add-evidence` (or `--tag`, `--evidence` to replace the list) when it is right but unclear or incomplete. Only the given fields change. A new title, body or kind resets the status to `inferred`, because the old confirmations covered the old text.
-- `memoire memory supersede OLD --by NEW --reason R --json` when the meaning changed. Write the new memory first, with `--force` when its title is close to the old one's. The old one leaves recall.
+- `memoire memory remember --supersedes OLD --reason R --title "…" --evidence "…" --json` when the meaning changed. It retires OLD and writes the new memory in one step, and OLD leaves recall. The new memory keeps OLD's scope, kind and tags unless you pass `--scope`, `--kind` or `--tag`. OLD's body and evidence are not copied, so pass the new memory's own. The duplicate check skips only OLD, so a title close to OLD's needs no `--force`. You need not dispute OLD first; if it has an open dispute that this settles, `resolve` it afterwards. Use `memoire memory supersede OLD --by NEW --reason R --json` only to link two memories that both exist already.
 - `memoire memory resolve ID --reason R --json` once the dispute is settled. It closes every open dispute of the memory.
 - `memoire memory forget ID --reason R --json` when it is wrong and harmful. Recall hides it; its history stays.
 - `memoire memory forget ID --reason R --purge --json` only for text that must not be stored, such as a leaked secret (a `revise` keeps the old text in the history). It erases the memory and its history. Rotate the secret too, because backups and earlier exports may still hold it.
@@ -121,7 +121,7 @@ memoire memory recall --db run-42 --kind handoff --all-scopes --json   # the nex
 ```
 
 - A handoff says what is done, what is next, what is blocked and where the artifacts are (paths, branches, commits, URLs).
-- Give each handoff a title that names its step, so the duplicate check does not stop it. When a new handoff replaces an older one, supersede the older one.
+- Give each handoff a title that names its step, so the duplicate check does not stop it. When a new handoff replaces an older one, write it with `remember --supersedes OLD --reason R`.
 
 ## Errors
 
@@ -130,7 +130,7 @@ Errors go to standard error as `{"error": {"code": "...", "message": "...", ...}
 | Exit | Code | Do |
 | --- | --- | --- |
 | 6 | `memory_conflict` | Someone revised it first (`current_rev`), or the text changed since the revision you read. Run `memoire memory show ID --json` again and re-verify the new text before you confirm or dispute it. Retry other changes on the new revision if they still apply. |
-| 6 | `memory_duplicate` | Read `candidates` (`id`, `title`, `status`, `similarity`) and `show` the closest. `confirm` it if yours agrees, `revise` it if yours adds to it, `dispute` it if yours contradicts it. `--force` only when yours is a different fact. |
+| 6 | `memory_duplicate` | Read `candidates` (`id`, `title`, `status`, `similarity`) and `show` the closest. `confirm` it if yours agrees, `revise` it if yours adds to it, `dispute` it if yours contradicts it, add `--supersedes ID --reason R` if yours replaces it. `--force` only when yours is a different fact. |
 | 6 | `memory_not_current` | It was superseded or forgotten. Follow `superseded_by`. |
 | 6 | `memory_not_initialized`, `memory_schema_older` | Run `memoire memory init --json`. Exit 5 `database_not_found` means the same. |
 | 6 | `memory_schema_newer` | This CLI is too old for the store. Tell the user. |

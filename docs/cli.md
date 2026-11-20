@@ -52,7 +52,7 @@ as well.
 | `snapshots restore DB SNAPSHOT_ID` | Restore one, after a `pre_restore` snapshot of the current contents |
 | `keys create --name MACHINE [--team org_…] [--expires 90d] [--read-only]` | Create a machine and an API key for it |
 | `memory init [--burstable [--ttl 24h] \| --persistent]` | Create a memory store's database and tables; persistent is the default |
-| `memory remember --title TITLE [--body BODY \| --body-file FILE] [--kind KIND] [--scope SCOPE] [--tag TAG]... [--evidence TEXT]... [--force]` | Record a memory |
+| `memory remember --title TITLE [--body BODY \| --body-file FILE] [--kind KIND] [--scope SCOPE] [--tag TAG]... [--evidence TEXT]... [--force] [--supersedes OLD_ID --reason REASON]` | Record a memory; with `--supersedes`, it replaces `OLD_ID` in the same write |
 | `memory recall [QUERY] [--scope SCOPE... \| --all-scopes] [--kind KIND]... [--tag TAG]... [--status STATUS]... [--limit 10]` | Search memories, best first; without QUERY, the newest |
 | `memory show ID [--history]` | Show a memory, its confirmations and disputes |
 | `memory revise ID --reason REASON [--title TITLE] [--body BODY] [--tag TAG \| --add-tag TAG]...` | Write a new revision; only the given fields change |
