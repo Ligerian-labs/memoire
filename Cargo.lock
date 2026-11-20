@@ -2509,8 +2509,8 @@ version = "0.1.0"
 dependencies = [
  "axum",
  "clap",
- "getrandom 0.4.3",
  "memoire-api",
+ "memoire-memory",
  "merezha-postgres",
  "reqwest",
  "rpassword",
@@ -2546,6 +2546,16 @@ dependencies = [
  "tokio",
  "tokio-util",
  "toml",
+]
+
+[[package]]
+name = "memoire-memory"
+version = "0.1.0"
+dependencies = [
+ "getrandom 0.4.3",
+ "memoire-api",
+ "serde",
+ "serde_json",
 ]
 
 [[package]]

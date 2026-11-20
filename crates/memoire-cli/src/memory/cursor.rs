@@ -7,6 +7,7 @@
 //! created again under the same name gets a first look again.
 use crate::config::{Env, create_private_dir, io_error, shared_mode, write_private};
 use crate::error::{Error, Result, exit};
+pub use memoire_memory::store::{Cursor, FIRST_LOOK_SECONDS};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -15,11 +16,6 @@ const FILE: &str = "memory-cursors.json";
 /// Held while a run reads, merges and rewrites the cursors file.
 const LOCK: &str = "memory-cursors.lock";
 const VERSION: u32 = 2;
-
-/// A reader's first look at a store starts at the events of this many
-/// seconds before the store's now, not at the beginning: a new session
-/// sees what is recent, not the whole history.
-pub const FIRST_LOOK_SECONDS: u64 = 86_400;
 
 /// A `session:` cursor not used for this many days is dropped at the next
 /// write of the file. Named and machine cursors are kept.
@@ -34,13 +30,6 @@ pub fn reader(name: Option<&str>, session: &str) -> String {
         None if !session.is_empty() => format!("session:{session}"),
         None => "machine".into(),
     }
-}
-
-/// Where one reader has read up to in one store.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct Cursor {
-    pub store_id: String,
-    pub seq: i64,
 }
 
 /// What a cursor is for: the server URL, the database, the scope filter

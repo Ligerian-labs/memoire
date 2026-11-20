@@ -5,12 +5,9 @@
 //! not at all and a read sees one state. Writes are guarded rather than
 //! locked: the first statement of a revision batch fails when the memory
 //! moved since it was read (see [`insert_revision`]).
-use super::cursor::{Cursor, FIRST_LOOK_SECONDS};
-use super::model::{Author, Confirmation, Dispute, Event, Memory, Revision, Status};
-use super::schema;
-use crate::client::Client;
-use crate::error::{Error, Result, exit};
-use memoire_api::{Params, QueryMode, QueryRequest, SqlValue, Statement, StatementResult};
+use crate::model::{Author, Confirmation, Dispute, Event, Memory, Revision, Status};
+use crate::{Backend, BackendError, Error, Refusal, schema};
+use memoire_api::{Params, QueryMode, SqlValue, Statement, StatementResult};
 
 /// The store's clock, the gateway host's, to the millisecond.
 pub const NOW: &str = "strftime('%Y-%m-%dT%H:%M:%fZ','now')";
@@ -114,53 +111,55 @@ impl Batch {
     pub fn is_empty(&self) -> bool {
         self.statements.is_empty()
     }
+
+    /// The statements, and the timeout `timeout_ms` set, for a backend to
+    /// run.
+    pub fn into_parts(self) -> (Vec<Statement>, Option<u64>) {
+        (self.statements, self.timeout_ms)
+    }
 }
 
-/// The store in one database.
-pub struct Store<'a> {
-    pub client: &'a Client,
-    pub db: &'a str,
+/// The store a backend reaches.
+pub struct Store<'a, B> {
+    pub backend: &'a B,
 }
 
-impl Store<'_> {
+impl<B: Backend> Store<'_, B> {
     /// Runs `batch` as one transaction; one result per statement.
-    pub fn run(&self, mode: QueryMode, batch: Batch) -> Result<Vec<StatementResult>> {
+    pub async fn run(
+        &self,
+        mode: QueryMode,
+        batch: Batch,
+    ) -> Result<Vec<StatementResult>, Error<B::Error>> {
         let expected = batch.len();
-        let response = self
-            .client
-            .query(
-                self.db,
-                &QueryRequest {
-                    mode,
-                    transaction: true,
-                    timeout_ms: batch.timeout_ms,
-                    statements: batch.statements,
-                },
-            )
-            .map_err(|e| self.not_found_hint(e))?;
-        if response.results.len() != expected {
-            return Err(invalid_response("a result per statement"));
+        let results = self
+            .backend
+            .run(mode, batch)
+            .await
+            .map_err(Error::Backend)?;
+        if results.len() != expected {
+            return Err(invalid_response("a result per statement").into());
         }
-        Ok(response.results)
+        Ok(results)
     }
 
     /// Runs a read batch behind the schema version check, statement 0 of
     /// the batch; the results of `batch`'s own statements.
-    pub fn read(&self, batch: Batch) -> Result<Vec<StatementResult>> {
+    pub async fn read(&self, batch: Batch) -> Result<Vec<StatementResult>, Error<B::Error>> {
         let mut checked = Batch::new();
         checked.push(schema::VERSION_SQL, vec![]);
         checked.statements.extend(batch.statements);
-        match self.run(QueryMode::Read, checked) {
+        match self.run(QueryMode::Read, checked).await {
             Ok(mut results) => {
                 schema::require_current(schema::version_of(&results[0])?)?;
                 results.remove(0);
                 Ok(results)
             }
-            Err(e) if schema::missing_store(&e) => Err(schema::not_initialized(self.db)),
+            Err(e) if schema::missing_store(&e) => Err(Refusal::NotInitialized.into()),
             // A store of another version can fail on any later statement:
             // say which version it is rather than what SQLite tripped on.
             Err(e) if sql_statement(&e).is_some() => {
-                schema::require_current(self.version()?)?;
+                schema::require_current(self.version().await?)?;
                 Err(e)
             }
             Err(e) => Err(e),
@@ -168,62 +167,48 @@ impl Store<'_> {
     }
 
     /// Runs a write batch.
-    pub fn write(&self, batch: Batch) -> Result<Vec<StatementResult>> {
-        self.run(QueryMode::Write, batch)
+    pub async fn write(&self, batch: Batch) -> Result<Vec<StatementResult>, Error<B::Error>> {
+        self.run(QueryMode::Write, batch).await
     }
 
     /// The store's schema version; 0 before `init`.
-    pub fn version(&self) -> Result<i64> {
+    pub async fn version(&self) -> Result<i64, Error<B::Error>> {
         let mut batch = Batch::new();
         batch.push(schema::VERSION_SQL, vec![]);
-        match self.run(QueryMode::Read, batch) {
-            Ok(results) => schema::version_of(&results[0]),
+        match self.run(QueryMode::Read, batch).await {
+            Ok(results) => Ok(schema::version_of(&results[0])?),
             Err(e) if schema::missing_store(&e) => Ok(0),
             Err(e) => Err(e),
         }
     }
-
-    fn not_found_hint(&self, error: Error) -> Error {
-        if error.code() != "database_not_found" {
-            return error;
-        }
-        Error::local(
-            "database_not_found",
-            exit::NOT_FOUND,
-            format!(
-                "no database `{}` in the team; run `memoire memory init`",
-                self.db
-            ),
-        )
-        .with("status", 404)
-    }
 }
 
 /// The statement an `sql_error` names, and its SQLite code.
-pub fn sql_statement(error: &Error) -> Option<(usize, &str, &str)> {
-    match error {
-        Error::Api { sql: Some(sql), .. } => Some((
-            sql.statement,
-            sql.sqlite_code.as_str(),
-            sql.message.as_str(),
-        )),
-        _ => None,
-    }
+pub fn sql_statement<E: BackendError>(error: &Error<E>) -> Option<(usize, &str, &str)> {
+    error
+        .sql()
+        .map(|sql| (sql.statement, sql.code, sql.message))
 }
 
 /// Whether a guarded statement at `index` failed its guard: a constraint
 /// (primary key or `NOT NULL`) refused it.
-pub fn guard_failed(error: &Error, index: usize) -> bool {
+pub fn guard_failed<E: BackendError>(error: &Error<E>, index: usize) -> bool {
     sql_statement(error)
         .is_some_and(|(at, code, _)| at == index && code.starts_with("SQLITE_CONSTRAINT"))
 }
 
-pub fn invalid_response(what: &str) -> Error {
-    Error::local(
-        "invalid_response",
-        exit::FAILURE,
-        format!("the gateway's answer for the memory store lacks {what}"),
-    )
+/// What the backend's answer lacks, as in "a result per statement".
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Lacks(pub String);
+
+impl<E> From<Lacks> for Error<E> {
+    fn from(lacks: Lacks) -> Self {
+        Self::InvalidResponse(lacks.0)
+    }
+}
+
+pub fn invalid_response(what: &str) -> Lacks {
+    Lacks(what.to_owned())
 }
 
 /// How a new revision's `status` is set.
@@ -741,7 +726,7 @@ pub fn select_store_id(batch: &mut Batch) -> usize {
 }
 
 /// The store id a [`select_store_id`] result holds.
-pub fn store_id_of(result: &StatementResult) -> Result<String> {
+pub fn store_id_of(result: &StatementResult) -> Result<String, Lacks> {
     match result.rows.first().and_then(|row| row.first()) {
         Some(SqlValue::Text(id)) => Ok(id.clone()),
         _ => Err(invalid_response("the store_id")),
@@ -751,6 +736,18 @@ pub fn store_id_of(result: &StatementResult) -> Result<String> {
 /// A JSON array of strings, or NULL for "no filter".
 fn json_or_null(items: Option<&[String]>) -> SqlValue {
     items.map_or(SqlValue::Null, json_list)
+}
+
+/// A reader's first look at a store starts at the events of this many
+/// seconds before the store's now, not at the beginning: a new session
+/// sees what is recent, not the whole history.
+pub const FIRST_LOOK_SECONDS: u64 = 86_400;
+
+/// Where one reader has read up to in one store.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Cursor {
+    pub store_id: String,
+    pub seq: i64,
 }
 
 /// Where a read of the log starts.
@@ -878,7 +875,7 @@ pub fn rows(result: &StatementResult) -> impl Iterator<Item = Row<'_>> {
 }
 
 impl Row<'_> {
-    fn get(&self, name: &str) -> Result<&SqlValue> {
+    fn get(&self, name: &str) -> Result<&SqlValue, Lacks> {
         self.result
             .columns
             .iter()
@@ -887,14 +884,14 @@ impl Row<'_> {
             .ok_or_else(|| invalid_response(&format!("the column `{name}`")))
     }
 
-    pub fn text(&self, name: &str) -> Result<String> {
+    pub fn text(&self, name: &str) -> Result<String, Lacks> {
         match self.get(name)? {
             SqlValue::Text(s) => Ok(s.clone()),
             _ => Err(invalid_response(&format!("text in `{name}`"))),
         }
     }
 
-    pub fn opt_text(&self, name: &str) -> Result<Option<String>> {
+    pub fn opt_text(&self, name: &str) -> Result<Option<String>, Lacks> {
         match self.get(name)? {
             SqlValue::Null => Ok(None),
             SqlValue::Text(s) => Ok(Some(s.clone())),
@@ -902,14 +899,14 @@ impl Row<'_> {
         }
     }
 
-    pub fn int(&self, name: &str) -> Result<i64> {
+    pub fn int(&self, name: &str) -> Result<i64, Lacks> {
         match self.get(name)? {
             SqlValue::Integer(n) => Ok(*n),
             _ => Err(invalid_response(&format!("an integer in `{name}`"))),
         }
     }
 
-    pub fn opt_int(&self, name: &str) -> Result<Option<i64>> {
+    pub fn opt_int(&self, name: &str) -> Result<Option<i64>, Lacks> {
         match self.get(name)? {
             SqlValue::Null => Ok(None),
             SqlValue::Integer(n) => Ok(Some(*n)),
@@ -917,7 +914,7 @@ impl Row<'_> {
         }
     }
 
-    pub fn event(&self) -> Result<Event> {
+    pub fn event(&self) -> Result<Event, Lacks> {
         Ok(Event {
             seq: self.int("seq")?,
             memory_id: self.text("memory_id")?,
@@ -932,7 +929,7 @@ impl Row<'_> {
         })
     }
 
-    pub fn real(&self, name: &str) -> Result<f64> {
+    pub fn real(&self, name: &str) -> Result<f64, Lacks> {
         match self.get(name)? {
             SqlValue::Real(x) => Ok(*x),
             SqlValue::Integer(n) => Ok(*n as f64),
@@ -941,16 +938,16 @@ impl Row<'_> {
     }
 
     /// A JSON array of strings.
-    pub fn list(&self, name: &str) -> Result<Vec<String>> {
+    pub fn list(&self, name: &str) -> Result<Vec<String>, Lacks> {
         serde_json::from_str(&self.text(name)?)
             .map_err(|_| invalid_response(&format!("a JSON list in `{name}`")))
     }
 
-    pub fn status(&self, name: &str) -> Result<Status> {
+    pub fn status(&self, name: &str) -> Result<Status, Lacks> {
         Status::parse(&self.text(name)?).ok_or_else(|| invalid_response("a known status"))
     }
 
-    pub fn memory(&self) -> Result<Memory> {
+    pub fn memory(&self) -> Result<Memory, Lacks> {
         Ok(Memory {
             seq: self.int("seq")?,
             id: self.text("id")?,
@@ -979,7 +976,7 @@ impl Row<'_> {
         })
     }
 
-    pub fn revision(&self) -> Result<Revision> {
+    pub fn revision(&self) -> Result<Revision, Lacks> {
         Ok(Revision {
             memory_id: self.text("memory_id")?,
             rev: self.int("rev")?,
@@ -1000,7 +997,7 @@ impl Row<'_> {
         })
     }
 
-    pub fn confirmation(&self) -> Result<Confirmation> {
+    pub fn confirmation(&self) -> Result<Confirmation, Lacks> {
         Ok(Confirmation {
             rev: self.int("rev")?,
             principal: self.text("principal")?,
@@ -1012,7 +1009,7 @@ impl Row<'_> {
         })
     }
 
-    pub fn dispute(&self) -> Result<Dispute> {
+    pub fn dispute(&self) -> Result<Dispute, Lacks> {
         Ok(Dispute {
             rev: self.int("rev")?,
             principal: self.text("principal")?,
@@ -1028,11 +1025,14 @@ impl Row<'_> {
 }
 
 /// The memory a single-row select returned, if any.
-pub fn one_memory(result: &StatementResult) -> Result<Option<Memory>> {
+pub fn one_memory(result: &StatementResult) -> Result<Option<Memory>, Lacks> {
     rows(result).next().map(|row| row.memory()).transpose()
 }
 
 /// Every row of a result, decoded.
-pub fn all<T>(result: &StatementResult, decode: impl Fn(&Row<'_>) -> Result<T>) -> Result<Vec<T>> {
+pub fn all<T>(
+    result: &StatementResult,
+    decode: impl Fn(&Row<'_>) -> Result<T, Lacks>,
+) -> Result<Vec<T>, Lacks> {
     rows(result).map(|row| decode(&row)).collect()
 }

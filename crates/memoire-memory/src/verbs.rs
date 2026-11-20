@@ -2,118 +2,38 @@
 //!
 //! A verb reads what it needs (the version check first), runs the guards,
 //! then sends at most one write batch. A write that a concurrent writer
-//! made stale fails its guard and exits with `memory_conflict`; the agent
-//! re-reads and retries. The CLI itself takes no lock and never retries.
-use super::model::{self, Memory, Scored, Status};
-use super::search::{self, Filter};
-use super::store::{self, Batch, NewRevision, RevisionStatus};
-use super::{Context, render, schema};
-use crate::cli::{MemoryInitArgs, RecallArgs, RememberArgs, ReviseArgs};
-use crate::config::io_error;
-use crate::error::{Error, Result, exit};
-use memoire_api::{CreateDatabase, DatabaseKind, DatabaseState};
-use serde_json::json;
-use std::io::Read as _;
-use std::path::{Path, PathBuf};
+//! made stale fails its guard and is refused with `memory_conflict`; the
+//! agent re-reads and retries. The engine itself takes no lock and never
+//! retries.
+use crate::model::{self, Confirmation, Dispute, Memory, Revision, Status};
+use crate::search::{self, Filter};
+use crate::store::{self, Batch, Lacks, NewRevision, RevisionStatus, Store};
+use crate::{Backend, Candidate, Error, Labels, Refusal};
 
-/// `init`: the database, persistent unless `--burstable`, then the schema.
-pub fn init(ctx: &Context<'_>, args: &MemoryInitArgs) -> Result<()> {
-    let kind = if args.burstable {
-        DatabaseKind::Burstable
-    } else {
-        DatabaseKind::Persistent
-    };
-    let create = || {
-        ctx.client.create_database(&CreateDatabase {
-            name: ctx.db.clone(),
-            kind,
-            idle_ttl_seconds: args.ttl,
-        })
-    };
-    let existing = match ctx.client.database(&ctx.db) {
-        Ok(db) if db.state == DatabaseState::Active => Some(db),
-        Ok(_) => None,
-        Err(e) if e.code() == "database_not_found" => None,
-        Err(e) => return Err(e),
-    };
-    let (database, created) = match existing {
-        Some(db) => (db, false),
-        None => match create() {
-            Ok(db) => (db, true),
-            // Another init created it in between: use that one.
-            Err(e) if e.code() == "database_exists" => (ctx.client.database(&ctx.db)?, false),
-            Err(e) => return Err(e),
-        },
-    };
-    if !created && (args.burstable || args.persistent) && database.kind != kind {
-        ctx.out.note(&format!(
-            "note: `{}` already exists as a {} database; keeping it",
-            ctx.db,
-            crate::output::kind(&database)
-        ));
+pub(crate) fn not_found(id: &str, purged_at: Option<String>) -> Refusal {
+    Refusal::NotFound {
+        id: id.to_owned(),
+        purged_at,
     }
-    let store = ctx.store();
-    let migrated_from = schema::migrate(&store)?;
-    let store_id = schema::store_id(&store)?;
-    if ctx.out.json {
-        return ctx.out.json(&json!({
-            "database": database,
-            "created": created,
-            "schema_version": schema::SCHEMA_VERSION,
-            "migrated_from": migrated_from,
-            "store_id": store_id,
-        }));
-    }
-    ctx.out
-        .line(&render::init(&database, created, migrated_from, &store_id))
-}
-
-/// The body from `--body`, `--body-file FILE` or `--body-file -`.
-fn read_body(body: Option<String>, file: Option<&Path>) -> Result<Option<String>> {
-    let Some(path) = file else {
-        return Ok(body);
-    };
-    if path == Path::new("-") {
-        let mut text = String::new();
-        std::io::stdin().read_to_string(&mut text).map_err(|e| {
-            Error::local("missing_input", exit::USAGE, format!("standard input: {e}"))
-        })?;
-        return Ok(Some(text));
-    }
-    std::fs::read_to_string(path)
-        .map(Some)
-        .map_err(|e| io_error(path, &e))
-}
-
-/// The scope a memory gets without `--scope`: the git checkout's project
-/// scope, else `global`.
-fn project_scope() -> Option<String> {
-    let dir: PathBuf = std::env::current_dir().ok()?;
-    super::scope::project_scope(&dir)
-}
-
-pub(super) fn not_found(id: &str, purged_at: Option<String>) -> Error {
-    let message = match purged_at {
-        Some(at) => format!("memory {id} was purged at {at}"),
-        None => format!("no memory {id} in this store"),
-    };
-    Error::local("memory_not_found", exit::NOT_FOUND, message).with("id", id)
 }
 
 /// The memory `id` as a read finds it, with the time it was purged when
 /// it is gone.
-pub(super) fn read_memory(ctx: &Context<'_>, id: &str) -> Result<Memory> {
+pub(crate) async fn read_memory<B: Backend>(
+    backend: &B,
+    id: &str,
+) -> Result<Memory, Error<B::Error>> {
     let mut batch = Batch::new();
     let memory = store::select_memory(&mut batch, id);
     let purge = store::select_purge(&mut batch, id);
-    let results = ctx.store().read(batch)?;
+    let results = Store { backend }.read(batch).await?;
     match store::one_memory(&results[memory])? {
         Some(memory) => Ok(memory),
-        None => Err(not_found(id, purged_at(&results[purge])?)),
+        None => Err(not_found(id, purged_at(&results[purge])?).into()),
     }
 }
 
-pub(super) fn purged_at(result: &memoire_api::StatementResult) -> Result<Option<String>> {
+pub(crate) fn purged_at(result: &memoire_api::StatementResult) -> Result<Option<String>, Lacks> {
     store::rows(result)
         .next()
         .map(|row| row.text("created_at"))
@@ -121,7 +41,7 @@ pub(super) fn purged_at(result: &memoire_api::StatementResult) -> Result<Option<
 }
 
 /// The memory a write batch selected last.
-pub(super) fn written(results: &[memoire_api::StatementResult]) -> Result<Memory> {
+pub(crate) fn written(results: &[memoire_api::StatementResult]) -> Result<Memory, Lacks> {
     results
         .last()
         .map(store::one_memory)
@@ -130,52 +50,70 @@ pub(super) fn written(results: &[memoire_api::StatementResult]) -> Result<Memory
         .ok_or_else(|| store::invalid_response("the written memory"))
 }
 
-pub(super) fn print_memory(ctx: &Context<'_>, memory: &Memory) -> Result<()> {
-    if ctx.out.json {
-        return ctx.out.json(memory);
-    }
-    ctx.out.line(&render::memory(memory))
-}
-
 /// A refusal on a memory that was superseded or forgotten.
-pub(super) fn not_current(memory: &Memory) -> Error {
-    let mut message = format!("memory {} is {}", memory.id, memory.status.as_str());
-    if let Some(by) = &memory.superseded_by {
-        message.push_str(&format!(" by {by}"));
+pub(crate) fn not_current(memory: &Memory) -> Refusal {
+    Refusal::NotCurrent {
+        id: memory.id.clone(),
+        status: memory.status,
+        superseded_by: memory.superseded_by.clone(),
     }
-    Error::local("memory_not_current", exit::CONFLICT, message)
-        .with("id", memory.id.clone())
-        .with("status", memory.status.as_str())
-        .with("superseded_by", memory.superseded_by.clone())
 }
 
-/// `remember`. With `--supersedes`, the new memory also replaces a current
+/// What `remember` records.
+#[derive(Clone, Debug, Default)]
+pub struct Remember {
+    /// One line, at most 120 characters, trimmed.
+    pub title: String,
+    /// At most 8 KiB, possibly empty.
+    pub body: String,
+    /// Default: the replaced memory's, else [`model::DEFAULT_KIND`].
+    pub kind: Option<String>,
+    /// Default: the replaced memory's, else the caller's default scope,
+    /// else [`model::GLOBAL_SCOPE`].
+    pub scope: Option<String>,
+    /// Empty with `supersedes`: the replaced memory's.
+    pub tags: Vec<String>,
+    pub evidence: Vec<String>,
+    /// Record it even when a memory in the scope has a similar title.
+    pub force: bool,
+    /// The memory it replaces in the same write.
+    pub supersedes: Option<String>,
+    /// Why it replaces `supersedes`.
+    pub reason: Option<String>,
+}
+
+/// `remember`. With `supersedes`, the new memory also replaces a current
 /// one in the same write, and takes its scope, kind and tags unless the
-/// flags give them.
-pub fn remember(ctx: &Context<'_>, args: RememberArgs) -> Result<()> {
-    let title = model::title(&args.title)?;
-    let body = model::body(read_body(args.body, args.body_file.as_deref())?.unwrap_or_default())?;
-    let tags = model::tags(args.tags)?;
-    let evidence = model::evidence(args.evidence)?;
-    let reason = args.reason.as_deref().map(model::reason).transpose()?;
-    let old = args
-        .supersedes
-        .as_deref()
-        .map(|id| read_memory(ctx, id))
-        .transpose()?;
+/// input gives them. `default_scope` is asked only when neither the input
+/// nor the replaced memory gives a scope.
+pub async fn remember<B: Backend>(
+    backend: &B,
+    labels: &Labels,
+    input: Remember,
+    default_scope: impl FnOnce() -> Option<String>,
+) -> Result<Memory, Error<B::Error>> {
+    let title = model::title(&input.title)?;
+    let body = model::body(input.body)?;
+    let tags = model::tags(input.tags)?;
+    let evidence = model::evidence(input.evidence)?;
+    let reason = input.reason.as_deref().map(model::reason).transpose()?;
+    let old = match input.supersedes.as_deref() {
+        Some(id) => Some(read_memory(backend, id).await?),
+        None => None,
+    };
     if let Some(old) = &old
         && !old.status.is_current()
     {
-        return Err(not_current(old));
+        return Err(not_current(old).into());
     }
-    let kind = args
+    let kind = input
         .kind
         .or_else(|| old.as_ref().map(|o| o.kind.clone()))
         .unwrap_or_else(|| model::DEFAULT_KIND.to_owned());
-    let scope = args
+    let scope = input
         .scope
         .or_else(|| old.as_ref().map(|o| o.scope.clone()))
-        .or_else(project_scope)
+        .or_else(default_scope)
         .unwrap_or_else(|| model::GLOBAL_SCOPE.to_owned());
     let tags = match &old {
         Some(old) if tags.is_empty() => old.tags.clone(),
@@ -194,18 +132,19 @@ pub fn remember(ctx: &Context<'_>, args: RememberArgs) -> Result<()> {
         .chain(tags.iter().map(|t| ("tags", t.as_str())))
         .chain(evidence.iter().map(|e| ("evidence", e.as_str())))
         .chain(reason.iter().map(|r| ("reason", r.as_str())))
-        .chain(ctx.labels()),
+        .chain(labels.fields()),
     )?;
     refuse_duplicates(
-        ctx,
+        backend,
         &title,
         &scope,
         old.as_ref().map(|o| o.id.as_str()),
-        args.force,
-    )?;
+        input.force,
+    )
+    .await?;
 
-    let author = ctx.actor()?;
-    let id = model::new_memory_id()?;
+    let author = labels.actor(backend).await?;
+    let id = model::new_memory_id().map_err(Error::NoRandomness)?;
     let replace = old.as_ref().zip(reason.as_deref());
     let mut batch = Batch::new();
     // First, the guard: OLD's next revision, links as its row has them at
@@ -262,26 +201,26 @@ pub fn remember(ctx: &Context<'_>, args: RememberArgs) -> Result<()> {
         );
     }
     store::select_memory(&mut batch, &id);
-    let results = match ctx.store().write(batch) {
+    let results = match (Store { backend }).write(batch).await {
         Ok(results) => results,
         Err(e) => {
             return Err(
                 match guarded.filter(|&(index, _)| store::guard_failed(&e, index)) {
-                    Some((_, old)) => replaced_meanwhile(ctx, old),
+                    Some((_, old)) => replaced_meanwhile(backend, old).await,
                     None => e,
                 },
             );
         }
     };
-    print_memory(ctx, &written(&results)?)
+    Ok(written(&results)?)
 }
 
 /// The error for a replace whose guard failed: what is true of the old
 /// memory now. Gone, no longer current, else moved to another rev.
-fn replaced_meanwhile(ctx: &Context<'_>, old: &str) -> Error {
-    match read_memory(ctx, old) {
-        Ok(memory) if !memory.status.is_current() => not_current(&memory),
-        Ok(memory) => moved(&memory),
+async fn replaced_meanwhile<B: Backend>(backend: &B, old: &str) -> Error<B::Error> {
+    match read_memory(backend, old).await {
+        Ok(memory) if !memory.status.is_current() => not_current(&memory).into(),
+        Ok(memory) => moved(&memory).into(),
         Err(e) => e,
     }
 }
@@ -290,18 +229,18 @@ fn replaced_meanwhile(ctx: &Context<'_>, old: &str) -> Error {
 /// than `except`, the memory being replaced. The read runs even when
 /// nothing is compared (`--force`, a title of stopwords): it carries the
 /// schema version check.
-fn refuse_duplicates(
-    ctx: &Context<'_>,
+async fn refuse_duplicates<B: Backend>(
+    backend: &B,
     title: &str,
     scope: &str,
     except: Option<&str>,
     force: bool,
-) -> Result<()> {
+) -> Result<(), Error<B::Error>> {
     let tokens = search::title_tokens(title);
     let mut batch = Batch::new();
     let candidates = (!force && !tokens.is_empty())
         .then(|| search::duplicate_candidates(&mut batch, &tokens, scope, except));
-    let results = ctx.store().read(batch)?;
+    let results = Store { backend }.read(batch).await?;
     let Some(index) = candidates else {
         return Ok(());
     };
@@ -318,62 +257,92 @@ fn refuse_duplicates(
         }
     }
     hits.sort_by(|a, b| b.3.total_cmp(&a.3).then_with(|| a.0.cmp(&b.0)));
-    let Some((id, ..)) = hits.first() else {
+    if hits.is_empty() {
         return Ok(());
-    };
-    let message = format!(
-        "a memory in {scope} has a similar title ({id}); revise it, or pass --force to record this one too"
-    );
+    }
     let candidates: Vec<_> = hits
-        .iter()
-        .map(|(id, title, status, similarity)| {
-            json!({"id": id, "title": title, "status": status,
-                   "similarity": (similarity * 1000.0).round() / 1000.0})
+        .into_iter()
+        .map(|(id, title, status, similarity)| Candidate {
+            id,
+            title,
+            status,
+            similarity: (similarity * 1000.0).round() / 1000.0,
         })
         .collect();
-    Err(Error::local("memory_duplicate", exit::CONFLICT, message).with("candidates", candidates))
+    Err(Refusal::Duplicate {
+        scope: scope.to_owned(),
+        candidates,
+    }
+    .into())
+}
+
+/// What `show` finds of a memory.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Shown {
+    pub memory: Memory,
+    pub confirmations: Vec<Confirmation>,
+    pub disputes: Vec<Dispute>,
+    /// Every revision, oldest first, when asked for.
+    pub revisions: Option<Vec<Revision>>,
 }
 
 /// `show`.
-pub fn show(ctx: &Context<'_>, id: &str, history: bool) -> Result<()> {
+pub async fn show<B: Backend>(
+    backend: &B,
+    id: &str,
+    history: bool,
+) -> Result<Shown, Error<B::Error>> {
     let mut batch = Batch::new();
     let memory = store::select_memory(&mut batch, id);
     let purge = store::select_purge(&mut batch, id);
     let confirmations = store::select_confirmations(&mut batch, id);
     let disputes = store::select_disputes(&mut batch, id);
     let revisions = history.then(|| store::select_revisions(&mut batch, id));
-    let results = ctx.store().read(batch)?;
+    let results = Store { backend }.read(batch).await?;
     let Some(memory) = store::one_memory(&results[memory])? else {
-        return Err(not_found(id, purged_at(&results[purge])?));
+        return Err(not_found(id, purged_at(&results[purge])?).into());
     };
     let confirmations = store::all(&results[confirmations], |r| r.confirmation())?;
     let disputes = store::all(&results[disputes], |r| r.dispute())?;
     let revisions = revisions
         .map(|i| store::all(&results[i], |r| r.revision()))
         .transpose()?;
-    if ctx.out.json {
-        let mut shown = json!({
-            "memory": memory, "confirmations": confirmations, "disputes": disputes,
-        });
-        if let Some(revisions) = &revisions {
-            shown["revisions"] = json!(revisions);
-        }
-        return ctx.out.json(&shown);
-    }
-    ctx.out.line(&render::show(
-        &memory,
-        &confirmations,
-        &disputes,
-        revisions.as_deref(),
-    ))
+    Ok(Shown {
+        memory,
+        confirmations,
+        disputes,
+        revisions,
+    })
+}
+
+/// What `revise` changes: only the fields given.
+#[derive(Clone, Debug, Default)]
+pub struct Revise {
+    pub id: String,
+    pub title: Option<String>,
+    pub body: Option<String>,
+    pub kind: Option<String>,
+    pub scope: Option<String>,
+    /// Replace the tags.
+    pub tags: Vec<String>,
+    /// Add tags.
+    pub add_tags: Vec<String>,
+    /// Replace the evidence.
+    pub evidence: Vec<String>,
+    /// Add evidence items.
+    pub add_evidence: Vec<String>,
+    /// Why, for the history.
+    pub reason: String,
 }
 
 /// `revise`.
-pub fn revise(ctx: &Context<'_>, args: ReviseArgs) -> Result<()> {
+pub async fn revise<B: Backend>(
+    backend: &B,
+    labels: &Labels,
+    args: Revise,
+) -> Result<Memory, Error<B::Error>> {
     let title = args.title.as_deref().map(model::title).transpose()?;
-    let body = read_body(args.body, args.body_file.as_deref())?
-        .map(model::body)
-        .transpose()?;
+    let body = args.body.map(model::body).transpose()?;
     let reason = model::reason(&args.reason)?;
     let tags = model::tags(args.tags)?;
     let add_tags = model::tags(args.add_tags)?;
@@ -394,12 +363,12 @@ pub fn revise(ctx: &Context<'_>, args: ReviseArgs) -> Result<()> {
             .chain([("reason", reason.as_str())])
             .chain(args.kind.iter().map(|k| ("kind", k.as_str())))
             .chain(args.scope.iter().map(|s| ("scope", s.as_str())))
-            .chain(ctx.labels()),
+            .chain(labels.fields()),
     )?;
 
-    let current = read_memory(ctx, &args.id)?;
+    let current = read_memory(backend, &args.id).await?;
     if !current.status.is_current() {
-        return Err(not_current(&current));
+        return Err(not_current(&current).into());
     }
     let merge = |replace: Vec<String>, add: Vec<String>, old: &[String]| {
         if !replace.is_empty() {
@@ -417,16 +386,15 @@ pub fn revise(ctx: &Context<'_>, args: ReviseArgs) -> Result<()> {
         evidence: model::evidence(merge(evidence, add_evidence, &current.evidence))?,
     };
     if next.same_as(&current) {
-        return Err(Error::local(
-            "memory_unchanged",
-            exit::REJECTED,
-            format!("the revision would leave memory {} as it is", current.id),
-        ));
+        return Err(Refusal::Unchanged {
+            id: current.id.clone(),
+        }
+        .into());
     }
     let text_changed =
         next.title != current.title || next.body != current.body || next.kind != current.kind;
 
-    let author = ctx.actor()?;
+    let author = labels.actor(backend).await?;
     let id = current.id.as_str();
     let mut batch = Batch::new();
     let guarded = store::insert_revision(
@@ -457,18 +425,18 @@ pub fn revise(ctx: &Context<'_>, args: ReviseArgs) -> Result<()> {
     store::sync_search(&mut batch, id);
     store::append_event(&mut batch, id, "revise", &author, &reason);
     store::select_memory(&mut batch, id);
-    let results = match ctx.store().write(batch) {
+    let results = match (Store { backend }).write(batch).await {
         Ok(results) => results,
-        Err(e) if store::guard_failed(&e, guarded) => return Err(conflict(ctx, id)),
+        Err(e) if store::guard_failed(&e, guarded) => return Err(conflict(backend, id).await),
         Err(e) => return Err(e),
     };
-    print_memory(ctx, &written(&results)?)
+    Ok(written(&results)?)
 }
 
 /// Revision `memory.rev + 1` of `memory` as it stands, by `author` for
 /// `reason`, its links left to the write; verbs that change one field
 /// override it.
-pub(super) fn carried<'a>(
+pub(crate) fn carried<'a>(
     memory: &'a Memory,
     author: &'a model::Author,
     reason: &'a str,
@@ -513,62 +481,63 @@ impl NextState {
 
 /// The error for a write whose guard failed: the memory moved on (or
 /// went) after it was read.
-pub(super) fn conflict(ctx: &Context<'_>, id: &str) -> Error {
-    match read_memory(ctx, id) {
-        Ok(memory) => moved(&memory),
+pub(crate) async fn conflict<B: Backend>(backend: &B, id: &str) -> Error<B::Error> {
+    match read_memory(backend, id).await {
+        Ok(memory) => moved(&memory).into(),
         Err(e) => e,
     }
 }
 
 /// `memory_conflict` for `memory`, read again after a guard failed.
-fn moved(memory: &Memory) -> Error {
-    let id = memory.id.as_str();
-    Error::local(
-        "memory_conflict",
-        exit::CONFLICT,
-        format!(
-            "memory {id} changed while this ran: it is at rev {}; read it again and retry",
-            memory.rev
-        ),
-    )
-    .with("id", id)
-    .with("current_rev", memory.rev)
+fn moved(memory: &Memory) -> Refusal {
+    Refusal::Conflict {
+        id: memory.id.clone(),
+        current_rev: memory.rev,
+        since_rev: None,
+    }
 }
 
-/// `recall`.
-pub fn recall(ctx: &Context<'_>, args: &RecallArgs) -> Result<()> {
-    let terms = match &args.query {
+/// What `recall` searches.
+#[derive(Clone, Copy, Debug)]
+pub struct Recall<'a> {
+    /// Words to search for; `None`: the newest memories.
+    pub query: Option<&'a str>,
+    /// `None`: every scope.
+    pub scopes: Option<&'a [String]>,
+    /// Empty: [`Status::RECALLED`].
+    pub statuses: &'a [Status],
+    /// Any of them; empty: any kind.
+    pub kinds: &'a [String],
+    /// All of them; empty: no tag needed.
+    pub tags: &'a [String],
+    pub limit: i64,
+}
+
+/// `recall`: the memories found, best first, with their score when there
+/// is a query.
+pub async fn recall<B: Backend>(
+    backend: &B,
+    args: Recall<'_>,
+) -> Result<Vec<(Memory, Option<f64>)>, Error<B::Error>> {
+    let terms = match args.query {
         Some(query) => {
             let terms = search::terms(query);
             if terms.is_empty() {
-                return Err(Error::local(
-                    "invalid_query",
-                    exit::USAGE,
-                    "the query has no word to search for",
-                ));
+                return Err(Refusal::InvalidQuery.into());
             }
             Some(terms)
         }
         None => None,
     };
-    let scopes = if args.all_scopes {
-        None
-    } else if !args.scopes.is_empty() {
-        Some(args.scopes.clone())
-    } else {
-        let mut scopes: Vec<String> = project_scope().into_iter().collect();
-        scopes.push(model::GLOBAL_SCOPE.to_owned());
-        Some(scopes)
-    };
-    let mut statuses = args.statuses.clone();
+    let mut statuses = args.statuses.to_vec();
     if statuses.is_empty() {
         statuses = Status::RECALLED.to_vec();
     }
     let filter = Filter {
-        scopes: scopes.as_deref(),
+        scopes: args.scopes,
         statuses: &statuses,
-        kinds: &args.kinds,
-        tags: &args.tags,
+        kinds: args.kinds,
+        tags: args.tags,
         limit: args.limit,
     };
     let mut batch = Batch::new();
@@ -576,33 +545,11 @@ pub fn recall(ctx: &Context<'_>, args: &RecallArgs) -> Result<()> {
         Some(terms) => search::ranked(&mut batch, terms, &filter),
         None => search::newest(&mut batch, &filter),
     };
-    let results = ctx.store().read(batch)?;
+    let results = Store { backend }.read(batch).await?;
     let mut memories = Vec::new();
     for row in store::rows(&results[index]) {
         let score = terms.is_some().then(|| row.real("score")).transpose()?;
         memories.push((row.memory()?, score));
     }
-    if ctx.out.json {
-        let memories: Vec<Scored<'_>> = memories
-            .iter()
-            .map(|(memory, score)| Scored {
-                memory,
-                score: *score,
-            })
-            .collect();
-        return ctx.out.json(&json!({
-            "db": ctx.db, "query": args.query, "scopes": scopes, "memories": memories,
-        }));
-    }
-    let searched = scopes
-        .as_ref()
-        .map_or_else(|| "every scope".to_owned(), |s| s.join(", "));
-    if memories.is_empty() {
-        ctx.out.note(&format!("No memories in {searched}."));
-        return Ok(());
-    }
-    let memories: Vec<Memory> = memories.into_iter().map(|(m, _)| m).collect();
-    ctx.out.line(&render::recall(&memories))?;
-    ctx.out.note(&format!("Searched {searched}."));
-    Ok(())
+    Ok(memories)
 }

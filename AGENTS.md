@@ -1,6 +1,6 @@
 # memoire
 
-SQLite databases on demand: Rust gateway on Merezha (`crates/memoire-gateway`), wire types (`crates/memoire-api`), CLI (`crates/memoire-cli`), WASM guests (`guests/`, own workspace), Angular web debugger (`web/`, pnpm through Corepack).
+SQLite databases on demand: Rust gateway on Merezha (`crates/memoire-gateway`), wire types (`crates/memoire-api`), memory engine (`crates/memoire-memory`), CLI (`crates/memoire-cli`), WASM guests (`guests/`, own workspace), Angular web debugger (`web/`, pnpm through Corepack).
 
 - Checks (build the guests first; the process tests load them): `scripts/build-guests.sh`, `cargo fmt --all --check`, `cargo clippy --locked --workspace --all-targets -- -D warnings`, `cargo test --locked --workspace`, `(cd guests && cargo test --locked)`; web: `(cd web && pnpm lint && pnpm test && pnpm typecheck && pnpm build && pnpm e2e)` (e2e runs a real gateway, see `web/README.md`).
 - PostgreSQL tests need `MEREZHA_TEST_DATABASE_URL` (`scripts/dev-postgres.sh start` prints one) and `MEREZHA_TEST_REQUIRE_DATABASE=1` so they cannot skip.

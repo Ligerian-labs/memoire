@@ -1,6 +1,6 @@
 //! What a memory is on this side of the wire: ids, validated fields, size
 //! limits and the JSON shapes the verbs print.
-use crate::error::{Error, Result, exit};
+use crate::{Invalid, Refusal};
 use serde::Serialize;
 
 /// Longest title, in characters.
@@ -47,15 +47,10 @@ pub fn ulid(millis: u64, random: [u8; 10]) -> String {
 
 /// A fresh ULID from the system clock and the operating system's
 /// randomness.
-pub fn fresh_ulid() -> Result<String> {
+/// The error is the operating system's.
+pub fn fresh_ulid() -> Result<String, String> {
     let mut random = [0; 10];
-    getrandom::fill(&mut random).map_err(|e| {
-        Error::local(
-            "random_failed",
-            exit::FAILURE,
-            format!("no randomness from the operating system: {e}"),
-        )
-    })?;
+    getrandom::fill(&mut random).map_err(|e| e.to_string())?;
     let millis = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map_or(0, |d| u64::try_from(d.as_millis()).unwrap_or(u64::MAX));
@@ -63,7 +58,7 @@ pub fn fresh_ulid() -> Result<String> {
 }
 
 /// A new memory id, `mem_` and a ULID.
-pub fn new_memory_id() -> Result<String> {
+pub fn new_memory_id() -> Result<String, String> {
     Ok(format!("{ID_PREFIX}{}", fresh_ulid()?))
 }
 
@@ -85,7 +80,7 @@ pub fn parse_memory_id(text: &str) -> Result<String, String> {
 
 /// `--scope`: `^[a-z0-9][a-z0-9._:/-]{0,127}$`.
 pub fn parse_scope(text: &str) -> Result<String, String> {
-    if super::scope::valid(text) {
+    if crate::scope::valid(text) {
         Ok(text.to_owned())
     } else {
         Err("a scope is 1-128 characters: a lowercase letter or digit, then lowercase letters, digits or . _ : / -".into())
@@ -144,7 +139,7 @@ pub fn parse_session(text: &str) -> Result<String, String> {
 }
 
 /// The live status of a memory.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, clap::ValueEnum)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Status {
     Inferred,
@@ -186,80 +181,60 @@ impl Status {
     }
 }
 
-fn too_large(field: &'static str, limit: usize, message: String) -> Error {
-    Error::local("memory_too_large", exit::REJECTED, message)
-        .with("field", field)
-        .with("limit", limit)
+fn too_large(field: &'static str, limit: usize, size: usize) -> Refusal {
+    Refusal::TooLarge {
+        field: field.to_owned(),
+        limit,
+        size,
+    }
 }
 
-fn usage(message: impl Into<String>) -> Error {
-    Error::local("invalid_argument", exit::USAGE, message)
+fn usage(invalid: Invalid) -> Refusal {
+    Refusal::InvalidArgument(invalid)
 }
 
 /// A title: trimmed, one line, 1 to 120 characters.
-pub fn title(text: &str) -> Result<String> {
+pub fn title(text: &str) -> Result<String, Refusal> {
     let text = text.trim();
     if text.is_empty() {
-        return Err(usage("--title is empty"));
+        return Err(usage(Invalid::EmptyTitle));
     }
     if text.contains(['\n', '\r']) {
-        return Err(usage("--title is one line"));
+        return Err(usage(Invalid::MultilineTitle));
     }
     let chars = text.chars().count();
     if chars > TITLE_MAX_CHARS {
-        return Err(too_large(
-            "title",
-            TITLE_MAX_CHARS,
-            format!("the title has {chars} characters; at most {TITLE_MAX_CHARS}"),
-        ));
+        return Err(too_large("title", TITLE_MAX_CHARS, chars));
     }
     Ok(text.to_owned())
 }
 
 /// A body: at most 8 KiB, possibly empty, kept as given.
-pub fn body(text: String) -> Result<String> {
+pub fn body(text: String) -> Result<String, Refusal> {
     if text.len() > BODY_MAX_BYTES {
-        return Err(too_large(
-            "body",
-            BODY_MAX_BYTES,
-            format!(
-                "the body has {} bytes; at most {BODY_MAX_BYTES}",
-                text.len()
-            ),
-        ));
+        return Err(too_large("body", BODY_MAX_BYTES, text.len()));
     }
     Ok(text)
 }
 
 /// Tags with repeats dropped, first occurrence kept, at most 10.
-pub fn tags(list: impl IntoIterator<Item = String>) -> Result<Vec<String>> {
+pub fn tags(list: impl IntoIterator<Item = String>) -> Result<Vec<String>, Refusal> {
     let tags = dedupe(list);
     if tags.len() > TAGS_MAX {
-        return Err(too_large(
-            "tags",
-            TAGS_MAX,
-            format!("{} tags; at most {TAGS_MAX}", tags.len()),
-        ));
+        return Err(too_large("tags", TAGS_MAX, tags.len()));
     }
     Ok(tags)
 }
 
 /// Evidence items, trimmed, repeats dropped: at most 10, each 1 to 500
 /// characters.
-pub fn evidence(list: impl IntoIterator<Item = String>) -> Result<Vec<String>> {
+pub fn evidence(list: impl IntoIterator<Item = String>) -> Result<Vec<String>, Refusal> {
     let items = dedupe(list.into_iter().map(|e| e.trim().to_owned()));
     if items.iter().any(String::is_empty) {
-        return Err(usage("an --evidence item is empty"));
+        return Err(usage(Invalid::EmptyEvidence));
     }
     if items.len() > EVIDENCE_MAX_ITEMS {
-        return Err(too_large(
-            "evidence",
-            EVIDENCE_MAX_ITEMS,
-            format!(
-                "{} evidence items; at most {EVIDENCE_MAX_ITEMS}",
-                items.len()
-            ),
-        ));
+        return Err(too_large("evidence", EVIDENCE_MAX_ITEMS, items.len()));
     }
     if let Some(long) = items
         .iter()
@@ -268,28 +243,21 @@ pub fn evidence(list: impl IntoIterator<Item = String>) -> Result<Vec<String>> {
         return Err(too_large(
             "evidence",
             EVIDENCE_MAX_CHARS,
-            format!(
-                "an evidence item has {} characters; at most {EVIDENCE_MAX_CHARS}",
-                long.chars().count()
-            ),
+            long.chars().count(),
         ));
     }
     Ok(items)
 }
 
 /// A reason: trimmed, 1 to 500 characters.
-pub fn reason(text: &str) -> Result<String> {
+pub fn reason(text: &str) -> Result<String, Refusal> {
     let text = text.trim();
     if text.is_empty() {
-        return Err(usage("--reason is empty"));
+        return Err(usage(Invalid::EmptyReason));
     }
     let chars = text.chars().count();
     if chars > REASON_MAX_CHARS {
-        return Err(too_large(
-            "reason",
-            REASON_MAX_CHARS,
-            format!("the reason has {chars} characters; at most {REASON_MAX_CHARS}"),
-        ));
+        return Err(too_large("reason", REASON_MAX_CHARS, chars));
     }
     Ok(text.to_owned())
 }
@@ -306,18 +274,15 @@ fn dedupe(list: impl IntoIterator<Item = String>) -> Vec<String> {
 
 /// Refuses the write when any field looks like it holds a secret. The
 /// error names the pattern and the field, never the text.
-pub fn guard_secrets<'a>(fields: impl IntoIterator<Item = (&'static str, &'a str)>) -> Result<()> {
+pub fn guard_secrets<'a>(
+    fields: impl IntoIterator<Item = (&'static str, &'a str)>,
+) -> Result<(), Refusal> {
     for (field, text) in fields {
-        if let Some(pattern) = super::secrets::scan(text) {
-            return Err(Error::local(
-                "memory_secret_detected",
-                exit::REJECTED,
-                format!(
-                    "the {field} looks like it holds a secret ({pattern}); memories are shared, so leave secrets out"
-                ),
-            )
-            .with("pattern", pattern)
-            .with("field", field));
+        if let Some(pattern) = crate::secrets::scan(text) {
+            return Err(Refusal::SecretDetected {
+                pattern: pattern.to_owned(),
+                field: field.to_owned(),
+            });
         }
     }
     Ok(())
@@ -442,6 +407,7 @@ pub struct Dispute {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::RefusalClass;
 
     #[test]
     fn ulids_are_26_crockford_characters_that_sort_by_time() {
@@ -507,12 +473,12 @@ mod tests {
         assert!(parse_session(&"s".repeat(129)).is_err());
     }
 
-    fn field(error: &Error) -> (String, serde_json::Value, serde_json::Value) {
-        let json = error.to_json();
+    fn field(refusal: &Refusal) -> (String, serde_json::Value, serde_json::Value) {
+        let data = refusal.data();
         (
-            error.code().to_owned(),
-            json["error"]["field"].clone(),
-            json["error"]["limit"].clone(),
+            refusal.code().to_owned(),
+            data["field"].clone(),
+            data["limit"].clone(),
         )
     }
 
@@ -525,8 +491,11 @@ mod tests {
             ("memory_too_large".into(), "title".into(), 120.into())
         );
         assert_eq!(title(&"é".repeat(120)).unwrap().chars().count(), 120);
-        assert_eq!(title(" ").unwrap_err().exit_code(), exit::USAGE);
-        assert_eq!(title("two\nlines").unwrap_err().exit_code(), exit::USAGE);
+        assert_eq!(title(" ").unwrap_err().class(), RefusalClass::Usage);
+        assert_eq!(
+            title("two\nlines").unwrap_err().class(),
+            RefusalClass::Usage
+        );
 
         assert!(body("b".repeat(8192)).is_ok());
         assert!(body(String::new()).is_ok());
@@ -555,11 +524,11 @@ mod tests {
             serde_json::json!(500)
         );
         assert_eq!(
-            evidence(["  ".to_owned()]).unwrap_err().exit_code(),
-            exit::USAGE
+            evidence(["  ".to_owned()]).unwrap_err().class(),
+            RefusalClass::Usage
         );
         assert_eq!(reason(" why ").unwrap(), "why");
-        assert_eq!(reason("").unwrap_err().exit_code(), exit::USAGE);
+        assert_eq!(reason("").unwrap_err().class(), RefusalClass::Usage);
         assert_eq!(
             field(&reason(&"r".repeat(501)).unwrap_err()).1,
             serde_json::json!("reason")
