@@ -73,7 +73,12 @@ struct Inner {
     page_size: usize,
     requests: Vec<Seen>,
     fail_next: Option<(u16, Value, Option<u64>)>,
+    /// Answers set aside for one request each: method, path, status, body.
+    answers: Vec<(String, String, u16, Value)>,
     before_write: Option<Box<dyn FnOnce() + Send>>,
+    /// Whether it serves the memory routes and knows their permissions;
+    /// without them it is a gateway from before the memory API.
+    memory_routes: bool,
 }
 
 #[derive(Clone)]
@@ -83,7 +88,19 @@ pub struct Fake {
 }
 
 impl Fake {
+    /// A gateway with the memory routes.
     pub fn start() -> Self {
+        Self::start_with(true)
+    }
+
+    /// A gateway from before the memory API: its memory routes answer
+    /// `404 not_found`, as any unknown route, and identity refuses the
+    /// `memoire.memory.*` permissions.
+    pub fn start_without_memory() -> Self {
+        Self::start_with(false)
+    }
+
+    fn start_with(memory_routes: bool) -> Self {
         let mut keys = HashMap::new();
         keys.insert(
             MEMBER_KEY.to_owned(),
@@ -104,7 +121,9 @@ impl Fake {
             page_size: 2,
             requests: Vec::new(),
             fail_next: None,
+            answers: Vec::new(),
             before_write: None,
+            memory_routes,
         }));
         let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
         listener.set_nonblocking(true).unwrap();
@@ -141,8 +160,9 @@ impl Fake {
         );
     }
 
-    /// Runs `hook` once, just before the fake handles the next write
-    /// query, without holding the fake's lock: the hook may drive the CLI
+    /// Runs `hook` once, just before the fake runs the next write batch (a
+    /// write query, or a memory route's write), without holding the fake's
+    /// lock: the hook may drive the CLI
     /// against this fake, to slip a second writer in between another
     /// writer's read and its write.
     pub fn before_next_write(&self, hook: impl FnOnce() + Send + 'static) {
@@ -171,6 +191,16 @@ impl Fake {
         ));
     }
 
+    /// The next `method` request to `path` answers `status` with `body`,
+    /// whatever the route would have said.
+    pub fn answer_once(&self, method: &str, path: &str, status: u16, body: Value) {
+        self.inner
+            .lock()
+            .unwrap()
+            .answers
+            .push((method.into(), path.into(), status, body));
+    }
+
     /// The sweeper's work: the file goes, the entry stays as expired.
     pub fn expire(&self, name: &str) {
         let mut inner = self.inner.lock().unwrap();
@@ -194,6 +224,7 @@ const ALL: [&str; 5] = [
     "memoire.databases.delete",
     "memoire.databases.snapshots",
 ];
+const MEMORY: [&str; 2] = ["memoire.memory.read", "memoire.memory.write"];
 
 fn take_snapshot(inner: &mut Inner, name: &str, reason: SnapshotReason) -> String {
     inner.serial += 1;
@@ -261,7 +292,7 @@ fn invalid(path: &str, code: &str) -> Response {
 }
 
 async fn handle(
-    State(inner): State<Shared>,
+    State(shared): State<Shared>,
     method: Method,
     uri: Uri,
     headers: HeaderMap,
@@ -287,22 +318,11 @@ async fn handle(
         && uri.path().ends_with("/query")
         && serde_json::from_slice::<Value>(&body).is_ok_and(|b| b["mode"] == "write");
     if write_query {
-        let hook = inner.lock().unwrap().before_write.take();
+        let hook = shared.lock().unwrap().before_write.take();
         if let Some(hook) = hook {
             // Off the server's thread, so the hook's own requests are served.
             tokio::task::spawn_blocking(hook).await.unwrap();
         }
-    }
-    let mut inner = inner.lock().unwrap();
-    inner.requests.push(seen.clone());
-    if let Some((status, body, retry)) = inner.fail_next.take() {
-        let mut response = reply(status, &body);
-        if let Some(retry) = retry {
-            response
-                .headers_mut()
-                .insert(header::RETRY_AFTER, retry.to_string().parse().unwrap());
-        }
-        return response;
     }
     let segments: Vec<String> = uri
         .path()
@@ -310,6 +330,52 @@ async fn handle(
         .split('/')
         .map(percent_decode)
         .collect();
+    let memory_route = matches!(
+        segments
+            .iter()
+            .map(String::as_str)
+            .collect::<Vec<_>>()
+            .as_slice(),
+        ["v1", "memoire", "databases", _, "memory", ..]
+    );
+    let answered = {
+        let mut inner = shared.lock().unwrap();
+        inner.requests.push(seen.clone());
+        if let Some((status, body, retry)) = inner.fail_next.take() {
+            let mut response = reply(status, &body);
+            if let Some(retry) = retry {
+                response
+                    .headers_mut()
+                    .insert(header::RETRY_AFTER, retry.to_string().parse().unwrap());
+            }
+            Some(response)
+        } else if let Some(i) = inner
+            .answers
+            .iter()
+            .position(|(m, p, ..)| *m == seen.method && *p == seen.path)
+        {
+            let (_, _, status, body) = inner.answers.remove(i);
+            Some(reply(status, &body))
+        } else if memory_route && !inner.memory_routes {
+            Some(fail(404, "not_found"))
+        } else {
+            None
+        }
+    };
+    if let Some(response) = answered {
+        return response;
+    }
+    if memory_route {
+        let shared = shared.clone();
+        // Off the server's thread: a write may run the write hook, whose
+        // requests the server must serve meanwhile.
+        return tokio::task::spawn_blocking(move || {
+            memory::route(&shared, &method, &uri, &segments[3..], &seen)
+        })
+        .await
+        .unwrap();
+    }
+    let mut inner = shared.lock().unwrap();
     let segments: Vec<&str> = segments.iter().map(String::as_str).collect();
     let result = match segments.as_slice() {
         ["v1", "identity", rest @ ..] => identity(&mut inner, &method, rest, &seen),
@@ -411,7 +477,9 @@ fn identity(inner: &mut Inner, method: &Method, rest: &[&str], seen: &Seen) -> R
                 "api-keys" => {
                     let permissions: Vec<String> =
                         serde_json::from_value(body["permissions"].clone()).unwrap();
-                    if permissions.iter().any(|p| !ALL.contains(&p.as_str())) {
+                    let known =
+                        |p: &str| ALL.contains(&p) || (inner.memory_routes && MEMORY.contains(&p));
+                    if permissions.iter().any(|p| !known(p)) {
                         return Err(fail(422, "unknown_permission"));
                     }
                     if !body["expires_at"]
@@ -466,7 +534,10 @@ fn memoire(inner: &mut Inner, method: &Method, rest: &[&str], seen: &Seen) -> Re
         key.permissions.clone()
     };
     let need = |permission: &str| {
-        if permissions.iter().any(|p| p.ends_with(permission)) {
+        if permissions
+            .iter()
+            .any(|p| p.strip_prefix("memoire.databases") == Some(permission))
+        {
             Ok(())
         } else {
             Err(fail(403, "unauthorized"))
@@ -640,7 +711,7 @@ fn database(
             })?;
             gone()?;
             let db = inner.databases.get_mut(name).unwrap();
-            let results = run_query(&db.path, &body)?;
+            let results = run_query(&db.path, &body).map_err(Failed::response)?;
             touch(db);
             ok(json!({"results": results}))
         }
@@ -747,7 +818,56 @@ fn bindable(v: &SqlValue) -> rusqlite::types::Value {
     }
 }
 
-fn sql_error(statement: usize, error: &rusqlite::Error) -> Response {
+/// Why a batch failed: SQLite refused a statement, or the data plane
+/// answered something else.
+#[derive(Debug)]
+pub enum Failed {
+    Sql {
+        statement: usize,
+        code: &'static str,
+        message: String,
+    },
+    Reply(Response),
+}
+
+impl memoire_memory::BackendError for Failed {
+    fn sql(&self) -> Option<memoire_memory::SqlFailure<'_>> {
+        match self {
+            Self::Sql {
+                statement,
+                code,
+                message,
+            } => Some(memoire_memory::SqlFailure {
+                statement: *statement,
+                code,
+                message,
+            }),
+            Self::Reply(_) => None,
+        }
+    }
+}
+
+impl From<Response> for Failed {
+    fn from(response: Response) -> Self {
+        Self::Reply(response)
+    }
+}
+
+impl Failed {
+    /// The response the query route answers.
+    fn response(self) -> Response {
+        match self {
+            Self::Reply(response) => response,
+            Self::Sql {
+                statement,
+                code,
+                message,
+            } => sql_reply(statement, code, message),
+        }
+    }
+}
+
+fn sql_error(statement: usize, error: &rusqlite::Error) -> Failed {
     let (code, message) = match error {
         rusqlite::Error::SqliteFailure(e, message) => (
             match e.code {
@@ -758,6 +878,14 @@ fn sql_error(statement: usize, error: &rusqlite::Error) -> Response {
         ),
         other => ("SQLITE_ERROR", other.to_string()),
     };
+    Failed::Sql {
+        statement,
+        code,
+        message,
+    }
+}
+
+fn sql_reply(statement: usize, code: &str, message: String) -> Response {
     // Merezha's edge carries only code, classification and details; the
     // message travels percent-encoded in a header.
     let (detail, header) = memoire_api::SqlErrorDetail {
@@ -778,12 +906,12 @@ fn sql_error(statement: usize, error: &rusqlite::Error) -> Response {
 
 /// A statement SQLite refused to prepare: the authorizer's denial, or an
 /// SQL error.
-fn prepare_error(statement: usize, error: &rusqlite::Error) -> Response {
+fn prepare_error(statement: usize, error: &rusqlite::Error) -> Failed {
     match error {
         rusqlite::Error::SqliteFailure(e, _)
             if e.code == rusqlite::ErrorCode::AuthorizationForStatementDenied =>
         {
-            fail(403, "statement_denied")
+            fail(403, "statement_denied").into()
         }
         other => sql_error(statement, other),
     }
@@ -877,10 +1005,7 @@ fn prepare<'c>(conn: &'c Connection, sql: &str) -> rusqlite::Result<rusqlite::St
     prepared
 }
 
-fn run_query(
-    path: &std::path::Path,
-    body: &QueryRequest,
-) -> Result<Vec<StatementResult>, Response> {
+fn run_query(path: &std::path::Path, body: &QueryRequest) -> Result<Vec<StatementResult>, Failed> {
     let conn = connect(path, body.mode);
     if !body.transaction {
         // Each statement commits on its own; SQLite undoes a failing one.
@@ -900,10 +1025,7 @@ fn run_query(
     results
 }
 
-fn run_statements(
-    conn: &Connection,
-    body: &QueryRequest,
-) -> Result<Vec<StatementResult>, Response> {
+fn run_statements(conn: &Connection, body: &QueryRequest) -> Result<Vec<StatementResult>, Failed> {
     let mut results = Vec::new();
     for (i, statement) in body.statements.iter().enumerate() {
         // The authorizer has no action for VACUUM, which can write a file.
@@ -914,18 +1036,18 @@ fn run_statements(
             .map(str::to_ascii_uppercase)
             .collect();
         if words.first().is_some_and(|w| w == "VACUUM") && words.iter().any(|w| w == "INTO") {
-            return Err(fail(403, "statement_denied"));
+            return Err(fail(403, "statement_denied").into());
         }
         let mut stmt = prepare(conn, &statement.sql).map_err(|e| prepare_error(i, &e))?;
         if body.mode == QueryMode::Read && !stmt.readonly() {
-            return Err(fail(422, "read_only"));
+            return Err(fail(422, "read_only").into());
         }
         // The CLI binds positionally only.
         let Params::Positional(values) = &statement.params else {
             panic!("unexpected named parameters");
         };
         if values.len() != stmt.parameter_count() {
-            return Err(invalid(&format!("/statements/{i}/params"), "count"));
+            return Err(invalid(&format!("/statements/{i}/params"), "count").into());
         }
         for (j, v) in values.iter().enumerate() {
             stmt.raw_bind_parameter(j + 1, bindable(v)).unwrap();
@@ -1014,4 +1136,520 @@ fn schema(path: &std::path::Path) -> Schema {
         }
     }
     schema
+}
+
+/// The memory routes (docs/api.md, "Memory routes"): the engine, run here
+/// on the database's file through the same batch runner as the query
+/// route, behind the gateway's admission and wire shapes. Only transport:
+/// every rule of the memory is the engine's.
+mod memory {
+    use super::{Failed, Inner, Seen, Shared, bearer, fail, invalid, reply, run_query, touch};
+    use axum::{
+        extract::Query,
+        http::{Method, Uri},
+        response::Response,
+    };
+    use memoire_api::memory::{
+        ConfirmRequest, DisputeRequest, EventsResponse, ExportResponse, ForgetRequest, Initialized,
+        Labels as WireLabels, Purged, RecallResponse, Recalled, RememberRequest, ResolveRequest,
+        ReviseRequest, ShowResponse, Status, StoreInfo, SupersedeRequest, SupersedeResponse,
+    };
+    use memoire_api::{DatabaseState, QueryMode, QueryRequest, StatementResult};
+    use memoire_memory::store::{After, Batch, Cursor};
+    use memoire_memory::{
+        Backend, Labels, Refusal, RefusalClass, history, model, retire, schema, trust, verbs,
+    };
+    use serde_json::{Value, json};
+    use std::pin::pin;
+    use std::task::{Context, Poll, Waker};
+
+    /// One database's store, written as the caller's principal.
+    struct Plane<'a> {
+        shared: &'a Shared,
+        name: String,
+        principal: String,
+    }
+
+    impl Backend for Plane<'_> {
+        type Error = Failed;
+
+        async fn run(&self, mode: QueryMode, batch: Batch) -> Result<Vec<StatementResult>, Failed> {
+            if mode == QueryMode::Write {
+                let hook = self.shared.lock().unwrap().before_write.take();
+                if let Some(hook) = hook {
+                    hook();
+                }
+            }
+            let (statements, timeout_ms) = batch.into_parts();
+            let mut inner = self.shared.lock().unwrap();
+            let db = inner
+                .databases
+                .get_mut(&self.name)
+                .ok_or_else(|| fail(404, "database_not_found"))?;
+            let results = run_query(
+                &db.path,
+                &QueryRequest {
+                    mode,
+                    transaction: true,
+                    timeout_ms,
+                    statements,
+                },
+            )?;
+            touch(db);
+            Ok(results)
+        }
+
+        async fn principal(&self) -> Result<String, Failed> {
+            Ok(self.principal.clone())
+        }
+    }
+
+    /// The fake's backend never waits.
+    fn ready<T>(future: impl Future<Output = T>) -> T {
+        match pin!(future)
+            .as_mut()
+            .poll(&mut Context::from_waker(Waker::noop()))
+        {
+            Poll::Ready(output) => output,
+            Poll::Pending => panic!("the fake's memory backend never waits"),
+        }
+    }
+
+    type Reply = Result<Response, Response>;
+
+    /// `200` with `value`.
+    fn to(value: &impl serde::Serialize) -> Reply {
+        Ok(reply(200, &serde_json::to_value(value).unwrap()))
+    }
+
+    /// A failed verb as the gateway answers it.
+    fn failure(error: memoire_memory::Error<Failed>) -> Response {
+        match error {
+            memoire_memory::Error::Refused(refusal) => refused(&refusal),
+            // The store's own SQL failed outside the guards: the query
+            // route's `sql_error`, without SQLite's message.
+            memoire_memory::Error::Backend(Failed::Sql {
+                statement, code, ..
+            }) => reply(
+                422,
+                &json!({"error": {"code": "sql_error", "classification": "permanent",
+                                  "details": [{"path": format!("/statements/{statement}/sql"),
+                                               "code": code.to_ascii_lowercase()}]}}),
+            ),
+            memoire_memory::Error::Backend(failed) => failed.response(),
+            memoire_memory::Error::InvalidResponse(_) => fail(503, "internal"),
+            memoire_memory::Error::NoRandomness(_) => fail(503, "random_unavailable"),
+        }
+    }
+
+    /// A refusal: `validation_failed` with the field for a refused input,
+    /// else its own code; its members in `data` beside `error`.
+    fn refused(refusal: &Refusal) -> Response {
+        let (code, data) = refusal.to_wire();
+        let mut body = match refusal.detail() {
+            Some((path, detail)) => {
+                json!({"error": {"code": "validation_failed", "classification": "permanent",
+                                 "details": [{"path": path, "code": detail}]}})
+            }
+            None => {
+                let classification = if refusal.class() == RefusalClass::Conflict {
+                    "conflict"
+                } else {
+                    "permanent"
+                };
+                json!({"error": {"code": code, "classification": classification}})
+            }
+        };
+        // An input refusal carries `data` once the engine's wire form gives
+        // it one under `validation_failed`.
+        let input = refusal.detail().is_some();
+        if !data.is_empty() && (!input || code == "validation_failed") {
+            body["data"] = Value::Object(data);
+        }
+        let status = match refusal.detail() {
+            Some(_) => 422,
+            None => memoire_api::error::status_of(code).unwrap(),
+        };
+        reply(status, &body)
+    }
+
+    fn engine<T>(result: Result<T, memoire_memory::Error<Failed>>) -> Result<T, Response> {
+        result.map_err(failure)
+    }
+
+    fn body<T: serde::de::DeserializeOwned>(seen: &Seen) -> Result<T, Response> {
+        super::json_body(seen)
+    }
+
+    fn labels(wire: WireLabels) -> Labels {
+        Labels {
+            agent: wire.agent.unwrap_or_default(),
+            session: wire.session.unwrap_or_default(),
+        }
+    }
+
+    struct Params(Vec<(String, String)>);
+
+    impl Params {
+        fn all(&self, key: &str) -> Vec<String> {
+            self.0
+                .iter()
+                .filter(|(k, _)| k == key)
+                .map(|(_, v)| v.clone())
+                .collect()
+        }
+
+        fn last(&self, key: &str) -> Option<&str> {
+            self.0
+                .iter()
+                .rev()
+                .find(|(k, _)| k == key)
+                .map(|(_, v)| v.as_str())
+        }
+
+        fn int(&self, key: &str, default: i64) -> Result<i64, Response> {
+            self.last(key).map_or(Ok(default), |text| {
+                text.parse()
+                    .map_err(|_| invalid(&format!("/{key}"), "invalid"))
+            })
+        }
+
+        fn flag(&self, key: &str) -> Result<bool, Response> {
+            match self.last(key) {
+                None | Some("false") => Ok(false),
+                Some("true") => Ok(true),
+                Some(_) => Err(invalid(&format!("/{key}"), "invalid")),
+            }
+        }
+
+        fn scopes(&self) -> Option<Vec<String>> {
+            Some(self.all("scope")).filter(|s| !s.is_empty())
+        }
+    }
+
+    /// `[name, "memory", rest…]` of the path.
+    pub fn route(
+        shared: &Shared,
+        method: &Method,
+        uri: &Uri,
+        path: &[String],
+        seen: &Seen,
+    ) -> Response {
+        handle(shared, method, uri, path, seen).unwrap_or_else(|e| e)
+    }
+
+    const READERS: [&str; 2] = ["memoire.memory.read", "memoire.databases.read"];
+    const WRITERS: [&str; 2] = ["memoire.memory.write", "memoire.databases.write"];
+
+    /// Admits the caller as the gateway does, any of `allowed` at the
+    /// team; its subject, and whether it may read.
+    fn admit(inner: &Inner, seen: &Seen, allowed: [&str; 2]) -> Result<(String, bool), Response> {
+        let key = bearer(seen)
+            .and_then(|k| inner.keys.get(k))
+            .ok_or_else(|| fail(401, "unauthenticated"))?;
+        if key.team.is_none() {
+            return Err(fail(403, "tenant_required"));
+        }
+        let roleless = key
+            .machine
+            .as_ref()
+            .is_some_and(|m| !inner.with_role.contains(m));
+        if roleless
+            || !key
+                .permissions
+                .iter()
+                .any(|p| allowed.contains(&p.as_str()))
+        {
+            return Err(fail(403, "unauthorized"));
+        }
+        let reads = key
+            .permissions
+            .iter()
+            .any(|p| READERS.contains(&p.as_str()));
+        Ok((key.subject.clone(), reads))
+    }
+
+    fn handle(shared: &Shared, method: &Method, uri: &Uri, path: &[String], seen: &Seen) -> Reply {
+        let path: Vec<&str> = path.iter().map(String::as_str).collect();
+        let [name, "memory", rest @ ..] = path.as_slice() else {
+            return Err(fail(404, "not_found"));
+        };
+        let write = match (method.as_str(), rest) {
+            ("GET", [] | ["memories"] | ["memories", _] | ["events"] | ["export"]) => false,
+            ("POST", ["init"] | ["memories"] | ["memories", _, _]) => true,
+            _ => return Err(fail(404, "not_found")),
+        };
+        let (principal, reads) = {
+            let inner = shared.lock().unwrap();
+            let admitted = admit(&inner, seen, if write { WRITERS } else { READERS })?;
+            match inner.databases.get(*name) {
+                None => return Err(fail(404, "database_not_found")),
+                Some(db) if db.info.state == DatabaseState::Expired => {
+                    return Err(fail(410, "database_expired"));
+                }
+                Some(_) => {}
+            }
+            admitted
+        };
+        let plane = Plane {
+            shared,
+            name: (*name).to_owned(),
+            principal,
+        };
+        let params = Params(
+            Query::<Vec<(String, String)>>::try_from_uri(uri)
+                .map(|Query(pairs)| pairs)
+                .map_err(|_| invalid("", "invalid"))?,
+        );
+        // The parameters each route knows; any other is refused.
+        let known: &[&str] = match rest {
+            ["memories"] => &["query", "scope", "kind", "tag", "status", "limit"],
+            ["memories", _] => &["history"],
+            ["events"] => &[
+                "scope",
+                "since_seconds",
+                "limit",
+                "after",
+                "store_id",
+                "first_look",
+            ],
+            ["export"] => &["scope", "after", "limit"],
+            _ => &[],
+        };
+        if let Some((name, _)) = params.0.iter().find(|(k, _)| !known.contains(&k.as_str())) {
+            return Err(invalid(&format!("/{name}"), "unknown_field"));
+        }
+        let id =
+            |text: &str| model::parse_memory_id(text).map_err(|_| fail(404, "memory_not_found"));
+        match (method.as_str(), rest) {
+            ("GET", []) => {
+                let store_id = engine(ready(schema::store_id(&plane)))?;
+                to(&StoreInfo {
+                    schema_version: schema::SCHEMA_VERSION,
+                    supported_version: schema::SCHEMA_VERSION,
+                    store_id,
+                })
+            }
+            ("POST", ["init"]) => {
+                if !seen.body.is_empty() {
+                    let _: serde_json::Map<String, Value> = body(seen)?;
+                }
+                let migrated_from = engine(ready(schema::migrate(&plane)))?;
+                let store_id = engine(ready(schema::store_id(&plane)))?;
+                to(&Initialized {
+                    schema_version: schema::SCHEMA_VERSION,
+                    migrated_from,
+                    store_id,
+                })
+            }
+            ("POST", ["memories"]) => {
+                let input: RememberRequest = body(seen)?;
+                let remembered = ready(verbs::remember(
+                    &plane,
+                    &labels(input.labels),
+                    verbs::Remember {
+                        title: input.title,
+                        body: input.body.unwrap_or_default(),
+                        kind: input.kind,
+                        scope: input.scope,
+                        tags: input.tags,
+                        evidence: input.evidence,
+                        force: input.force,
+                        supersedes: input.supersedes,
+                        reason: input.reason,
+                    },
+                    || None,
+                ));
+                // A caller that may not read is not shown what it found.
+                let memory =
+                    engine(remembered.map_err(|e| {
+                        match e {
+                            memoire_memory::Error::Refused(Refusal::Duplicate {
+                                scope, ..
+                            }) if !reads => Refusal::Duplicate {
+                                scope,
+                                candidates: Vec::new(),
+                            }
+                            .into(),
+                            e => e,
+                        }
+                    }))?;
+                Ok(reply(201, &serde_json::to_value(memory).unwrap()))
+            }
+            ("GET", ["memories"]) => {
+                let mut statuses = Vec::new();
+                for (i, text) in params.all("status").iter().enumerate() {
+                    statuses.push(
+                        Status::parse(text)
+                            .ok_or_else(|| invalid(&format!("/status/{i}"), "invalid"))?,
+                    );
+                }
+                let scopes = params.scopes();
+                let found = engine(ready(verbs::recall(
+                    &plane,
+                    verbs::Recall {
+                        query: params.last("query"),
+                        scopes: scopes.as_deref(),
+                        statuses: &statuses,
+                        kinds: &params.all("kind"),
+                        tags: &params.all("tag"),
+                        limit: params.int("limit", 10)?,
+                    },
+                )))?;
+                to(&RecallResponse {
+                    memories: found
+                        .into_iter()
+                        .map(|(memory, score)| Recalled { memory, score })
+                        .collect(),
+                })
+            }
+            ("GET", ["memories", text]) => {
+                let history = params.flag("history")?;
+                let shown = engine(ready(verbs::show(&plane, &id(text)?, history)))?;
+                to(&ShowResponse {
+                    memory: shown.memory,
+                    confirmations: shown.confirmations,
+                    disputes: shown.disputes,
+                    revisions: shown.revisions,
+                })
+            }
+            ("POST", ["memories", text, "revise"]) => {
+                let input: ReviseRequest = body(seen)?;
+                let memory = engine(ready(verbs::revise(
+                    &plane,
+                    &labels(input.labels),
+                    verbs::Revise {
+                        id: id(text)?,
+                        title: input.title,
+                        body: input.body,
+                        kind: input.kind,
+                        scope: input.scope,
+                        tags: input.tags,
+                        add_tags: input.add_tags,
+                        evidence: input.evidence,
+                        add_evidence: input.add_evidence,
+                        reason: input.reason,
+                    },
+                )))?;
+                to(&memory)
+            }
+            ("POST", ["memories", text, "confirm"]) => {
+                let input: ConfirmRequest = body(seen)?;
+                let memory = engine(ready(trust::confirm(
+                    &plane,
+                    &labels(input.labels),
+                    &id(text)?,
+                    input.evidence,
+                    input.rev,
+                )))?;
+                to(&memory)
+            }
+            ("POST", ["memories", text, "dispute"]) => {
+                let input: DisputeRequest = body(seen)?;
+                let memory = engine(ready(trust::dispute(
+                    &plane,
+                    &labels(input.labels),
+                    &id(text)?,
+                    &input.reason,
+                    input.evidence,
+                    input.rev,
+                )))?;
+                to(&memory)
+            }
+            ("POST", ["memories", text, "resolve"]) => {
+                let input: ResolveRequest = body(seen)?;
+                let memory = engine(ready(trust::resolve(
+                    &plane,
+                    &labels(input.labels),
+                    &id(text)?,
+                    &input.reason,
+                )))?;
+                to(&memory)
+            }
+            ("POST", ["memories", text, "supersede"]) => {
+                let input: SupersedeRequest = body(seen)?;
+                let (superseded, by) = engine(ready(retire::supersede(
+                    &plane,
+                    &labels(input.labels),
+                    &id(text)?,
+                    &input.by,
+                    &input.reason,
+                )))?;
+                to(&SupersedeResponse { superseded, by })
+            }
+            ("POST", ["memories", text, "forget"]) => {
+                let input: ForgetRequest = body(seen)?;
+                let (id, labels) = (id(text)?, labels(input.labels));
+                if input.purge {
+                    engine(ready(retire::purge(&plane, &labels, &id, &input.reason)))?;
+                    return to(&Purged { id, purged: true });
+                }
+                to(&engine(ready(retire::forget(
+                    &plane,
+                    &labels,
+                    &id,
+                    &input.reason,
+                )))?)
+            }
+            ("GET", ["events"]) => {
+                let since_seconds = params
+                    .last("since_seconds")
+                    .map(|t| {
+                        t.parse::<u64>()
+                            .map_err(|_| invalid("/since_seconds", "invalid"))
+                    })
+                    .transpose()?;
+                let after = params
+                    .last("after")
+                    .map(|t| t.parse::<i64>().map_err(|_| invalid("/after", "invalid")))
+                    .transpose()?;
+                let store_id = params.last("store_id").map(str::to_owned);
+                let first_look = params.flag("first_look")?;
+                let cursor = match (after, store_id) {
+                    (Some(seq), Some(store_id)) => Some(Cursor { store_id, seq }),
+                    (Some(_), None) => return Err(invalid("/store_id", "required")),
+                    (None, Some(_)) => return Err(invalid("/after", "required")),
+                    (None, None) => None,
+                };
+                if first_look && cursor.is_some() {
+                    return Err(invalid("/first_look", "not_allowed"));
+                }
+                let scopes = params.scopes();
+                let page = engine(ready(history::events(
+                    &plane,
+                    history::Events {
+                        scopes: scopes.as_deref(),
+                        since_seconds,
+                        after: match (&cursor, first_look) {
+                            (Some(cursor), _) => After::Cursor(cursor),
+                            (None, true) => After::FirstLook,
+                            (None, false) => After::Start,
+                        },
+                        limit: params.int("limit", 50)?,
+                    },
+                )))?;
+                to(&EventsResponse {
+                    events: page.events,
+                    store_id: page.store_id,
+                    after: page.after,
+                    top: page.top,
+                    matching: page.matching,
+                })
+            }
+            ("GET", ["export"]) => {
+                let scopes = params.scopes();
+                let page = engine(ready(history::export(
+                    &plane,
+                    scopes.as_deref(),
+                    params.int("after", 0)?,
+                    params.int("limit", history::EXPORT_PAGE)?,
+                )))?;
+                to(&ExportResponse {
+                    memories: page.memories,
+                    next_after: page.next,
+                })
+            }
+            _ => Err(fail(404, "not_found")),
+        }
+    }
 }

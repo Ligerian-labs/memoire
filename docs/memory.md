@@ -5,10 +5,21 @@ memoire database. Agents record what they verified, recall it before they
 work, and confirm, dispute, revise or retire what others wrote. Every change
 is a new revision, so the history stays readable.
 
-The memory is versioned SQL in the database. This CLI sends it as read and
-write batches over the query route of [api.md](api.md); the gateway also
-serves the same verbs, run by the same engine on the same tables, under
-`…/{name}/memory` (see [api.md](api.md#memory-routes)). Any database can hold a store, and every table of a
+The memory is versioned SQL in the database. The CLI calls the gateway's
+memory API, under `…/{name}/memory` (see [api.md](api.md#memory-routes)),
+and the gateway runs each verb. Against a gateway without that API, which
+answers `404 not_found` for its routes, the CLI runs the same verb itself
+and sends its read and write batches over the query route of
+[api.md](api.md). Both paths run the same engine on the same tables, so a
+store can be used through either. The CLI takes a `404 not_found` on a
+command's first memory request to mean that the gateway has no memory API;
+a proxy in front of the gateway that answers `404 not_found` itself would be
+taken for an older gateway. `MEMOIRE_MEMORY_SQL` removes the guess: with `1`
+the CLI takes the query route without asking, with `0` it uses the API and
+never falls back. Output, error codes and exit codes are the
+same on both paths, with two exceptions: the permission order of
+[Read-only keys](#read-only-keys), and an `sql_error` of the store's own SQL,
+which the API reports without SQLite's message. Any database can hold a store, and every table of a
 store starts with `memoire_memory_`, so a store can share a database with an
 application's own tables without touching them.
 
@@ -180,11 +191,13 @@ confirmations that count. The same pair confirming twice counts once.
 
 ### Who wrote it
 
-The principal is the `subject` that `GET /v1/memoire/whoami` returns for the
-key the CLI uses (`key_…` for an API key). The CLI asks the gateway once per
-write and never takes it from a flag. The agent (`--agent`,
-`MEMOIRE_AGENT`) and the session (`--session`, `MEMOIRE_SESSION`) are
-reported by the client and stored as given, empty when unset.
+The principal is the subject of the key the CLI uses (`key_…` for an API
+key), never a flag. Through the memory API the gateway takes it from the
+credential of the request. On the SQL path the CLI asks
+`GET /v1/memoire/whoami` once per write and sends it in the batch. The agent
+(`--agent`, `MEMOIRE_AGENT`) and the session (`--session`,
+`MEMOIRE_SESSION`) are reported by the client and stored as given, empty
+when unset, on both paths.
 
 So authorship is as honest as the keys and the clients that hold them. Agents
 that share one key are told apart only by the sessions they report, and
@@ -193,10 +206,11 @@ matters who confirmed what, give each agent or machine its own key
 (`memoire keys create`). Without `MEMOIRE_SESSION`, every run of one key is
 the same writer and cannot confirm text an earlier run wrote.
 
-Through the gateway's memory routes, the principal and the guards are the
-server's: the client cannot change them. A key holding only
-`memoire.memory.read` and `memoire.memory.write` can use the memory and
-cannot write its tables any other way.
+Through the memory API, the principal and the guards are the gateway's: the
+client cannot change them. The session is still the client's word, so a key
+can still present another session than its own. On the SQL path the client
+sends the batches, so everything is as honest as the client: a key that may
+write SQL can write any row of the store's tables.
 
 ## Verbs
 
@@ -576,9 +590,11 @@ moment both pass it.
 
 ## Concurrency
 
-The CLI takes no lock. Each verb reads what it needs, then sends one write
-batch that the gateway runs as one transaction on the database's single
-writer, so writes are serialized and a batch applies whole or not at all.
+Nothing takes a lock. Each verb reads what it needs, then runs one write
+batch as one transaction on the database's single writer, so writes are
+serialized and a batch applies whole or not at all. Through the memory API
+the gateway runs those batches and guards; on the SQL path the CLI sends the
+same ones over the query route.
 
 A verb that writes a revision reads revision N and inserts N + 1 only if the
 memory is still at N. When another writer got there first, the insert fails,
@@ -695,7 +711,7 @@ cursor, then moves the cursor once they are printed:
 
 ## Guards
 
-Before any write, the CLI scans every free-text field it is about to store
+Before any write, the engine scans every free-text field it is about to store
 (title, body, kind, scope, tags, evidence, reason, agent and session) for
 text that looks like a secret. The scope is scanned as stored, including one
 taken from the git remote:
@@ -713,7 +729,12 @@ taken from the git remote:
 | `jwt` | `eyJ` and at least 10 more characters, a dot, a payload of at least 2, a dot and a signature of at least 10 |
 | `env_assignment` | A line `NAME=value` (optionally `export`, optionally quoted, optionally followed by a `# comment`) whose name holds `SECRET`, `TOKEN`, `PASSWORD` or `API_KEY` and whose value has 8 characters or more and is not a placeholder, a number, a path or a URL |
 
-A hit exits 7 with `memory_secret_detected`. The error names the `pattern`
+The fields a command gives, the scope taken from the git remote included,
+are scanned before anything is read or sent, so a value the scan catches
+never leaves the machine, even when `--supersedes` names a memory that is
+missing or retired: the secret is reported first. The values a replacement
+inherits are scanned once the replaced memory is read, and the gateway
+scans again. A hit exits 7 with `memory_secret_detected`. The error names the `pattern`
 and the `field` and never echoes the text. There is no override. Write the
 memory without the value, for example by naming where the secret is kept.
 
@@ -795,24 +816,52 @@ read:
 The last two carry `store_version` and `supported_version`. A missing
 database answers exit 5 `database_not_found`, with a hint to run `init`.
 
-The schema is plain SQL in the database, so the gateway's memory routes and
-this CLI read and write the same tables.
+The schema is plain SQL in the database, and the gateway's memory routes
+and this CLI's SQL path run the same engine on it. Through the API the
+store's version is the one the gateway's engine keeps it at, and `init`
+reports that version, so an older CLI works with a newer gateway; the codes
+are the same.
 
 ## Read-only keys
 
 A key created with `memoire keys create --read-only` can run `recall`,
 `show`, `log` (with `--unseen`, whose cursor is local) and `export`. These
 verbs only read and never call `whoami`. `init` works only on a store that
-already exists at this version. Every other verb exits 4 with
-`unauthorized`, which is what the gateway answers to the write. A verb can
+already exists at this version: it reads the store's version and writes
+nothing. Every other verb exits 4 with `unauthorized`.
+
+Through the memory API the gateway checks the permission before it reads
+anything, so every write verb exits 4 at once. On the SQL path a verb can
 refuse earlier for a reason it finds while reading: `resolve` on a memory
-with no open dispute exits 6 with `memory_no_open_dispute` before it writes.
+with no open dispute exits 6 with `memory_no_open_dispute` before it tries
+to write. An input the CLI refuses itself (a malformed id, a secret, a field
+too large) is refused the same way on both paths, before any request.
+
+## Memory-only keys
+
+`memoire keys create --memory` mints a key holding only
+`memoire.memory.read` and `memoire.memory.write` (`--read-only` too: only
+`memoire.memory.read`). Such a key runs every verb through the memory API.
+It cannot run `query` or the shell, read the schema or the rows, export,
+import, list or restore snapshots, or create, list or delete databases, so
+it cannot use the SQL path either (`MEMOIRE_MEMORY_SQL=1` exits 4). `init`
+creates the store in a database that exists, through the memory API, and
+prints `"database": null` because the key may not read the catalog; kind
+flags are ignored then. It cannot create the database: on a missing one it
+exits 5 `database_not_found`, and a key that may create databases must run
+`memoire memory init` once. A key with the write permission but neither read
+permission gets `memory_duplicate` with an empty `candidates` list. A
+gateway without the memory API does not know these permissions, and
+`keys create --memory` fails with `unknown_permission`.
 
 ## Errors
 
 The codes this feature adds, in the CLI's error envelope (see
 [cli.md](cli.md#output-and-errors)). Exit 6 reports the classification
-`conflict`, 8 `transient`, the others `permanent`.
+`conflict`, 8 `transient`, the others `permanent`. The engine makes the
+memory's refusals: on the SQL path in the CLI, through the API in the
+gateway, which sends their members in `data` and the CLI reports them as
+its own. The codes, messages and members are the same either way.
 
 | Code | Exit | Extra members |
 | --- | --- | --- |
@@ -820,7 +869,7 @@ The codes this feature adds, in the CLI's error envelope (see
 | `memory_schema_older` | 6 | `store_version`, `supported_version` |
 | `memory_schema_newer` | 6 | `store_version`, `supported_version` |
 | `memory_conflict` | 6 | `id`, `current_rev` |
-| `memory_duplicate` | 6 | `candidates`: `[{"id", "title", "status", "similarity"}]` |
+| `memory_duplicate` | 6 | `candidates`: `[{"id", "title", "status", "similarity"}]`, empty for a key that may not read |
 | `memory_not_current` | 6 | `id`, `status`, `superseded_by` |
 | `memory_no_open_dispute` | 6 | |
 | `memory_cycle` | 6 | |

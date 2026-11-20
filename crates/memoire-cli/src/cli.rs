@@ -180,9 +180,15 @@ pub enum KeysCommand {
         /// Key lifetime, at most 365d.
         #[arg(long, value_name = "DURATION", value_parser = key_lifetime, default_value = "90d")]
         expires: u64,
-        /// Grant only `memoire.databases.read`.
+        /// Grant only `memoire.databases.read` (with `--memory`, only
+        /// `memoire.memory.read`).
         #[arg(long)]
         read_only: bool,
+        /// A key for the memory only: `memoire.memory.read` and
+        /// `memoire.memory.write`, no SQL, schema, rows, export, import,
+        /// snapshots, create or delete.
+        #[arg(long)]
+        memory: bool,
     },
 }
 

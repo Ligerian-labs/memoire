@@ -818,7 +818,9 @@ both permissions and `member` does not. `memoire keys create --name MACHINE
 3. Sends `Merezha-Organization` for that team, creates the service account,
    assigns it the team role `member` (found by `key` among the team's
    roles), then the key: the five `memoire.databases.*` permissions (only
-   `memoire.databases.read` with `--read-only`) and `expires_at` = now plus
+   `memoire.databases.read` with `--read-only`), or with `--memory`
+   `memoire.memory.read` and `memoire.memory.write` (only
+   `memoire.memory.read` with `--read-only`), and `expires_at` = now plus
    `--expires` (default 90 days; identity refuses more than 365 days with
    `422 validation_failed`, path `/expires_at`).
 4. Prints the key once (it is returned only in that `201` response) and

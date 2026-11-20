@@ -86,6 +86,11 @@ pub struct Remember {
 /// one in the same write, and takes its scope, kind and tags unless the
 /// input gives them. `default_scope` is asked only when neither the input
 /// nor the replaced memory gives a scope.
+///
+/// The fields given are scanned for secrets before anything is read, so a
+/// secret is refused even when the replaced memory is missing or retired;
+/// the complete record is scanned again once the inherited values are
+/// known.
 pub async fn remember<B: Backend>(
     backend: &B,
     labels: &Labels,
@@ -115,6 +120,19 @@ pub async fn remember<B: Backend>(
     let tags = model::tags(input.tags)?;
     let evidence = model::evidence(input.evidence)?;
     let reason = input.reason.as_deref().map(model::reason).transpose()?;
+    let scan = |kind: Option<&str>, scope: Option<&str>, tags: &[String]| {
+        model::guard_secrets(
+            [("title", title.as_str()), ("body", body.as_str())]
+                .into_iter()
+                .chain(kind.map(|k| ("kind", k)))
+                .chain(scope.map(|s| ("scope", s)))
+                .chain(tags.iter().map(|t| ("tags", t.as_str())))
+                .chain(evidence.iter().map(|e| ("evidence", e.as_str())))
+                .chain(reason.iter().map(|r| ("reason", r.as_str())))
+                .chain(labels.fields()),
+        )
+    };
+    scan(input.kind.as_deref(), input.scope.as_deref(), &tags)?;
     let old = match supersedes.as_deref() {
         Some(id) => Some(read_memory(backend, id).await?),
         None => None,
@@ -139,19 +157,7 @@ pub async fn remember<B: Backend>(
     };
     // The scope as stored, a git remote's included: a remote can name a
     // repository after a token. Inherited values are scanned again.
-    model::guard_secrets(
-        [
-            ("title", title.as_str()),
-            ("body", body.as_str()),
-            ("kind", kind.as_str()),
-            ("scope", scope.as_str()),
-        ]
-        .into_iter()
-        .chain(tags.iter().map(|t| ("tags", t.as_str())))
-        .chain(evidence.iter().map(|e| ("evidence", e.as_str())))
-        .chain(reason.iter().map(|r| ("reason", r.as_str())))
-        .chain(labels.fields()),
-    )?;
+    scan(Some(&kind), Some(&scope), &tags)?;
     refuse_duplicates(
         backend,
         &title,
@@ -667,6 +673,23 @@ mod tests {
             input,
             || None,
         )))
+    }
+
+    #[test]
+    fn a_replacement_is_scanned_before_the_replaced_memory_is_read() {
+        let secret = format!("token {}{}", ["mz", "k_"].concat(), "q7Rx".repeat(6));
+        let input = Remember {
+            title: secret,
+            supersedes: Some(ID.into()),
+            reason: Some("r".into()),
+            ..Remember::default()
+        };
+        match ready(remember(&Unreachable, &Labels::default(), input, || None)) {
+            Err(Error::Refused(Refusal::SecretDetected { field, .. })) => {
+                assert_eq!(field, "title");
+            }
+            other => panic!("not refused before the read: {other:?}"),
+        }
     }
 
     #[test]

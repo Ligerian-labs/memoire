@@ -22,6 +22,37 @@ pub const PERMISSIONS: [&str; 5] = [
     "memoire.databases.snapshots",
 ];
 
+/// The permissions of a `--memory` key; `--read-only` keeps only the
+/// first.
+pub const MEMORY_PERMISSIONS: [&str; 2] = ["memoire.memory.read", "memoire.memory.write"];
+
+/// What `keys create` grants.
+#[derive(Clone, Copy, Debug)]
+struct Grant {
+    read_only: bool,
+    memory: bool,
+}
+
+impl Grant {
+    fn permissions(self) -> &'static [&'static str] {
+        let all: &'static [&'static str] = if self.memory {
+            &MEMORY_PERMISSIONS
+        } else {
+            &PERMISSIONS
+        };
+        if self.read_only { &all[..1] } else { all }
+    }
+
+    fn describe(self) -> &'static str {
+        match (self.memory, self.read_only) {
+            (false, true) => "read-only",
+            (false, false) => "read and write",
+            (true, true) => "memory, read-only",
+            (true, false) => "memory, read and write",
+        }
+    }
+}
+
 pub fn run(cli: Cli, env: &Env) -> Result<()> {
     let out = Out { json: cli.json };
     match cli.command {
@@ -45,7 +76,8 @@ pub fn run(cli: Cli, env: &Env) -> Result<()> {
             team,
             expires,
             read_only,
-        }) => create_key(&out, env, &name, team, expires, read_only),
+            memory,
+        }) => create_key(&out, env, &name, team, expires, Grant { read_only, memory }),
         Command::Memory(args) => crate::memory::run(&out, env, *args),
         Command::Skill(crate::cli::SkillCommand::Install(args)) => {
             crate::skill::install(&out, &crate::skill::Homes::from_process(), &args)
@@ -265,7 +297,7 @@ fn create_key(
     name: &str,
     team: Option<String>,
     expires: u64,
-    read_only: bool,
+    grant: Grant,
 ) -> Result<()> {
     let team = match team {
         Some(team) => team,
@@ -295,10 +327,10 @@ fn create_key(
         Client::new(&server, Some(&session))?.with_header("merezha-organization", &team)?;
     // The expiry counts from now, after the sign-in prompt.
     let printed = expires_at(expires).and_then(|at| {
-        let (machine, key) = mint(&member, &team, name, &at, read_only)?;
+        let (machine, key) = mint(&member, &team, name, &at, grant)?;
         // The key exists only in this answer: print it before anything else
         // can fail or stall.
-        print_key(out, &team, name, read_only, &at, &machine, &key)
+        print_key(out, &team, name, grant, &at, &machine, &key)
     });
     // The session was only for this; end it whatever happened.
     if let Err(e) = member.sign_out() {
@@ -314,7 +346,7 @@ fn print_key(
     out: &Out,
     team: &str,
     name: &str,
-    read_only: bool,
+    grant: Grant,
     expires_at: &str,
     machine: &serde_json::Value,
     key: &crate::client::CreatedApiKey,
@@ -334,11 +366,7 @@ fn print_key(
          The key above is shown once; store it now.",
         machine["id"].as_str().unwrap_or("?"),
         key.api_key["id"].as_str().unwrap_or("?"),
-        if read_only {
-            "read-only"
-        } else {
-            "read and write"
-        },
+        grant.describe(),
     ));
     Ok(())
 }
@@ -348,7 +376,7 @@ fn mint(
     team: &str,
     name: &str,
     expires_at: &str,
-    read_only: bool,
+    grant: Grant,
 ) -> Result<(serde_json::Value, crate::client::CreatedApiKey)> {
     // The key acts through the machine's role and carries a subset of it.
     // Found first, so a team without it leaves no machine behind.
@@ -362,20 +390,27 @@ fn mint(
         )
     })?;
     member.assign_role(team, machine_id, &member_role)?;
-    let permissions = if read_only {
-        &PERMISSIONS[..1]
-    } else {
-        &PERMISSIONS[..]
-    };
-    let key = member.create_api_key(
-        team,
-        &NewApiKey {
-            name,
-            permissions,
-            expires_at,
-            service_account_id: machine_id,
-        },
-    )?;
+    let key = member
+        .create_api_key(
+            team,
+            &NewApiKey {
+                name,
+                permissions: grant.permissions(),
+                expires_at,
+                service_account_id: machine_id,
+            },
+        )
+        .map_err(|e| match e {
+            // Identity knows the memory permissions only where the gateway
+            // registers them with its memory routes.
+            e if grant.memory && e.code() == "unknown_permission" => Error::Local {
+                code: "unknown_permission",
+                message: "this gateway has no memory API: it does not know the memoire.memory.* permissions; create the key without --memory".into(),
+                exit: e.exit_code(),
+                extra: serde_json::Map::from_iter([("status".to_owned(), json!(422))]),
+            },
+            e => e,
+        })?;
     Ok((machine, key))
 }
 

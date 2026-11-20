@@ -22,6 +22,10 @@ pub struct Env {
     pub config_dir: Option<PathBuf>,
     pub server: Option<String>,
     pub api_key: Option<Secret>,
+    /// `MEMOIRE_MEMORY_SQL`: `1`, the memory verbs use the SQL convention
+    /// over the query route without asking the gateway for its memory API;
+    /// `0`, they use the API and never fall back. Unset, they ask.
+    pub memory_sql: Option<bool>,
 }
 
 impl Env {
@@ -35,6 +39,11 @@ impl Env {
             config_dir,
             server: var("MEMOIRE_SERVER"),
             api_key: var("MEMOIRE_API_KEY").map(Secret::new),
+            memory_sql: var("MEMOIRE_MEMORY_SQL").and_then(|v| match v.as_str() {
+                "1" => Some(true),
+                "0" => Some(false),
+                _ => None,
+            }),
         }
     }
 

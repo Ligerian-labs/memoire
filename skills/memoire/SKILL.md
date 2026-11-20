@@ -36,7 +36,7 @@ memoire memory log --unseen --json                 # the store's recent events, 
 memoire memory recall "deploy staging vpn" --json  # words from your task
 ```
 
-If a command exits 5 `database_not_found` or 6 `memory_not_initialized`, nobody has created the store yet. Run `memoire memory init --json` once and carry on. It creates a persistent database and the store's tables, is safe to repeat, and any agent with a write key may run it.
+If a command exits 5 `database_not_found` or 6 `memory_not_initialized`, nobody has created the store yet. Run `memoire memory init --json` once and carry on. It creates a persistent database and the store's tables, is safe to repeat, and any agent with a write key may run it. A memory-only key can create the store in a database that exists, not the database itself: if `init` exits 5 with such a key, ask the user to run `memoire memory init` once with a member's key.
 
 Recall again before a decision, before you ask the user something the team may already know, and after a failure (search with the error's words).
 
@@ -139,5 +139,5 @@ Errors go to standard error as `{"error": {"code": "...", "message": "...", ...}
 | 7 | `memory_too_large` | `field` and `limit` say which. Split it into several memories. |
 | 7 | `memory_unchanged` | Your revision changes nothing. Leave it. |
 | 5 | `memory_not_found` | Wrong id, or the memory was purged. |
-| 4 | `unauthorized` | The key is read-only. Recall, show, log and export work, writes do not. Tell the user what you would have recorded. |
+| 4 | `unauthorized` | The key lacks the permission. A read-only key can recall, show, log and export but not write; a memory-only key can use `memoire memory` and nothing else. Tell the user what you would have done. |
 | 8 | any | The store is busy or unreachable. Try again later. |

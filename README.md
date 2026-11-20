@@ -36,7 +36,9 @@ MEMOIRE_SESSION=s-42 memoire memory confirm mem_01JD0Q7ZQ5Y8W1N3K4M5P6R7S8 --evi
 memoire skill install --claude
 ```
 
-[docs/memory.md](docs/memory.md) is the reference.
+The gateway runs the memory's rules and records who wrote what, and
+`memoire keys create --memory` gives an agent a key that can use the memory
+and nothing else. [docs/memory.md](docs/memory.md) is the reference.
 
 ## Documentation
 
@@ -69,7 +71,7 @@ cargo test --locked --workspace
 cluster when it is set. Development secrets and data live in `.memoire-dev/`
 (ignored by Git). `scripts/dev-owner.py` registers a synthetic account through
 identity and the capture mail driver, creates a team and mints a key with
-memoire's five permissions; the secrets go to `.memoire-dev/owner.json`
+memoire's five database permissions; the secrets go to `.memoire-dev/owner.json`
 (mode 0600), never to the terminal:
 
 ```sh

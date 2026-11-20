@@ -2,50 +2,45 @@
 //! versioned SQL in an ordinary memoire database.
 //!
 //! The memory itself, its model, SQL, guards and verbs, is the
-//! `memoire-memory` engine; it travels over the gateway's query route here
-//! ([`backend`]). This module reads the verbs' input (a body from a file or
-//! standard input, the default scope from the git checkout), creates the
-//! database for `init`, keeps the `log --unseen` cursors, writes the export
-//! file and prints what the verbs return.
+//! `memoire-memory` engine. The gateway runs it behind its memory routes
+//! ([`api`]); against a gateway without them, it runs here over the query
+//! route ([`backend`]); [`store`] picks the path. This module reads the
+//! verbs' input (a body from a file or standard input, the default scope
+//! from the git checkout), creates the database for `init`, keeps the
+//! `log --unseen` cursors, writes the export file and prints what the
+//! verbs return.
+pub mod api;
 pub mod backend;
 pub mod cursor;
 pub mod render;
 pub mod scope;
+pub mod store;
 
 use crate::cli::{LogArgs, MemoryArgs, MemoryCommand, MemoryInitArgs, RecallArgs};
 use crate::config::{Env, io_error};
 use crate::error::{Error, Result, exit};
 use crate::output::Out;
-use backend::{Gateway, block_on};
+use backend::Gateway;
 use cursor::{Cursors, FIRST_LOOK_SECONDS};
 use memoire_api::{CreateDatabase, DatabaseKind, DatabaseState};
+use memoire_memory::Labels;
 use memoire_memory::model::{self, Event, Memory, Scored};
 use memoire_memory::verbs::{Recall, Remember, Revise};
-use memoire_memory::{Labels, history, retire, schema, trust, verbs};
 use serde_json::json;
 use std::io::{Read as _, Write as _};
 use std::path::{Path, PathBuf};
+use store::Store;
 
 /// What every verb works with.
 pub struct Context<'a> {
     pub out: &'a Out,
     /// Where this machine keeps its files (the `log --unseen` cursors).
     pub env: &'a Env,
-    /// The client and the database holding the store.
-    pub gateway: Gateway,
+    /// The database holding the store, and the path to it.
+    pub store: Store,
     /// `--agent` and `--session`, recorded with writes; empty when not
     /// given.
     pub labels: Labels,
-}
-
-impl Context<'_> {
-    /// Runs an engine verb; its failure as the CLI reports it.
-    fn engine<T>(
-        &self,
-        verb: impl Future<Output = Result<T, memoire_memory::Error<Error>>>,
-    ) -> Result<T> {
-        block_on(verb).map_err(|e| self.gateway.error(e))
-    }
 }
 
 pub fn run(out: &Out, env: &Env, args: MemoryArgs) -> Result<()> {
@@ -53,22 +48,25 @@ pub fn run(out: &Out, env: &Env, args: MemoryArgs) -> Result<()> {
     let ctx = Context {
         out,
         env,
-        gateway: Gateway {
-            client: crate::client::Client::new(&server, Some(&key))?,
-            db: args.db,
-        },
+        store: Store::new(
+            Gateway {
+                client: crate::client::Client::new(&server, Some(&key))?,
+                db: args.db,
+            },
+            env.memory_sql,
+        ),
         labels: Labels {
             agent: args.agent.unwrap_or_default(),
             session: args.session.unwrap_or_default(),
         },
     };
-    let (backend, labels) = (&ctx.gateway, &ctx.labels);
+    let (store, labels) = (&ctx.store, &ctx.labels);
     match args.command {
         MemoryCommand::Init(args) => init(&ctx, &args),
         MemoryCommand::Remember(args) => {
             // Checked before the body is read, so a bad title is reported
             // first; the engine checks it again.
-            model::title(&args.title).map_err(|r| backend.refused(r))?;
+            model::title(&args.title).map_err(|r| store.gateway.refused(r))?;
             let body = read_body(args.body, args.body_file.as_deref())?.unwrap_or_default();
             let input = Remember {
                 title: args.title,
@@ -81,14 +79,14 @@ pub fn run(out: &Out, env: &Env, args: MemoryArgs) -> Result<()> {
                 supersedes: args.supersedes,
                 reason: args.reason,
             };
-            let memory = ctx.engine(verbs::remember(backend, labels, input, project_scope))?;
+            let memory = store.remember(labels, input, project_scope)?;
             print_memory(&ctx, &memory)
         }
         MemoryCommand::Show { id, history } => show(&ctx, &id, history),
         MemoryCommand::Revise(args) => {
             // As for `remember`: the title first.
             if let Some(title) = &args.title {
-                model::title(title).map_err(|r| backend.refused(r))?;
+                model::title(title).map_err(|r| store.gateway.refused(r))?;
             }
             let body = read_body(args.body, args.body_file.as_deref())?;
             let input = Revise {
@@ -103,11 +101,11 @@ pub fn run(out: &Out, env: &Env, args: MemoryArgs) -> Result<()> {
                 add_evidence: args.add_evidence,
                 reason: args.reason,
             };
-            print_memory(&ctx, &ctx.engine(verbs::revise(backend, labels, input))?)
+            print_memory(&ctx, &store.revise(labels, input)?)
         }
         MemoryCommand::Recall(args) => recall(&ctx, &args),
         MemoryCommand::Confirm { id, evidence, rev } => {
-            let memory = ctx.engine(trust::confirm(backend, labels, &id, evidence, rev))?;
+            let memory = store.confirm(labels, &id, evidence, rev)?;
             print_memory(&ctx, &memory)
         }
         MemoryCommand::Dispute {
@@ -116,16 +114,15 @@ pub fn run(out: &Out, env: &Env, args: MemoryArgs) -> Result<()> {
             evidence,
             rev,
         } => {
-            let memory =
-                ctx.engine(trust::dispute(backend, labels, &id, &reason, evidence, rev))?;
+            let memory = store.dispute(labels, &id, &reason, evidence, rev)?;
             print_memory(&ctx, &memory)
         }
         MemoryCommand::Resolve { id, reason } => {
-            let memory = ctx.engine(trust::resolve(backend, labels, &id, &reason))?;
+            let memory = store.resolve(labels, &id, &reason)?;
             print_memory(&ctx, &memory)
         }
         MemoryCommand::Supersede { id, by, reason } => {
-            let (old, new) = ctx.engine(retire::supersede(backend, labels, &id, &by, &reason))?;
+            let (old, new) = store.supersede(labels, &id, &by, &reason)?;
             if ctx.out.json {
                 return ctx.out.json(&json!({"superseded": old, "by": new}));
             }
@@ -133,13 +130,13 @@ pub fn run(out: &Out, env: &Env, args: MemoryArgs) -> Result<()> {
         }
         MemoryCommand::Forget { id, reason, purge } => {
             if purge {
-                ctx.engine(retire::purge(backend, labels, &id, &reason))?;
+                store.purge(labels, &id, &reason)?;
                 if ctx.out.json {
                     return ctx.out.json(&json!({"id": id, "purged": true}));
                 }
                 ctx.out.line(&format!("Purged {id} and its history"))
             } else {
-                let memory = ctx.engine(retire::forget(backend, labels, &id, &reason))?;
+                let memory = store.forget(labels, &id, &reason)?;
                 print_memory(&ctx, &memory)
             }
         }
@@ -149,8 +146,10 @@ pub fn run(out: &Out, env: &Env, args: MemoryArgs) -> Result<()> {
 }
 
 /// `init`: the database, persistent unless `--burstable`, then the schema.
+/// A key that may not read the catalog (a memory-only key) skips the
+/// database step on the API path: the store's routes find the database.
 fn init(ctx: &Context<'_>, args: &MemoryInitArgs) -> Result<()> {
-    let (client, db) = (&ctx.gateway.client, &ctx.gateway.db);
+    let (client, db) = (&ctx.store.gateway.client, &ctx.store.gateway.db);
     let kind = if args.burstable {
         DatabaseKind::Burstable
     } else {
@@ -163,40 +162,63 @@ fn init(ctx: &Context<'_>, args: &MemoryInitArgs) -> Result<()> {
             idle_ttl_seconds: args.ttl,
         })
     };
+    // Without the permission to read or create it, the database is left to
+    // the store's routes, which find it or answer `database_not_found`.
+    let unseen = |e: &Error| e.code() == "unauthorized" && ctx.env.memory_sql != Some(true);
     let existing = match client.database(db) {
-        Ok(db) if db.state == DatabaseState::Active => Some(db),
+        Ok(db) if db.state == DatabaseState::Active => Some(Some(db)),
         Ok(_) => None,
         Err(e) if e.code() == "database_not_found" => None,
+        Err(e) if unseen(&e) => Some(None),
         Err(e) => return Err(e),
     };
     let (database, created) = match existing {
         Some(db) => (db, false),
         None => match create() {
-            Ok(db) => (db, true),
+            Ok(db) => (Some(db), true),
             // Another init created it in between: use that one.
-            Err(e) if e.code() == "database_exists" => (client.database(db)?, false),
+            Err(e) if e.code() == "database_exists" => (Some(client.database(db)?), false),
+            Err(e) if unseen(&e) => (None, false),
             Err(e) => return Err(e),
         },
     };
-    if !created && (args.burstable || args.persistent) && database.kind != kind {
+    if let Some(database) = &database
+        && !created
+        && (args.burstable || args.persistent)
+        && database.kind != kind
+    {
         ctx.out.note(&format!(
             "note: `{db}` already exists as a {} database; keeping it",
-            crate::output::kind(&database)
+            crate::output::kind(database)
         ));
     }
-    let migrated_from = ctx.engine(schema::migrate(&ctx.gateway))?;
-    let store_id = ctx.engine(schema::store_id(&ctx.gateway))?;
+    let (schema_version, migrated_from, store_id) = ctx.store.init().map_err(|e| match e {
+        e if database.is_none() && e.code() == "database_not_found" => Error::local(
+            "database_not_found",
+            exit::NOT_FOUND,
+            format!(
+                "no database `{db}` in the team, and this key may not create one; run `memoire memory init` once with a key that may create databases"
+            ),
+        )
+        .with("status", 404),
+        e => e,
+    })?;
     if ctx.out.json {
         return ctx.out.json(&json!({
             "database": database,
             "created": created,
-            "schema_version": schema::SCHEMA_VERSION,
+            "schema_version": schema_version,
             "migrated_from": migrated_from,
             "store_id": store_id,
         }));
     }
-    ctx.out
-        .line(&render::init(&database, created, migrated_from, &store_id))
+    ctx.out.line(&render::init(
+        database.as_ref(),
+        created,
+        schema_version,
+        migrated_from,
+        &store_id,
+    ))
 }
 
 /// The body from `--body`, `--body-file FILE` or `--body-file -`.
@@ -232,7 +254,7 @@ fn print_memory(ctx: &Context<'_>, memory: &Memory) -> Result<()> {
 
 /// `show`.
 fn show(ctx: &Context<'_>, id: &str, history: bool) -> Result<()> {
-    let shown = ctx.engine(verbs::show(&ctx.gateway, id, history))?;
+    let shown = ctx.store.show(id, history)?;
     if ctx.out.json {
         let mut json = json!({
             "memory": shown.memory, "confirmations": shown.confirmations,
@@ -262,17 +284,14 @@ fn recall(ctx: &Context<'_>, args: &RecallArgs) -> Result<()> {
         scopes.push(model::GLOBAL_SCOPE.to_owned());
         Some(scopes)
     };
-    let memories = ctx.engine(verbs::recall(
-        &ctx.gateway,
-        Recall {
-            query: args.query.as_deref(),
-            scopes: scopes.as_deref(),
-            statuses: &args.statuses,
-            kinds: &args.kinds,
-            tags: &args.tags,
-            limit: args.limit,
-        },
-    ))?;
+    let memories = ctx.store.recall(Recall {
+        query: args.query.as_deref(),
+        scopes: scopes.as_deref(),
+        statuses: &args.statuses,
+        kinds: &args.kinds,
+        tags: &args.tags,
+        limit: args.limit,
+    })?;
     if ctx.out.json {
         let memories: Vec<Scored<'_>> = memories
             .iter()
@@ -282,7 +301,7 @@ fn recall(ctx: &Context<'_>, args: &RecallArgs) -> Result<()> {
             })
             .collect();
         return ctx.out.json(&json!({
-            "db": ctx.gateway.db, "query": args.query, "scopes": scopes, "memories": memories,
+            "db": ctx.store.gateway.db, "query": args.query, "scopes": scopes, "memories": memories,
         }));
     }
     let searched = scopes
@@ -306,7 +325,7 @@ fn log(ctx: &Context<'_>, args: &LogArgs) -> Result<()> {
             .map_err(|message| Error::local("invalid_argument", exit::USAGE, message))?;
         return unseen(ctx, scopes, reader.as_deref(), args.limit);
     }
-    let events = ctx.engine(history::log(&ctx.gateway, scopes, args.since, args.limit))?;
+    let events = ctx.store.log(scopes, args.since, args.limit)?;
     if ctx.out.json {
         return ctx.out.json(&json!({ "events": events }));
     }
@@ -332,13 +351,13 @@ fn unseen(
 ) -> Result<()> {
     let cursors = Cursors::new(ctx.env)?;
     let key = cursor::Key::new(
-        ctx.gateway.client.server(),
-        &ctx.gateway.db,
+        ctx.store.gateway.client.server(),
+        &ctx.store.gateway.db,
         scopes.unwrap_or_default(),
         cursor::reader(reader, &ctx.labels.session),
     );
     let saved = cursors.saved(&key)?;
-    let unseen = ctx.engine(history::unseen(&ctx.gateway, scopes, saved.as_ref(), limit))?;
+    let unseen = ctx.store.unseen(scopes, saved.as_ref(), limit)?;
     let (first, after, through, skipped) =
         (unseen.first, unseen.after, unseen.through, unseen.skipped);
     if ctx.out.json {
@@ -378,7 +397,7 @@ fn export(ctx: &Context<'_>, scopes: &[String], path: &Path) -> Result<()> {
     let mut count = 0;
     let mut after = 0;
     loop {
-        let page = ctx.engine(history::export_page(&ctx.gateway, scopes, after))?;
+        let page = ctx.store.export_page(scopes, after)?;
         let mut lines = String::new();
         for memory in &page.memories {
             lines.push_str(&serde_json::to_string(memory).expect("memories serialize"));

@@ -157,22 +157,37 @@ pub async fn unseen<B: Backend>(
     let row = store::rows(&results[counted])
         .next()
         .ok_or_else(|| store::invalid_response("the count of events"))?;
-    let (matching, after, top) = (row.int("events")?, row.int("after")?, row.int("top")?);
-    // A cursor of another store (the database was created again) is a
-    // first look, as the query took it.
-    let first = saved.is_none_or(|c| c.store_id != store_id);
-    let through = top.max(after);
-    // The two statements read the clock apart: an event that crossed the
-    // first look's start between them is in one and not the other.
-    let skipped = (matching - events.len() as i64).max(0);
-    Ok(Unseen {
+    let page = EventsPage {
         events,
         store_id,
-        first,
-        after,
-        through,
-        skipped,
-    })
+        after: row.int("after")?,
+        top: row.int("top")?,
+        matching: row.int("events")?,
+    };
+    Ok(Unseen::of(page, saved))
+}
+
+impl Unseen {
+    /// What a reader whose cursor was `saved` (`None`: a first look) read
+    /// in `page`, the events after that cursor; for a reader that reads
+    /// the log through [`events`] and keeps the cursor itself.
+    pub fn of(page: EventsPage, saved: Option<&Cursor>) -> Self {
+        // A cursor of another store (the database was created again) is a
+        // first look, as the query took it.
+        let first = saved.is_none_or(|c| c.store_id != page.store_id);
+        let through = page.top.max(page.after);
+        // The two statements read the clock apart: an event that crossed the
+        // first look's start between them is in one and not the other.
+        let skipped = (page.matching - page.events.len() as i64).max(0);
+        Self {
+            events: page.events,
+            store_id: page.store_id,
+            first,
+            after: page.after,
+            through,
+            skipped,
+        }
+    }
 }
 
 /// One page of `export`.

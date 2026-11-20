@@ -1,6 +1,12 @@
 //! `memoire memory` against the in-process gateway (`support::fake`), whose
-//! query route runs batches like the data plane: transactions, defensive
-//! connections and the statement authorizer.
+//! query route runs batches like the data plane (transactions, defensive
+//! connections and the statement authorizer) and whose memory routes run
+//! the engine on them as the gateway does.
+//!
+//! The suite runs twice with the same assertions: here through the memory
+//! API, and in `memory_sql.rs`, which includes this file, through the SQL
+//! fallback. [`SQL_PATH`] tells which; the few places where the two paths
+//! may differ branch on it and say why.
 mod support;
 
 use serde_json::{Value, json};
@@ -10,6 +16,17 @@ use support::{
     fake::{Fake, MEMBER_KEY, TEAM},
 };
 
+/// Whether this run of the suite takes the SQL path: the `memory_sql`
+/// target, which includes this file as its module `memory`.
+const SQL_PATH: bool = module_path!().len() > "memory".len();
+
+/// A CLI with a private configuration, on this run's path. The child's
+/// environment starts empty, and `MEMOIRE_MEMORY_SQL` is set either way,
+/// so a variable the developer exported cannot change the path.
+fn memoire() -> Memoire {
+    Memoire::new().env("MEMOIRE_MEMORY_SQL", if SQL_PATH { "1" } else { "0" })
+}
+
 /// A fake, and a working directory outside any git checkout.
 fn world() -> (Fake, tempfile::TempDir) {
     (Fake::start(), tempfile::tempdir().unwrap())
@@ -17,7 +34,7 @@ fn world() -> (Fake, tempfile::TempDir) {
 
 /// A CLI logged in with `key`, run in `dir` as agent `name` in `session`.
 fn agent_with(fake: &Fake, dir: &Path, key: &str, name: &str, session: &str) -> Memoire {
-    let memoire = Memoire::new()
+    let memoire = memoire()
         .dir(dir)
         .env("MEMOIRE_AGENT", name)
         .env("MEMOIRE_SESSION", session);
@@ -3435,6 +3452,7 @@ fn scope_and_kind_are_scanned_for_secrets() {
         ],
     );
     let inside = agent(&fake, checkout.path(), "agent-a", "s-1");
+    let requests = fake.requests().len();
     let error = refused(
         &inside,
         &["memory", "remember", "--title", "From the checkout"],
@@ -3444,6 +3462,8 @@ fn scope_and_kind_are_scanned_for_secrets() {
         (error["code"].clone(), error["field"].clone()),
         (json!("memory_secret_detected"), json!("scope"))
     );
+    // Refused before any request, on either path.
+    assert_eq!(fake.requests().len(), requests);
     assert_eq!(footprint(&fake), before);
 }
 

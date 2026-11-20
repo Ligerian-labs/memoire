@@ -49,20 +49,30 @@ fn list(items: &[String]) -> String {
 }
 
 /// `init`: the database, then the store.
-pub fn init(database: &Database, created: bool, migrated_from: i64, store_id: &str) -> String {
-    let version = memoire_memory::schema::SCHEMA_VERSION;
+/// `init`; without `database` (a key that may not read the catalog), the
+/// store alone.
+pub fn init(
+    database: Option<&Database>,
+    created: bool,
+    version: i64,
+    migrated_from: i64,
+    store_id: &str,
+) -> String {
     let store = if migrated_from == version {
         format!("schema {version}, up to date")
     } else {
         format!("schema {version}, migrated from {migrated_from}")
     };
-    format!(
-        "{}\n{:<15}  {}\n{:<15}  {store} ({store_id})",
-        database_block(database),
-        "database",
-        if created { "created" } else { "kept" },
-        "memory store",
-    )
+    let store = format!("{:<15}  {store} ({store_id})", "memory store");
+    match database {
+        Some(database) => format!(
+            "{}\n{:<15}  {}\n{store}",
+            database_block(database),
+            "database",
+            if created { "created" } else { "kept" },
+        ),
+        None => store,
+    }
 }
 
 /// The fields of one memory, then its body.

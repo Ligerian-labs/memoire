@@ -1,6 +1,6 @@
-//! The memory engine over the gateway's query route: the backend it runs
-//! its batches through, the executor that drives its verbs, and its errors
-//! as the CLI reports them.
+//! The memory engine over the gateway's query route (the SQL path): the
+//! backend it runs its batches through, the executor that drives its
+//! verbs, and the errors of either path as the CLI reports them.
 use crate::client::Client;
 use crate::error::{Error, Result, exit};
 use memoire_api::{QueryMode, QueryRequest, StatementResult};
@@ -44,7 +44,8 @@ impl Backend for Gateway {
 }
 
 impl Gateway {
-    fn not_found_hint(&self, error: Error) -> Error {
+    /// A `database_not_found` with the hint to run `init`.
+    pub fn not_found_hint(&self, error: Error) -> Error {
         if error.code() != "database_not_found" {
             return error;
         }
@@ -90,6 +91,13 @@ impl Gateway {
             Refusal::NotInitialized => format!(
                 "the database `{}` holds no memory store; run `memoire memory init`",
                 self.db
+            ),
+            // A key that may not read is not told which memory it is.
+            Refusal::Duplicate {
+                ref scope,
+                ref candidates,
+            } if candidates.is_empty() => format!(
+                "a memory in {scope} has a similar title; pass --force to record this one too"
             ),
             _ => refusal.message(),
         };
