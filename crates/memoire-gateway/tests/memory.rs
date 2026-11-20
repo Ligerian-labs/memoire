@@ -743,7 +743,7 @@ fn refusals_carry_their_data_through_the_edge() {
         ("confirm", json!({"evidence": []}), "/evidence", "required"),
         (
             "confirm",
-            json!({"evidence": ["e"], "rev": 9}),
+            json!({"evidence": ["e"], "rev": 0}),
             "/rev",
             "out_of_range",
         ),
@@ -753,7 +753,7 @@ fn refusals_carry_their_data_through_the_edge() {
             "/rev",
             "invalid",
         ),
-        ("dispute", json!({"reason": "  "}), "/reason", "invalid"),
+        ("dispute", json!({"reason": "  "}), "/reason", "required"),
         (
             "supersede",
             json!({"by": "nope", "reason": "r"}),
@@ -775,6 +775,22 @@ fn refusals_carry_their_data_through_the_edge() {
         );
         assert_eq!((status, body), (422, invalid(path, why)), "{verb}");
     }
+    // A rev past the current one: the detail, and what to say about it.
+    let (status, body) = b.memory(
+        "mem",
+        "POST",
+        &format!("/memories/{other}/confirm"),
+        Some(json!({"evidence": ["e"], "rev": 9})),
+    );
+    assert_eq!(
+        (status, body),
+        (
+            422,
+            json!({"error": {"code": "validation_failed", "classification": "permanent",
+                             "details": [{"path": "/rev", "code": "out_of_range"}]},
+                   "data": {"id": other, "rev": 9, "current_rev": 1}})
+        )
+    );
     for (query, path, why) in [
         ("limit=0", "/limit", "out_of_range"),
         ("limit=x", "/limit", "invalid"),

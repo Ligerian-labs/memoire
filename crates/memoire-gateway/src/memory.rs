@@ -9,7 +9,7 @@ use crate::data::{
     exec::Refused,
     request::{self, Bound},
 };
-use crate::http::{invalid, refuse};
+use crate::http::refuse;
 use axum::{
     body::Body,
     http::header,
@@ -18,7 +18,7 @@ use axum::{
 use memoire_api::{Params, QueryMode, StatementResult, limits::DEFAULT_TIMEOUT_MS};
 use memoire_memory::{Backend, BackendError, Refusal, RefusalClass, SqlFailure, store::Batch};
 use merezha_domain::Failure;
-use merezha_platform::ErrorReply;
+use merezha_platform::{ErrorReply, FieldError};
 use serde_json::{Map, Value};
 use std::time::Duration;
 
@@ -96,12 +96,16 @@ pub fn failure(error: memoire_memory::Error<Failed>) -> Response {
 }
 
 /// A refusal of the memory: `validation_failed` with the field for a
-/// refused input, else its own code with its members in `data`.
+/// refused input, else its own code; either with its members in `data`.
 pub fn refused(refusal: &Refusal) -> Response {
-    if let Some((pointer, code)) = refusal.detail() {
-        return invalid(vec![(pointer, code)]);
-    }
     let (code, data) = refusal.to_wire();
+    if let Some((pointer, why)) = refusal.detail() {
+        let details = FieldError::new(pointer, why).into_iter().collect();
+        return with_data(
+            ErrorReply::new(Failure::permanent(code)).details(details),
+            data,
+        );
+    }
     let failure = match refusal.class() {
         RefusalClass::Conflict => Failure::conflict(code),
         _ => Failure::permanent(code),
@@ -181,6 +185,20 @@ mod tests {
         assert_eq!(
             body(refused(&Refusal::InvalidQuery)).await.1["error"]["details"],
             json!([{"path": "/query", "code": "invalid"}])
+        );
+        let past = Refusal::InvalidArgument(memoire_memory::Invalid::RevPastCurrent {
+            rev: 4,
+            id: "mem_x".into(),
+            current_rev: 3,
+        });
+        assert_eq!(
+            body(refused(&past)).await,
+            (
+                422,
+                json!({"error": {"code": "validation_failed", "classification": "permanent",
+                                 "details": [{"path": "/rev", "code": "out_of_range"}]},
+                       "data": {"id": "mem_x", "rev": 4, "current_rev": 3}})
+            )
         );
     }
 

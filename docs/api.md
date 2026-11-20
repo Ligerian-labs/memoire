@@ -578,10 +578,17 @@ The memory routes return memories in this shape, the CLI's `--json` shape
 | `memory_too_large` | `field`, `limit`, `size` |
 | `memory_unchanged` | `id` |
 
-A field the engine refuses for its form (an empty or multi-line title, an
-empty reason or evidence item, a `rev` past the current one, a query
-without a word) answers `422 validation_failed` with the field's path, like
-any other field problem, without `data`.
+A field the engine refuses for its form answers `422 validation_failed`
+with the field's path, like any other field problem: an empty title or
+reason `required`, a multi-line title, an empty evidence item or a query
+without a word `invalid`, a `rev` past the current one `out_of_range`. Only
+the last carries `data`, with `id`, `rev` and `current_rev`:
+
+```json
+{"error": {"code": "validation_failed", "classification": "permanent",
+           "details": [{"path": "/rev", "code": "out_of_range"}]},
+ "data": {"id": "mem_01JD0Q7ZQ5Y8W1N3K4M5P6R7S8", "rev": 4, "current_rev": 3}}
+```
 
 ### `GET {name}/memory`
 
