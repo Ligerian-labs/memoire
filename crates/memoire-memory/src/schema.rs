@@ -3,8 +3,8 @@
 //!
 //! Every object carries the `memoire_memory_` prefix, so a store can share
 //! a database with an application's own tables.
-use super::store::{Batch, NOW, Store, text};
-use crate::error::{Error, Result, exit};
+use crate::store::{Batch, Lacks, NOW, Store, text};
+use crate::{Backend, BackendError, Error, Refusal};
 use memoire_api::{SqlValue, StatementResult};
 
 /// The statements that take a store from version *n − 1* to *n*, entry
@@ -64,7 +64,7 @@ pub const MIGRATIONS: &[&[&str]] = &[&[
 )",
 ]];
 
-/// The version this CLI reads and writes.
+/// The version this engine reads and writes.
 pub const SCHEMA_VERSION: i64 = MIGRATIONS.len() as i64;
 
 /// Statement 0 of every verb's first read.
@@ -74,8 +74,8 @@ pub const VERSION_SQL: &str = "SELECT value FROM memoire_memory_meta WHERE key =
 ///
 /// Only for a batch whose statement 0 is [`VERSION_SQL`], as every read
 /// and version check sends.
-pub fn missing_store(error: &Error) -> bool {
-    super::store::sql_statement(error)
+pub fn missing_store<E: BackendError>(error: &Error<E>) -> bool {
+    crate::store::sql_statement(error)
         .is_some_and(|(statement, code, message)| names_missing_store(statement, code, message))
 }
 
@@ -92,45 +92,28 @@ fn names_missing_store(statement: usize, code: &str, message: &str) -> bool {
     statement == 0 && code == "SQLITE_ERROR"
 }
 
-pub fn not_initialized(db: &str) -> Error {
-    Error::local(
-        "memory_not_initialized",
-        exit::CONFLICT,
-        format!("the database `{db}` holds no memory store; run `memoire memory init`"),
-    )
-}
-
 /// The version a [`VERSION_SQL`] result holds.
-pub fn version_of(result: &StatementResult) -> Result<i64> {
+pub fn version_of(result: &StatementResult) -> Result<i64, Lacks> {
     match result.rows.first().and_then(|row| row.first()) {
         None => Ok(0),
         Some(SqlValue::Text(value)) => value
             .parse()
-            .map_err(|_| super::store::invalid_response("a numeric schema_version")),
-        Some(_) => Err(super::store::invalid_response("a text schema_version")),
+            .map_err(|_| crate::store::invalid_response("a numeric schema_version")),
+        Some(_) => Err(crate::store::invalid_response("a text schema_version")),
     }
 }
 
-/// Refuses a store of another version than this CLI's.
-pub fn require_current(version: i64) -> Result<()> {
-    let refuse = |code, message: String| {
-        Err(Error::local(code, exit::CONFLICT, message)
-            .with("store_version", version)
-            .with("supported_version", SCHEMA_VERSION))
-    };
+/// Refuses a store of another version than this engine's.
+pub fn require_current(version: i64) -> Result<(), Refusal> {
     match version {
-        v if v > SCHEMA_VERSION => refuse(
-            "memory_schema_newer",
-            format!(
-                "the memory store is at version {v}, newer than this CLI's {SCHEMA_VERSION}; upgrade memoire"
-            ),
-        ),
-        v if v < SCHEMA_VERSION => refuse(
-            "memory_schema_older",
-            format!(
-                "the memory store is at version {v}, older than this CLI's {SCHEMA_VERSION}; run `memoire memory init`"
-            ),
-        ),
+        v if v > SCHEMA_VERSION => Err(Refusal::SchemaNewer {
+            store_version: v,
+            supported_version: SCHEMA_VERSION,
+        }),
+        v if v < SCHEMA_VERSION => Err(Refusal::SchemaOlder {
+            store_version: v,
+            supported_version: SCHEMA_VERSION,
+        }),
         _ => Ok(()),
     }
 }
@@ -169,16 +152,20 @@ fn migration_batch(version: i64, store_id: &str) -> Batch {
 }
 
 /// Brings the store to [`SCHEMA_VERSION`]; the version it started from.
-pub fn migrate(store: &Store<'_>) -> Result<i64> {
-    let from = store.version()?;
+pub async fn migrate<B: Backend>(backend: &B) -> Result<i64, Error<B::Error>> {
+    let store = Store { backend };
+    let from = store.version().await?;
     if from > SCHEMA_VERSION {
         require_current(from)?;
     }
-    let store_id = format!("mst_{}", super::model::fresh_ulid()?);
+    let store_id = format!(
+        "mst_{}",
+        crate::model::fresh_ulid().map_err(Error::NoRandomness)?
+    );
     for version in from + 1..=SCHEMA_VERSION {
-        if let Err(e) = store.write(migration_batch(version, &store_id)) {
+        if let Err(e) = store.write(migration_batch(version, &store_id)).await {
             // Another client may have applied it meanwhile.
-            if store.version()? < version {
+            if store.version().await? < version {
                 return Err(e);
             }
         }
@@ -187,10 +174,12 @@ pub fn migrate(store: &Store<'_>) -> Result<i64> {
 }
 
 /// The store's id, fixed when version 1 was applied.
-pub fn store_id(store: &Store<'_>) -> Result<String> {
+pub async fn store_id<B: Backend>(backend: &B) -> Result<String, Error<B::Error>> {
     let mut batch = Batch::new();
-    let index = super::store::select_store_id(&mut batch);
-    super::store::store_id_of(&store.read(batch)?[index])
+    let index = crate::store::select_store_id(&mut batch);
+    Ok(crate::store::store_id_of(
+        &Store { backend }.read(batch).await?[index],
+    )?)
 }
 
 #[cfg(test)]
@@ -267,12 +256,9 @@ mod tests {
         assert!(require_current(SCHEMA_VERSION).is_ok());
         let newer = require_current(99).unwrap_err();
         assert_eq!(newer.code(), "memory_schema_newer");
-        assert_eq!(newer.exit_code(), exit::CONFLICT);
-        assert_eq!(newer.to_json()["error"]["store_version"], 99);
-        assert_eq!(
-            newer.to_json()["error"]["supported_version"],
-            SCHEMA_VERSION
-        );
+        assert_eq!(newer.class(), crate::RefusalClass::Conflict);
+        assert_eq!(newer.data()["store_version"], 99);
+        assert_eq!(newer.data()["supported_version"], SCHEMA_VERSION);
         assert_eq!(
             require_current(0).unwrap_err().code(),
             "memory_schema_older"

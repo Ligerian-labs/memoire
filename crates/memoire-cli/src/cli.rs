@@ -1,8 +1,8 @@
 //! The command tree. Parsing validates names and durations so a command
 //! that reaches the network is well formed.
 use crate::duration::parse_seconds;
-use crate::memory::model;
 use clap::{Args, Parser, Subcommand};
+use memoire_memory::model;
 use std::path::PathBuf;
 
 /// Create, query and share SQLite databases through a memoire gateway.
@@ -440,7 +440,7 @@ pub struct RecallArgs {
     #[arg(long = "tag", value_name = "TAG", value_parser = model::parse_tag)]
     pub tags: Vec<String>,
     /// Only this status; repeatable. Default: inferred, confirmed, disputed.
-    #[arg(long = "status", value_name = "STATUS", value_enum)]
+    #[arg(long = "status", value_name = "STATUS", value_parser = status())]
     pub statuses: Vec<model::Status>,
     /// At most this many, 1 to 100.
     #[arg(long, default_value_t = 10, value_parser = clap::value_parser!(i64).range(1..=100))]
@@ -467,6 +467,29 @@ pub fn reader_name(text: &str) -> Result<Option<String>, String> {
     }
     model::parse_tag(text).map(Some).map_err(|_| {
         "a reader is 1-48 characters: a lowercase letter or digit, then lowercase letters, digits or . _ -".into()
+    })
+}
+
+/// The statuses as clap parses `--status`: [`model::Status`] is the
+/// engine's, which does not depend on clap.
+#[derive(Clone, Copy, clap::ValueEnum)]
+enum StatusArg {
+    Inferred,
+    Confirmed,
+    Disputed,
+    Superseded,
+    Forgotten,
+}
+
+/// `--status`.
+fn status() -> impl clap::builder::TypedValueParser<Value = model::Status> {
+    use clap::builder::TypedValueParser as _;
+    clap::builder::EnumValueParser::<StatusArg>::new().map(|status| match status {
+        StatusArg::Inferred => model::Status::Inferred,
+        StatusArg::Confirmed => model::Status::Confirmed,
+        StatusArg::Disputed => model::Status::Disputed,
+        StatusArg::Superseded => model::Status::Superseded,
+        StatusArg::Forgotten => model::Status::Forgotten,
     })
 }
 

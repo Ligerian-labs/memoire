@@ -1,8 +1,8 @@
 //! What the memory verbs print for people: one compact screen, the same
 //! tables and field blocks as the rest of the CLI. JSON is the verbs' own.
-use super::model::{Confirmation, Dispute, Event, Memory, Revision, Status};
 use crate::output::{database_block, table};
 use memoire_api::Database;
+use memoire_memory::model::{Confirmation, Dispute, Event, Memory, Revision, Status};
 
 /// Widest label in a field block.
 const PAD: usize = "superseded by".len();
@@ -50,7 +50,7 @@ fn list(items: &[String]) -> String {
 
 /// `init`: the database, then the store.
 pub fn init(database: &Database, created: bool, migrated_from: i64, store_id: &str) -> String {
-    let version = super::schema::SCHEMA_VERSION;
+    let version = memoire_memory::schema::SCHEMA_VERSION;
     let store = if migrated_from == version {
         format!("schema {version}, up to date")
     } else {
@@ -246,7 +246,7 @@ pub fn log(events: &[Event]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::memory::model::Author;
+    use memoire_memory::model::Author;
 
     fn sample() -> Memory {
         Memory {

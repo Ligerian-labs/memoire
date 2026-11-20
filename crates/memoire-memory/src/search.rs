@@ -3,8 +3,8 @@
 //!
 //! User text never reaches FTS5's query syntax: it is cut into terms, and
 //! each term goes in double quotes.
-use super::model::Status;
-use super::store::{Batch, MEMORY_COLUMNS, int, text};
+use crate::model::Status;
+use crate::store::{Batch, MEMORY_COLUMNS, int, text};
 use memoire_api::SqlValue;
 use std::collections::BTreeSet;
 
