@@ -2300,24 +2300,23 @@ fn log_lists_events_and_unseen_reads_each_once() {
     assert!(run.stdout.starts_with("SEQ  WHEN"), "{}", run.stdout);
     assert!(run.stdout.contains("  revise    "), "{}", run.stdout);
 
-    let unseen = |memoire: &Memoire, extra: &[&str]| {
-        let mut args = vec!["memory", "log", "--unseen"];
-        args.extend_from_slice(extra);
-        ok(memoire, &args)
-    };
+    // The first look of session s-1 shows the last 24 hours: not the
+    // event aged two days.
     let all = unseen(&a, &[]);
-    assert_eq!(verbs_of(&all).len(), 3);
+    assert_eq!(verbs_of(&all), ["revise", "remember"]);
     assert_eq!(
         all["unseen"],
-        json!({"after": 0, "through": seqs[0], "skipped": 0})
+        json!({"reader": "session:s-1", "first": true, "after": seqs[2],
+               "through": seqs[0], "skipped": 0})
     );
     let none = unseen(&a, &[]);
     assert_eq!(verbs_of(&none), Vec::<String>::new());
     assert_eq!(
         none["unseen"],
-        json!({"after": seqs[0], "through": seqs[0], "skipped": 0})
+        json!({"reader": "session:s-1", "first": false, "after": seqs[0],
+               "through": seqs[0], "skipped": 0})
     );
-    let path = a.config.path().join("memoire/memory-cursors.json");
+    let path = cursors_file(&a);
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt as _;
@@ -2326,11 +2325,18 @@ fn log_lists_events_and_unseen_reads_each_once() {
         assert_eq!(mode(path.parent().unwrap()), 0o700);
     }
     let file: Value = serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
-    assert_eq!(file["version"], 1);
+    assert_eq!(file["version"], 2);
+    let entry = cursor_of(&path, &[], "session:s-1").unwrap();
     assert_eq!(
-        file["cursors"][format!("{} memory", fake.url)]["seq"],
-        seqs[0]
+        (
+            entry["server"].clone(),
+            entry["db"].clone(),
+            entry["seq"].clone()
+        ),
+        (json!(fake.url), json!("memory"), json!(seqs[0]))
     );
+    assert!(entry["store_id"].as_str().unwrap().starts_with("mst_"));
+    assert!(entry["seen_at"].as_u64().unwrap() > 1_700_000_000);
 
     // What a second agent writes shows once.
     remember(
@@ -2341,11 +2347,14 @@ fn log_lists_events_and_unseen_reads_each_once() {
     // A filtered read keeps its own cursor and leaves the unfiltered one.
     let acme = unseen(&a, &["--scope", "client:acme"]);
     assert_eq!(verbs_of(&acme), ["remember", "remember"]);
-    assert_eq!(acme["unseen"]["after"], 0);
-    assert!(file_has_key(
-        &path,
-        &format!("{} memory client:acme", fake.url)
-    ));
+    assert_eq!(
+        (
+            acme["unseen"]["first"].clone(),
+            acme["unseen"]["after"].clone()
+        ),
+        (json!(true), json!(seqs[2]))
+    );
+    assert!(cursor_of(&path, &["client:acme"], "session:s-1").is_some());
     let news = unseen(&a, &[]);
     assert_eq!(verbs_of(&news), ["remember"]);
     assert_eq!(news["events"][0]["agent"], "agent-b");
@@ -2361,14 +2370,22 @@ fn log_lists_events_and_unseen_reads_each_once() {
     assert_eq!(verbs_of(&unseen(&a, &[])).len(), 0);
     let run = a.run(&["memory", "log", "--unseen"], "").ok();
     assert!(run.stderr.contains("No new events."), "{}", run.stderr);
+    assert!(!run.stderr.contains("First look"), "{}", run.stderr);
 
-    // A database created again under the name is a new store.
+    // A database created again under the name is a new store: a first look.
     a.run(&["db", "rm", "memory"], "").ok();
     ok(&a, &["memory", "init"]);
     remember(&a, "Fresh store memory", &[]);
     let fresh = unseen(&a, &[]);
     assert_eq!(verbs_of(&fresh), ["remember"]);
-    assert_eq!(fresh["unseen"]["after"], 0);
+    assert_eq!(
+        (
+            fresh["unseen"]["first"].clone(),
+            fresh["unseen"]["after"].clone()
+        ),
+        (json!(true), json!(0))
+    );
+    assert_eq!(verbs_of(&unseen(&a, &[])).len(), 0);
 
     std::fs::write(&path, "not json").unwrap();
     assert_eq!(
@@ -2377,9 +2394,285 @@ fn log_lists_events_and_unseen_reads_each_once() {
     );
 }
 
-fn file_has_key(path: &Path, key: &str) -> bool {
+/// `memory log --unseen EXTRA… --json`, which must succeed.
+fn unseen(memoire: &Memoire, extra: &[&str]) -> Value {
+    let mut args = vec!["memory", "log", "--unseen"];
+    args.extend_from_slice(extra);
+    ok(memoire, &args)
+}
+
+fn cursors_file(memoire: &Memoire) -> std::path::PathBuf {
+    memoire.config.path().join("memoire/memory-cursors.json")
+}
+
+/// The cursor of `reader` for the scope filter `scopes` in the file at
+/// `path`.
+fn cursor_of(path: &Path, scopes: &[&str], reader: &str) -> Option<Value> {
     let file: Value = serde_json::from_str(&std::fs::read_to_string(path).unwrap()).unwrap();
-    file["cursors"].get(key).is_some()
+    file["cursors"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|c| c["scopes"] == json!(scopes) && c["reader"] == reader)
+        .cloned()
+}
+
+/// Another CLI on `machine`: it shares its configuration directory, so its
+/// login and its cursors file, and runs in `session` when one is given.
+fn same_machine(machine: &Memoire, dir: &Path, session: Option<&str>) -> Memoire {
+    let config = machine.config.path().join("memoire");
+    let memoire = Memoire::new()
+        .dir(dir)
+        .env("MEMOIRE_CONFIG_DIR", config.to_str().unwrap())
+        .env("MEMOIRE_AGENT", "agent-a");
+    match session {
+        Some(session) => memoire.env("MEMOIRE_SESSION", session),
+        None => memoire,
+    }
+}
+
+/// Moves events `seqs` back by two days on the store's clock.
+fn age_events(fake: &Fake, seqs: &[i64]) {
+    let db = sqlite(fake, "memory");
+    for seq in seqs {
+        db.execute(
+            "UPDATE memoire_memory_events \
+             SET created_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now', '-2 days') WHERE seq = ?1",
+            [seq],
+        )
+        .unwrap();
+    }
+}
+
+/// The `seq` of every event, newest first.
+fn event_seqs(memoire: &Memoire) -> Vec<i64> {
+    ok(memoire, &["memory", "log"])["events"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|e| e["seq"].as_i64().unwrap())
+        .collect()
+}
+
+#[test]
+fn sessions_on_one_machine_each_see_the_news() {
+    let (fake, dir) = world();
+    let writer = agent(&fake, dir.path(), "agent-w", "s-w");
+    let a = agent(&fake, dir.path(), "agent-a", "s-1");
+    let b = same_machine(&a, dir.path(), Some("s-2"));
+    ok(&writer, &["memory", "init"]);
+    remember(&writer, "Builds cache in the target directory", &[]);
+    remember(&writer, "Deploys need the VPN", &[]);
+
+    let first_a = unseen(&a, &[]);
+    assert_eq!(verbs_of(&first_a), ["remember", "remember"]);
+    // A's look did not consume them: B, on the same machine, sees them too.
+    let first_b = unseen(&b, &[]);
+    assert_eq!(first_b["events"], first_a["events"]);
+    let through = first_a["unseen"]["through"].clone();
+    assert_eq!(
+        first_b["unseen"],
+        json!({"reader": "session:s-2", "first": true, "after": 0,
+               "through": through, "skipped": 0})
+    );
+    assert_eq!(first_a["unseen"]["reader"], "session:s-1");
+    for memoire in [&a, &b] {
+        let again = unseen(memoire, &[]);
+        assert_eq!(verbs_of(&again), Vec::<String>::new());
+        assert_eq!(again["unseen"]["first"], false);
+    }
+    remember(&writer, "Staging resets every Monday", &[]);
+    for memoire in [&a, &b] {
+        let news = unseen(memoire, &[]);
+        assert_eq!(news["events"][0]["summary"], "Staging resets every Monday");
+        assert_eq!(verbs_of(&news).len(), 1);
+        assert_eq!(verbs_of(&unseen(memoire, &[])).len(), 0);
+    }
+    let path = cursors_file(&a);
+    assert!(cursor_of(&path, &[], "session:s-1").is_some());
+    assert!(cursor_of(&path, &[], "session:s-2").is_some());
+}
+
+#[test]
+fn a_first_look_shows_the_last_24_hours() {
+    let (fake, dir) = world();
+    let a = agent(&fake, dir.path(), "agent-a", "s-1");
+    ok(&a, &["memory", "init"]);
+    remember(&a, "Logs rotate daily", &[]);
+    remember(&a, "Backups run at midnight", &[]);
+    remember(&a, "Deploys need the VPN", &[]);
+    let seqs = event_seqs(&a);
+    let (recent, old) = (seqs[0], [seqs[2], seqs[1]]);
+    age_events(&fake, &old);
+
+    let look = unseen(&a, &[]);
+    assert_eq!(look["events"][0]["summary"], "Deploys need the VPN");
+    assert_eq!(verbs_of(&look).len(), 1);
+    assert_eq!(
+        look["unseen"],
+        json!({"reader": "session:s-1", "first": true, "after": old[1],
+               "through": recent, "skipped": 0})
+    );
+    // The next look does not bring the older ones back; --since does.
+    assert_eq!(verbs_of(&unseen(&a, &[])).len(), 0);
+    assert_eq!(
+        verbs_of(&ok(&a, &["memory", "log", "--since", "3d"])).len(),
+        3
+    );
+
+    // When every event is older, the first look shows nothing, and the
+    // next one only what was written after it.
+    age_events(&fake, &[recent]);
+    let s3 = same_machine(&a, dir.path(), Some("s-3"));
+    let empty = unseen(&s3, &[]);
+    assert_eq!(verbs_of(&empty), Vec::<String>::new());
+    assert_eq!(
+        empty["unseen"],
+        json!({"reader": "session:s-3", "first": true, "after": recent,
+               "through": recent, "skipped": 0})
+    );
+    remember(&a, "Staging resets every Monday", &[]);
+    let news = unseen(&s3, &[]);
+    assert_eq!(news["events"][0]["summary"], "Staging resets every Monday");
+    assert_eq!(verbs_of(&news).len(), 1);
+    assert_eq!(news["unseen"]["first"], false);
+
+    // People are told it was a first look.
+    let s4 = same_machine(&a, dir.path(), Some("s-4"));
+    let run = s4.run(&["memory", "log", "--unseen"], "").ok();
+    assert!(
+        run.stderr
+            .contains("First look for session:s-4: events of the last 24 hours."),
+        "{}",
+        run.stderr
+    );
+    assert!(
+        run.stdout.contains("Staging resets every Monday"),
+        "{}",
+        run.stdout
+    );
+}
+
+#[test]
+fn a_named_reader_continues_across_sessions() {
+    let (fake, dir) = world();
+    let writer = agent(&fake, dir.path(), "agent-w", "s-w");
+    ok(&writer, &["memory", "init"]);
+    remember(&writer, "Logs rotate daily", &[]);
+    let s1 = agent(&fake, dir.path(), "reviewer", "s-1");
+    let s2 = same_machine(&s1, dir.path(), Some("s-2"));
+    let s3 = same_machine(&s1, dir.path(), Some("s-3")).env("MEMOIRE_READER", "nightly");
+
+    let night = unseen(&s1, &["--reader", "nightly"]);
+    assert_eq!(verbs_of(&night).len(), 1);
+    assert_eq!(night["unseen"]["reader"], "name:nightly");
+    assert_eq!(night["unseen"]["first"], true);
+    remember(&writer, "Backups run at midnight", &[]);
+    let next = unseen(&s2, &["--reader", "nightly"]);
+    assert_eq!(next["events"][0]["summary"], "Backups run at midnight");
+    assert_eq!(verbs_of(&next).len(), 1);
+    assert_eq!(
+        (
+            next["unseen"]["reader"].clone(),
+            next["unseen"]["first"].clone()
+        ),
+        (json!("name:nightly"), json!(false))
+    );
+    remember(&writer, "Deploys need the VPN", &[]);
+    let env = unseen(&s3, &[]);
+    assert_eq!(env["events"][0]["summary"], "Deploys need the VPN");
+    assert_eq!(verbs_of(&env).len(), 1);
+    assert_eq!(env["unseen"]["reader"], "name:nightly");
+    // The sessions' own cursors are apart: s-1's first look sees all three.
+    let own = unseen(&s1, &[]);
+    assert_eq!(verbs_of(&own).len(), 3);
+    assert_eq!(own["unseen"]["reader"], "session:s-1");
+    // A fixed window ignores the reader.
+    assert_eq!(
+        verbs_of(&ok(&s3, &["memory", "log", "--since", "24h"])).len(),
+        3
+    );
+    // An empty MEMOIRE_READER is no reader.
+    let unset = same_machine(&s1, dir.path(), Some("s-5")).env("MEMOIRE_READER", "");
+    assert_eq!(unseen(&unset, &[])["unseen"]["reader"], "session:s-5");
+
+    let bad = s1.run(
+        &["memory", "log", "--unseen", "--reader", "Night Shift"],
+        "",
+    );
+    assert_eq!(bad.code, 2, "{}", bad.stderr);
+    assert!(bad.stderr.contains("a reader is"), "{}", bad.stderr);
+    let bad_env = same_machine(&s1, dir.path(), Some("s-6")).env("MEMOIRE_READER", "Night");
+    assert_eq!(bad_env.run(&["memory", "log", "--unseen"], "").code, 2);
+}
+
+#[test]
+fn without_a_session_the_machine_reads_and_a_version_1_file_is_kept() {
+    let (fake, dir) = world();
+    let a = agent(&fake, dir.path(), "agent-a", "s-1");
+    let store_id = ok(&a, &["memory", "init"])["store_id"].clone();
+    remember(&a, "Logs rotate daily", &[]);
+    remember(&a, "Backups run at midnight", &[]);
+    remember(&a, "Deploys need the VPN", &[]);
+    let seqs = event_seqs(&a);
+    let (newest, cut) = (seqs[0], seqs[1]);
+    let machine = same_machine(&a, dir.path(), None);
+    let path = cursors_file(&a);
+    let v1 = json!({"version": 1, "cursors": {
+        format!("{} memory", fake.url): {"store_id": store_id, "seq": cut},
+    }});
+    std::fs::write(&path, v1.to_string()).unwrap();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt as _;
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).unwrap();
+    }
+    let look = unseen(&machine, &[]);
+    assert_eq!(look["events"][0]["summary"], "Deploys need the VPN");
+    assert_eq!(verbs_of(&look).len(), 1);
+    assert_eq!(
+        look["unseen"],
+        json!({"reader": "machine", "first": false, "after": cut,
+               "through": newest, "skipped": 0})
+    );
+    let file: Value = serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+    assert_eq!(file["version"], 2);
+    assert_eq!(cursor_of(&path, &[], "machine").unwrap()["seq"], newest);
+    assert_eq!(verbs_of(&unseen(&machine, &[])).len(), 0);
+}
+
+#[test]
+fn unused_session_cursors_are_pruned() {
+    let (fake, dir) = world();
+    let a = agent(&fake, dir.path(), "agent-a", "s-1");
+    let store_id = ok(&a, &["memory", "init"])["store_id"].clone();
+    remember(&a, "Logs rotate daily", &[]);
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs();
+    let entry = |reader: &str, days: u64| {
+        json!({"server": fake.url, "db": "memory", "scopes": [], "reader": reader,
+               "store_id": store_id, "seq": 1, "seen_at": now - days * 86_400})
+    };
+    let path = cursors_file(&a);
+    let file = json!({"version": 2, "cursors": [
+        entry("session:s-old", 8), entry("session:s-week", 6), entry("name:nightly", 400),
+    ]});
+    std::fs::write(&path, file.to_string()).unwrap();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt as _;
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).unwrap();
+    }
+    unseen(&a, &[]);
+    assert!(cursor_of(&path, &[], "session:s-old").is_none());
+    assert!(cursor_of(&path, &[], "session:s-week").is_some());
+    assert!(cursor_of(&path, &[], "name:nightly").is_some());
+    assert!(cursor_of(&path, &[], "session:s-1").is_some());
+    // A pruned session that looks again gets a first look.
+    let old = same_machine(&a, dir.path(), Some("s-old"));
+    assert_eq!(unseen(&old, &[])["unseen"]["first"], true);
 }
 
 #[test]

@@ -5,6 +5,7 @@
 //! not at all and a read sees one state. Writes are guarded rather than
 //! locked: the first statement of a revision batch fails when the memory
 //! moved since it was read (see [`insert_revision`]).
+use super::cursor::{Cursor, FIRST_LOOK_SECONDS};
 use super::model::{Author, Confirmation, Dispute, Event, Memory, Revision, Status};
 use super::schema;
 use crate::client::Client;
@@ -752,6 +753,19 @@ fn json_or_null(items: Option<&[String]>) -> SqlValue {
     items.map_or(SqlValue::Null, json_list)
 }
 
+/// Where a read of the log starts.
+#[derive(Clone, Copy, Debug)]
+pub enum After<'a> {
+    /// At the first event.
+    Start,
+    /// After this cursor's `seq` when the cursor belongs to this store, else
+    /// as [`After::FirstLook`].
+    Cursor(&'a Cursor),
+    /// A reader's first look at the store: after the newest event older
+    /// than [`FIRST_LOOK_SECONDS`] on the store's clock, 0 when none is.
+    FirstLook,
+}
+
 /// Which events `log` reads.
 #[derive(Debug)]
 pub struct EventFilter<'a> {
@@ -759,30 +773,45 @@ pub struct EventFilter<'a> {
     pub scopes: Option<&'a [String]>,
     /// `--since`, as seconds before the store's now.
     pub since_seconds: Option<u64>,
-    /// Only events after a cursor's `seq`, when the cursor belongs to
-    /// this store; every event when it belongs to another.
-    pub after: Option<&'a super::cursor::Cursor>,
+    pub after: After<'a>,
 }
 
 /// The store's id, as SQL.
 const STORE_ID: &str = "(SELECT value FROM memoire_memory_meta WHERE key = 'store_id')";
 
+/// The `seq` a read starts after, as SQL over the filter's `?3` (the
+/// cursor's store id), `?4` (its `seq`) and `?5` (1 when no cursor of
+/// this store means a first look, 0 when it means the first event).
+fn start() -> String {
+    format!(
+        "(CASE WHEN ?3 = {STORE_ID} THEN ?4 WHEN ?5 = 0 THEN 0 \
+         ELSE (SELECT coalesce(max(seq), 0) FROM memoire_memory_events \
+               WHERE created_at < strftime('%Y-%m-%dT%H:%M:%fZ', 'now', '-{FIRST_LOOK_SECONDS} seconds')) END)"
+    )
+}
+
 fn event_conditions() -> String {
     format!(
         "(?1 IS NULL OR scope IN (SELECT value FROM json_each(?1))) \
          AND (?2 IS NULL OR created_at >= strftime('%Y-%m-%dT%H:%M:%fZ', 'now', ?2)) \
-         AND seq > (CASE WHEN ?3 IS NULL OR ?3 = {STORE_ID} THEN ?4 ELSE 0 END)"
+         AND seq > {}",
+        start()
     )
 }
 
 fn event_params(filter: &EventFilter<'_>) -> Vec<SqlValue> {
+    let (store_id, seq) = match filter.after {
+        After::Cursor(cursor) => (Some(cursor.store_id.as_str()), cursor.seq),
+        After::Start | After::FirstLook => (None, 0),
+    };
     vec![
         json_or_null(filter.scopes),
         filter
             .since_seconds
             .map_or(SqlValue::Null, |s| text(&format!("-{s} seconds"))),
-        opt_text(filter.after.map(|c| c.store_id.as_str())),
-        int(filter.after.map_or(0, |c| c.seq)),
+        opt_text(store_id),
+        int(seq),
+        int(i64::from(!matches!(filter.after, After::Start))),
     ]
 }
 
@@ -794,19 +823,23 @@ pub fn select_events(batch: &mut Batch, filter: &EventFilter<'_>, limit: i64) ->
         format!(
             "SELECT seq, memory_id, verb, rev, scope, principal, agent, session, summary, \
              created_at FROM memoire_memory_events WHERE {} \
-             ORDER BY seq DESC LIMIT ?5",
+             ORDER BY seq DESC LIMIT ?6",
             event_conditions()
         ),
         params,
     )
 }
 
-/// How many events pass `filter`, and the newest one's `seq`.
+/// How many events pass `filter` (`events`), the `seq` the read starts
+/// after (`after`), and the highest `seq` in the store, whatever the
+/// filter (`top`, 0 when there is no event).
 pub fn count_events(batch: &mut Batch, filter: &EventFilter<'_>) -> usize {
     batch.push(
         format!(
-            "SELECT count(*) AS events, max(seq) AS newest FROM memoire_memory_events \
-             WHERE {}",
+            "SELECT count(*) AS events, {} AS after, \
+             (SELECT coalesce(max(seq), 0) FROM memoire_memory_events) AS top \
+             FROM memoire_memory_events WHERE {}",
+            start(),
             event_conditions()
         ),
         event_params(filter),
