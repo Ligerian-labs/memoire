@@ -22,9 +22,7 @@ pub type Verb<T> = Result<T, memoire_memory::Error<Error>>;
 /// The refusal a memory route answered with `code`, its first `details`
 /// entry (path and code) and `data`; `None` when they make none.
 fn rebuild(code: &str, detail: Option<(&str, &str)>, data: &Map<String, Value>) -> Option<Refusal> {
-    // The engine's wire form before it takes the detail.
-    let _ = detail;
-    Refusal::from_wire(code, data)
+    Refusal::from_wire(code, detail, data)
 }
 
 /// The store of one database, through its memory routes.
