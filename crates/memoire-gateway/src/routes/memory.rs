@@ -5,7 +5,7 @@
 use super::{Routes, data::active, data::now_unix_ms, permission};
 use crate::{
     http::{Fields, TeamCaller, admit_any, invalid, json_object, refuse},
-    memory::{Plane, failure},
+    memory::{Plane, failure, refused},
 };
 use axum::{
     Json,
@@ -20,7 +20,7 @@ use memoire_api::memory::{
     StoreInfo, SupersedeRequest, SupersedeResponse,
 };
 use memoire_memory::{
-    Labels, history, model, retire, schema,
+    Labels, Refusal, history, model, retire, schema,
     store::{After, Cursor},
     trust, verbs,
 };
@@ -78,6 +78,7 @@ pub async fn store(
         &routes.policy,
         permission::MEMORY_READERS
     ));
+    tri!(QueryString::of(request.uri(), &[]));
     let plane = tri!(plane(&routes, &caller, &name).await);
     let store_id = engine!(schema::store_id(&plane).await);
     Json(StoreInfo {
@@ -163,25 +164,37 @@ pub async fn remember(
     };
     tri!(body.finish());
     let plane = tri!(plane(&routes, &caller, &name).await);
-    let memory = engine!(
-        verbs::remember(
-            &plane,
-            &labels(input.labels),
-            verbs::Remember {
-                title: input.title,
-                body: input.body.unwrap_or_default(),
-                kind: input.kind,
-                scope: input.scope,
-                tags: input.tags,
-                evidence: input.evidence,
-                force: input.force,
-                supersedes: input.supersedes,
-                reason: input.reason,
-            },
-            || None,
-        )
-        .await
-    );
+    let remembered = verbs::remember(
+        &plane,
+        &labels(input.labels),
+        verbs::Remember {
+            title: input.title,
+            body: input.body.unwrap_or_default(),
+            kind: input.kind,
+            scope: input.scope,
+            tags: input.tags,
+            evidence: input.evidence,
+            force: input.force,
+            supersedes: input.supersedes,
+            reason: input.reason,
+        },
+        || None,
+    )
+    .await;
+    let memory = match remembered {
+        Ok(memory) => memory,
+        // A caller that may write but not read learns that a similar
+        // title exists, not what the store holds.
+        Err(memoire_memory::Error::Refused(Refusal::Duplicate { scope, .. }))
+            if !caller.holds_any(permission::MEMORY_READERS) =>
+        {
+            return refused(&Refusal::Duplicate {
+                scope,
+                candidates: Vec::new(),
+            });
+        }
+        Err(error) => return failure(error),
+    };
     (StatusCode::CREATED, Json(memory)).into_response()
 }
 
@@ -196,7 +209,10 @@ pub async fn recall(
         &routes.policy,
         permission::MEMORY_READERS
     ));
-    let params = tri!(QueryString::of(request.uri()));
+    let params = tri!(QueryString::of(
+        request.uri(),
+        &["query", "scope", "kind", "tag", "status", "limit"]
+    ));
     let mut details = Vec::new();
     let query = params.last("query").map(str::to_owned);
     let scopes = params.all("scope");
@@ -248,7 +264,7 @@ pub async fn show(
         &routes.policy,
         permission::MEMORY_READERS
     ));
-    let params = tri!(QueryString::of(request.uri()));
+    let params = tri!(QueryString::of(request.uri(), &["history"]));
     let mut details = Vec::new();
     let history = params.flag("history", &mut details);
     if !details.is_empty() {
@@ -464,7 +480,17 @@ pub async fn events(
         &routes.policy,
         permission::MEMORY_READERS
     ));
-    let params = tri!(QueryString::of(request.uri()));
+    let params = tri!(QueryString::of(
+        request.uri(),
+        &[
+            "scope",
+            "limit",
+            "since_seconds",
+            "after",
+            "store_id",
+            "first_look",
+        ]
+    ));
     let mut details = Vec::new();
     let scopes = params.all("scope");
     let limit = params.int("limit", DEFAULT_EVENTS_LIMIT, &mut details);
@@ -537,7 +563,7 @@ pub async fn export(
         &routes.policy,
         permission::MEMORY_READERS
     ));
-    let params = tri!(QueryString::of(request.uri()));
+    let params = tri!(QueryString::of(request.uri(), &["scope", "after", "limit"]));
     let mut details = Vec::new();
     let scopes = params.all("scope");
     let after = params.int("after", 0, &mut details);
@@ -669,10 +695,24 @@ impl Body {
 struct QueryString(Vec<(String, String)>);
 
 impl QueryString {
-    fn of(uri: &Uri) -> Result<Self, Response> {
-        Query::<Vec<(String, String)>>::try_from_uri(uri)
-            .map(|Query(pairs)| Self(pairs))
-            .map_err(|_| invalid(vec![(String::new(), "invalid")]))
+    /// The parameters of `uri`; a name not in `known` fails
+    /// `unknown_field` at its path, as an unknown body field does.
+    fn of(uri: &Uri, known: &[&str]) -> Result<Self, Response> {
+        let Ok(Query(pairs)) = Query::<Vec<(String, String)>>::try_from_uri(uri) else {
+            return Err(invalid(vec![(String::new(), "invalid")]));
+        };
+        let mut unknown: Vec<(String, &'static str)> = Vec::new();
+        for (name, _) in &pairs {
+            let path = format!("/{}", name.replace('~', "~0").replace('/', "~1"));
+            if !known.contains(&name.as_str()) && !unknown.iter().any(|(p, _)| *p == path) {
+                unknown.push((path, "unknown_field"));
+            }
+        }
+        if unknown.is_empty() {
+            Ok(Self(pairs))
+        } else {
+            Err(invalid(unknown))
+        }
     }
 
     /// Every value of `key`, in order.
@@ -724,9 +764,12 @@ mod tests {
     use serde_json::json;
 
     fn query(text: &str) -> QueryString {
-        QueryString::of(&format!("/x?{text}").parse().unwrap())
-            .ok()
-            .unwrap()
+        QueryString::of(
+            &format!("/x?{text}").parse().unwrap(),
+            &["scope", "limit", "query", "after", "history"],
+        )
+        .ok()
+        .unwrap()
     }
 
     #[test]
@@ -749,6 +792,24 @@ mod tests {
                 ("/history".to_owned(), "invalid")
             ]
         );
+    }
+
+    #[tokio::test]
+    async fn unknown_parameters_fail() {
+        let uri = "/x?scpoe=global&limit=2&scpoe=x&a%2Fb=1".parse().unwrap();
+        let response = QueryString::of(&uri, &["scope", "limit"]).err().unwrap();
+        assert_eq!(response.status(), 422);
+        let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let body: Value = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(
+            body["error"]["details"],
+            json!([{"path": "/scpoe", "code": "unknown_field"},
+                   {"path": "/a~1b", "code": "unknown_field"}])
+        );
+        assert!(QueryString::of(&"/x".parse().unwrap(), &[]).is_ok());
+        assert!(QueryString::of(&"/x?limit=1".parse().unwrap(), &[]).is_err());
     }
 
     #[test]

@@ -960,6 +960,39 @@ fn memory_permissions_or_database_permissions_open_the_routes() {
         assert!([200, 201].contains(&status), "{path}: {status} {answer}");
     }
 
+    // A key that may write but not read learns a similar title exists,
+    // not what the store holds; one that may read sees the candidates.
+    let writer = key(&gateway, &owner, &team, &["memoire.memory.write"]);
+    let duplicate = json!({"title": "Another fact here"});
+    assert_eq!(
+        writer.memory("shared", "POST", "/memories", Some(duplicate.clone())),
+        (
+            409,
+            json!({"error": {"code": "memory_duplicate", "classification": "conflict"},
+                   "data": {"candidates": [], "scope": "global"}})
+        )
+    );
+    let (status, body) = memory_rw.memory("shared", "POST", "/memories", Some(duplicate));
+    assert_eq!((status, code(&body)), (409, "memory_duplicate"), "{body}");
+    assert_eq!(body["data"]["candidates"][0]["id"], json!(by), "{body}");
+    assert_eq!(body["data"]["candidates"].as_array().unwrap().len(), 1);
+
+    // A query parameter a route does not know fails, on every route.
+    for path in [
+        "?scpoe=global".to_owned(),
+        "/memories?scpoe=global".to_owned(),
+        format!("/memories/{id}?scpoe=global"),
+        "/events?scpoe=global".to_owned(),
+        "/export?scpoe=global".to_owned(),
+    ] {
+        let (status, body) = memory_read.memory("shared", "GET", &path, None);
+        assert_eq!(
+            (status, details(&body)),
+            (422, json!([{"path": "/scpoe", "code": "unknown_field"}])),
+            "{path}: {body}"
+        );
+    }
+
     // Another team's key finds no such database.
     let stranger = register(&gateway, "stranger@memoire.test");
     let elsewhere = create_team(&gateway, &stranger, "stranger-team");

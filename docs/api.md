@@ -73,7 +73,7 @@ Every memoire route needs a credential.
 | `memoire.databases.delete` | delete |
 | `memoire.databases.snapshots` | snapshot restore |
 | `memoire.memory.read` | the memory's read routes: store, recall, show, events, export |
-| `memoire.memory.write` | the memory's write routes: init and every verb that writes |
+| `memoire.memory.write` | the memory's write routes: init and every verb that writes; each answers with the memory it wrote or touched |
 
 Teams, invitations, machines and keys are Merezha identity's routes; see
 "Identity routes the clients use" below.
@@ -514,7 +514,9 @@ the limits are in memory.md; this section gives the HTTP form.
   or `memoire.databases.write`. A key that may run SQL on a database can
   already do all of this, so keys minted before the memory permissions keep
   working. A key holding only `memoire.memory.*` gets `403 unauthorized` on
-  every other database route. The refusals come in the usual order:
+  every other database route. A write route answers with the memory it
+  wrote or touched, so a write permission shows a caller the memories it
+  names by id. The refusals come in the usual order:
   `401 unauthenticated`, `403 tenant_required`, `403 unauthorized`, before
   the body is read.
 - The database must exist and be active: `404 database_not_found`,
@@ -529,7 +531,8 @@ the limits are in memory.md; this section gives the HTTP form.
   `404 memory_not_found`, without `data`.
 - Who writes: every write records the authenticated caller's subject as its
   principal (`key_…` for an API key, `usr_…` for a member signed in), never a
-  value from the body. Every write body may carry `agent` (at most 64
+  value from the body. Every body of a write that records a memory or an
+  event (all but `init`) may carry `agent` (at most 64
   characters) and `session` (at most 128), without control characters,
   reported by the client and stored as given; both default to `""`. The
   author rules of memory.md (a confirmation counts from another principal or
@@ -539,11 +542,14 @@ the limits are in memory.md; this section gives the HTTP form.
   (`/title` `required`, `/tags/2` `invalid`, `/add_tags` `not_allowed`…).
   An empty list is the same as an absent one. A query parameter that is not
   understood fails the same way, its path naming the parameter (`/limit`
-  `out_of_range`, `/scope/1` `invalid` for the second `scope`).
+  `out_of_range`, `/scope/1` `invalid` for the second `scope`), and so does
+  a parameter the route does not take (`/scpoe` `unknown_field`).
 - A failure of the store's own SQL that is not one of the memory's guards
   (its tables altered by hand, the database full, the writer busy) answers
-  what `query` would: `sql_error` with its header, `database_too_large`,
-  `sqlite_busy`, `statement_timeout`.
+  what `query` would: `sql_error` with its detail but without the
+  `Memoire-Sql-Message` header (the database's own triggers or tables could
+  put any text there), `database_too_large`, `sqlite_busy`,
+  `statement_timeout`.
 
 ### The memory object
 
@@ -568,7 +574,7 @@ The memory routes return memories in this shape, the CLI's `--json` shape
 | `memory_not_initialized` | none |
 | `memory_schema_older`, `memory_schema_newer` | `store_version`, `supported_version` |
 | `memory_conflict` | `id`, `current_rev`; `since_rev`, the rev a verdict was about, when its text changed after it |
-| `memory_duplicate` | `candidates` (`[{"id", "title", "status", "similarity"}]`, closest first), `scope` |
+| `memory_duplicate` | `candidates` (`[{"id", "title", "status", "similarity"}]`, closest first; empty for a caller without a read permission), `scope` |
 | `memory_not_current` | `id`, `status`, `superseded_by` |
 | `memory_no_open_dispute` | `id` |
 | `memory_cycle` | `id`, `by` (the same id when a memory would supersede itself) |
@@ -631,7 +637,9 @@ Write. Remember: revision 1 of a new memory.
 with `supersedes` (a memory id) both default, with the tags, to the
 replaced memory's. `supersedes` and `reason` each need the other. The
 client chooses the scope: the CLI's default from a git checkout is its own.
-Answers `201` with the memory object. Errors: `memory_duplicate`,
+A caller holding neither `memoire.memory.read` nor `memoire.databases.read`
+gets `memory_duplicate` with an empty `candidates` list. Answers `201` with
+the memory object. Errors: `memory_duplicate`,
 `memory_secret_detected`, `memory_too_large`; with `supersedes`, also
 `memory_not_found`, `memory_not_current` and `memory_conflict`.
 

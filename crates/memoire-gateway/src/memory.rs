@@ -15,7 +15,9 @@ use axum::{
     http::header,
     response::{IntoResponse, Response},
 };
-use memoire_api::{Params, QueryMode, StatementResult, limits::DEFAULT_TIMEOUT_MS};
+use memoire_api::{
+    Params, QueryMode, SQL_MESSAGE_HEADER, StatementResult, limits::DEFAULT_TIMEOUT_MS,
+};
 use memoire_memory::{Backend, BackendError, Refusal, RefusalClass, SqlFailure, store::Batch};
 use merezha_domain::Failure;
 use merezha_platform::{ErrorReply, FieldError};
@@ -88,8 +90,13 @@ pub fn failure(error: memoire_memory::Error<Failed>) -> Response {
     match error {
         memoire_memory::Error::Refused(refusal) => refused(&refusal),
         // The store's own SQL failed outside the memory's guards: what the
-        // query route would answer.
-        memoire_memory::Error::Backend(Failed(refused)) => crate::routes::refusal(refused),
+        // query route would answer, without SQLite's message, which a
+        // trigger or an altered table could fill with any text.
+        memoire_memory::Error::Backend(Failed(refused)) => {
+            let mut response = crate::routes::refusal(refused);
+            response.headers_mut().remove(SQL_MESSAGE_HEADER);
+            response
+        }
         memoire_memory::Error::InvalidResponse(_) => refuse(Failure::transient("internal")),
         memoire_memory::Error::NoRandomness(_) => refuse(Failure::transient("random_unavailable")),
     }
@@ -200,6 +207,31 @@ mod tests {
                        "data": {"id": "mem_x", "rev": 4, "current_rev": 3}})
             )
         );
+    }
+
+    #[tokio::test]
+    async fn sql_failures_answer_without_sqlite_text() {
+        let response = failure(memoire_memory::Error::Backend(Failed(Refused::Sql {
+            statement: 1,
+            sqlite_code: "SQLITE_CONSTRAINT".into(),
+            message: "text a trigger raised".into(),
+        })));
+        assert!(response.headers().get(SQL_MESSAGE_HEADER).is_none());
+        assert_eq!(
+            body(response).await,
+            (
+                422,
+                json!({"error": {"code": "sql_error", "classification": "permanent",
+                                 "details": [{"path": "/statements/1/sql", "code": "sqlite_constraint"}]}})
+            )
+        );
+        // The query route keeps the header.
+        let query = crate::routes::refusal(Refused::Sql {
+            statement: 1,
+            sqlite_code: "SQLITE_CONSTRAINT".into(),
+            message: "m".into(),
+        });
+        assert!(query.headers().get(SQL_MESSAGE_HEADER).is_some());
     }
 
     #[test]

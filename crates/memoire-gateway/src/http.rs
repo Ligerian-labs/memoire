@@ -49,6 +49,21 @@ pub struct TeamCaller {
 }
 
 impl TeamCaller {
+    /// Whether the caller also holds any of `permissions` at its team.
+    pub fn holds_any(&self, permissions: &[&str]) -> bool {
+        permissions.iter().any(|permission| {
+            Identity::new(*permission).is_ok_and(|permission| {
+                self.policy
+                    .check(
+                        Some(&self.principal),
+                        &permission,
+                        &ResourceScope::Tenant(self.team.clone()),
+                    )
+                    .is_ok()
+            })
+        })
+    }
+
     /// The caller for the application, which checks the route again.
     pub fn edge(&self) -> EdgeCaller {
         EdgeCaller::new(Some(self.principal.clone()), self.policy.clone())
