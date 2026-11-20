@@ -195,7 +195,7 @@ paths stay inside the manifest's directory).
 | Path | What |
 | --- | --- |
 | `crates/memoire-api` | Wire types of the HTTP contract (`docs/api.md`), shared by the gateway and the CLI |
-| `crates/memoire-memory` | The memory engine: its model, SQL, guards and verbs, run through a backend that executes a batch as one transaction; no I/O of its own |
+| `crates/memoire-memory` | The memory engine: its model, SQL, guards and verbs, run through a backend that executes a batch as one transaction; no network or file access of its own |
 | `crates/memoire-gateway` | The memoire module and the `memoire-gateway` binary |
 | `crates/memoire-cli` | The `memoire` binary; `memoire memory` runs the engine over the query route |
 | `guests/` | WASM guests, a separate Cargo workspace; `guests/runtime.toml` lists them and is the gateway's runtime manifest |

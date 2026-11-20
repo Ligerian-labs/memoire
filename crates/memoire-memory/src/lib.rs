@@ -6,10 +6,11 @@
 //! migrates, and every verb is a read batch, then at most one write batch
 //! that applies whole or not at all.
 //!
-//! The engine does no I/O: it builds the batches and runs them through a
-//! [`Backend`], which runs each one as a transaction (the CLI over the
-//! gateway's query route). The verbs are `async fn`s generic over the
-//! backend; they return values, and the caller prints them.
+//! The engine reaches no network and no file: it reads the clock and the
+//! operating system's randomness for new ids, builds the batches and runs
+//! them through a [`Backend`], which runs each one as a transaction (the
+//! CLI over the gateway's query route). The verbs are `async fn`s generic
+//! over the backend; they return values, and the caller prints them.
 pub mod history;
 pub mod model;
 mod refusal;
