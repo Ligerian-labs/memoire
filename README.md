@@ -36,7 +36,9 @@ MEMOIRE_SESSION=s-42 memoire memory confirm mem_01JD0Q7ZQ5Y8W1N3K4M5P6R7S8 --evi
 memoire skill install --claude
 ```
 
-[docs/memory.md](docs/memory.md) is the reference.
+The gateway runs the memory's rules and records who wrote what, and
+`memoire keys create --memory` gives an agent a key that can use the memory
+and nothing else. [docs/memory.md](docs/memory.md) is the reference.
 
 ## Documentation
 

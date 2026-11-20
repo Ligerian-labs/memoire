@@ -84,14 +84,16 @@ PostgreSQL, migrations, jobs, health and telemetry.
    client's, recording the caller's subject as the writer.
 3. **Identity** (generic, Merezha's block). Accounts, teams, invitations,
    service accounts, API keys and RBAC. memoire registers the permissions
-   `memoire.databases.create`, `.delete`, `.read`, `.write` and `.snapshots`;
-   the team roles admin and member hold them by default, and an API key can
-   carry a subset. The grants are configuration, in every deployment:
+   `memoire.databases.create`, `.delete`, `.read`, `.write` and `.snapshots`,
+   and `memoire.memory.read` and `.write` for the memory routes; the team
+   roles admin and member hold them by default, and an API key can carry a
+   subset, such as the two memory permissions alone. The grants are
+   configuration, in every deployment:
 
    ```toml
    [modules.identity.rbac.builtin_grants]
-   admin = ["memoire.databases.*"]
-   member = ["memoire.databases.*"]
+   admin = ["memoire.databases.*", "memoire.memory.*"]
+   member = ["memoire.databases.*", "memoire.memory.*"]
    ```
 
    A machine's key is capped by its service account's own grants, so the
@@ -200,7 +202,7 @@ paths stay inside the manifest's directory).
 | `crates/memoire-api` | Wire types of the HTTP contract (`docs/api.md`), shared by the gateway and the CLI |
 | `crates/memoire-memory` | The memory engine: its model, SQL, guards and verbs, run through a backend that executes a batch as one transaction; no network or file access of its own |
 | `crates/memoire-gateway` | The memoire module and the `memoire-gateway` binary; its memory routes run the memory engine on the data plane |
-| `crates/memoire-cli` | The `memoire` binary; `memoire memory` runs the engine over the query route |
+| `crates/memoire-cli` | The `memoire` binary; `memoire memory` calls the gateway's memory routes, and runs the engine over the query route against a gateway without them |
 | `guests/` | WASM guests, a separate Cargo workspace; `guests/runtime.toml` lists them and is the gateway's runtime manifest |
 | `config/dev/` | The development gateway configuration: `memoire.toml` and the catalog application |
 | `scripts/` | Development gateway, throwaway PostgreSQL, guest build and a development owner with a team and an API key |
