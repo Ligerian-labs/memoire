@@ -54,10 +54,10 @@ fn list(items: &[String]) -> String {
 pub fn init(
     database: Option<&Database>,
     created: bool,
+    version: i64,
     migrated_from: i64,
     store_id: &str,
 ) -> String {
-    let version = memoire_memory::schema::SCHEMA_VERSION;
     let store = if migrated_from == version {
         format!("schema {version}, up to date")
     } else {

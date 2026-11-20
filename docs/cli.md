@@ -127,7 +127,7 @@ memoire keys create --name ci-runner > ci-runner.key
 principal with `--agent` (`MEMOIRE_AGENT`) and `--session`
 (`MEMOIRE_SESSION`). The verbs call the gateway's memory API, and fall back
 to SQL over the query route against a gateway without it
-(`MEMOIRE_MEMORY_SQL=1` forces that). [memory.md](memory.md) is the
+(`MEMOIRE_MEMORY_SQL=1` forces that, `0` forbids it). [memory.md](memory.md) is the
 reference: records, statuses, ranking, concurrency and the error codes.
 
 ```sh

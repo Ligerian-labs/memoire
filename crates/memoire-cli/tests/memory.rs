@@ -20,14 +20,11 @@ use support::{
 /// target, which includes this file as its module `memory`.
 const SQL_PATH: bool = module_path!().len() > "memory".len();
 
-/// A CLI with a private configuration, on this run's path.
+/// A CLI with a private configuration, on this run's path. The child's
+/// environment starts empty, and `MEMOIRE_MEMORY_SQL` is set either way,
+/// so a variable the developer exported cannot change the path.
 fn memoire() -> Memoire {
-    let memoire = Memoire::new();
-    if SQL_PATH {
-        memoire.env("MEMOIRE_MEMORY_SQL", "1")
-    } else {
-        memoire
-    }
+    Memoire::new().env("MEMOIRE_MEMORY_SQL", if SQL_PATH { "1" } else { "0" })
 }
 
 /// A fake, and a working directory outside any git checkout.
@@ -3455,6 +3452,7 @@ fn scope_and_kind_are_scanned_for_secrets() {
         ],
     );
     let inside = agent(&fake, checkout.path(), "agent-a", "s-1");
+    let requests = fake.requests().len();
     let error = refused(
         &inside,
         &["memory", "remember", "--title", "From the checkout"],
@@ -3464,6 +3462,8 @@ fn scope_and_kind_are_scanned_for_secrets() {
         (error["code"].clone(), error["field"].clone()),
         (json!("memory_secret_detected"), json!("scope"))
     );
+    // Refused before any request, on either path.
+    assert_eq!(fake.requests().len(), requests);
     assert_eq!(footprint(&fake), before);
 }
 

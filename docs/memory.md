@@ -11,8 +11,12 @@ and the gateway runs each verb. Against a gateway without that API, which
 answers `404 not_found` for its routes, the CLI runs the same verb itself
 and sends its read and write batches over the query route of
 [api.md](api.md). Both paths run the same engine on the same tables, so a
-store can be used through either. `MEMOIRE_MEMORY_SQL=1` makes the CLI take
-the query route without asking. Output, error codes and exit codes are the
+store can be used through either. The CLI takes a `404 not_found` on a
+command's first memory request to mean that the gateway has no memory API;
+a proxy in front of the gateway that answers `404 not_found` itself would be
+taken for an older gateway. `MEMOIRE_MEMORY_SQL` removes the guess: with `1`
+the CLI takes the query route without asking, with `0` it uses the API and
+never falls back. Output, error codes and exit codes are the
 same on both paths, with two exceptions: the permission order of
 [Read-only keys](#read-only-keys), and an `sql_error` of the store's own SQL,
 which the API reports without SQLite's message. Any database can hold a store, and every table of a
@@ -725,9 +729,12 @@ taken from the git remote:
 | `jwt` | `eyJ` and at least 10 more characters, a dot, a payload of at least 2, a dot and a signature of at least 10 |
 | `env_assignment` | A line `NAME=value` (optionally `export`, optionally quoted, optionally followed by a `# comment`) whose name holds `SECRET`, `TOKEN`, `PASSWORD` or `API_KEY` and whose value has 8 characters or more and is not a placeholder, a number, a path or a URL |
 
-The CLI runs the scan before it sends a request, so a value it catches
-never leaves the machine; the gateway scans again, including the values a
-replacement inherits. A hit exits 7 with `memory_secret_detected`. The error names the `pattern`
+The fields a command gives, the scope taken from the git remote included,
+are scanned before anything is read or sent, so a value the scan catches
+never leaves the machine, even when `--supersedes` names a memory that is
+missing or retired: the secret is reported first. The values a replacement
+inherits are scanned once the replaced memory is read, and the gateway
+scans again. A hit exits 7 with `memory_secret_detected`. The error names the `pattern`
 and the `field` and never echoes the text. There is no override. Write the
 memory without the value, for example by naming where the secret is kept.
 
@@ -811,7 +818,9 @@ database answers exit 5 `database_not_found`, with a hint to run `init`.
 
 The schema is plain SQL in the database, and the gateway's memory routes
 and this CLI's SQL path run the same engine on it. Through the API the
-gateway checks the version with its own engine; the codes are the same.
+store's version is the one the gateway's engine keeps it at, and `init`
+reports that version, so an older CLI works with a newer gateway; the codes
+are the same.
 
 ## Read-only keys
 

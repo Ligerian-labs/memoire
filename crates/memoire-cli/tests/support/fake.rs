@@ -73,6 +73,8 @@ struct Inner {
     page_size: usize,
     requests: Vec<Seen>,
     fail_next: Option<(u16, Value, Option<u64>)>,
+    /// Answers set aside for one request each: method, path, status, body.
+    answers: Vec<(String, String, u16, Value)>,
     before_write: Option<Box<dyn FnOnce() + Send>>,
     /// Whether it serves the memory routes and knows their permissions;
     /// without them it is a gateway from before the memory API.
@@ -119,6 +121,7 @@ impl Fake {
             page_size: 2,
             requests: Vec::new(),
             fail_next: None,
+            answers: Vec::new(),
             before_write: None,
             memory_routes,
         }));
@@ -186,6 +189,16 @@ impl Fake {
             json!({"error": {"code": code, "classification": classification}}),
             retry,
         ));
+    }
+
+    /// The next `method` request to `path` answers `status` with `body`,
+    /// whatever the route would have said.
+    pub fn answer_once(&self, method: &str, path: &str, status: u16, body: Value) {
+        self.inner
+            .lock()
+            .unwrap()
+            .answers
+            .push((method.into(), path.into(), status, body));
     }
 
     /// The sweeper's work: the file goes, the entry stays as expired.
@@ -336,6 +349,13 @@ async fn handle(
                     .insert(header::RETRY_AFTER, retry.to_string().parse().unwrap());
             }
             Some(response)
+        } else if let Some(i) = inner
+            .answers
+            .iter()
+            .position(|(m, p, ..)| *m == seen.method && *p == seen.path)
+        {
+            let (_, _, status, body) = inner.answers.remove(i);
+            Some(reply(status, &body))
         } else if memory_route && !inner.memory_routes {
             Some(fail(404, "not_found"))
         } else {

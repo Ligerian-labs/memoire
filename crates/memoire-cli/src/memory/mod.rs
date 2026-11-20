@@ -23,9 +23,9 @@ use crate::output::Out;
 use backend::Gateway;
 use cursor::{Cursors, FIRST_LOOK_SECONDS};
 use memoire_api::{CreateDatabase, DatabaseKind, DatabaseState};
+use memoire_memory::Labels;
 use memoire_memory::model::{self, Event, Memory, Scored};
 use memoire_memory::verbs::{Recall, Remember, Revise};
-use memoire_memory::{Labels, schema};
 use serde_json::json;
 use std::io::{Read as _, Write as _};
 use std::path::{Path, PathBuf};
@@ -164,7 +164,7 @@ fn init(ctx: &Context<'_>, args: &MemoryInitArgs) -> Result<()> {
     };
     // Without the permission to read or create it, the database is left to
     // the store's routes, which find it or answer `database_not_found`.
-    let unseen = |e: &Error| e.code() == "unauthorized" && !ctx.env.memory_sql;
+    let unseen = |e: &Error| e.code() == "unauthorized" && ctx.env.memory_sql != Some(true);
     let existing = match client.database(db) {
         Ok(db) if db.state == DatabaseState::Active => Some(Some(db)),
         Ok(_) => None,
@@ -192,7 +192,7 @@ fn init(ctx: &Context<'_>, args: &MemoryInitArgs) -> Result<()> {
             crate::output::kind(database)
         ));
     }
-    let (migrated_from, store_id) = ctx.store.init().map_err(|e| match e {
+    let (schema_version, migrated_from, store_id) = ctx.store.init().map_err(|e| match e {
         e if database.is_none() && e.code() == "database_not_found" => Error::local(
             "database_not_found",
             exit::NOT_FOUND,
@@ -207,7 +207,7 @@ fn init(ctx: &Context<'_>, args: &MemoryInitArgs) -> Result<()> {
         return ctx.out.json(&json!({
             "database": database,
             "created": created,
-            "schema_version": schema::SCHEMA_VERSION,
+            "schema_version": schema_version,
             "migrated_from": migrated_from,
             "store_id": store_id,
         }));
@@ -215,6 +215,7 @@ fn init(ctx: &Context<'_>, args: &MemoryInitArgs) -> Result<()> {
     ctx.out.line(&render::init(
         database.as_ref(),
         created,
+        schema_version,
         migrated_from,
         &store_id,
     ))

@@ -95,6 +95,14 @@ fn a_gateway_without_the_memory_api_gets_the_sql_convention() {
     let run = json_run(&a, &["memory", "--db", "nope", "recall"]);
     assert_eq!(run.code, 5);
     assert_eq!(run.error()["error"]["code"], "database_not_found");
+    // MEMOIRE_MEMORY_SQL=0 pins the API: the missing route is reported,
+    // and nothing goes over the query route.
+    let pinned = agent(&fake, dir.path(), MEMBER_KEY, "agent-p").env("MEMOIRE_MEMORY_SQL", "0");
+    let queries = count(&fake, "POST", "/query");
+    let run = json_run(&pinned, &["memory", "recall"]);
+    assert_eq!(run.code, 5, "{}", run.stderr);
+    assert_eq!(run.error()["error"]["code"], "not_found");
+    assert_eq!(count(&fake, "POST", "/query"), queries);
 }
 
 #[test]
@@ -286,33 +294,39 @@ fn refusals_are_reported_byte_for_byte_alike_on_both_paths() {
     let secret = format!("{}{}", ["mz", "k_"].concat(), "q7Rx".repeat(6));
     let title = format!("token {secret}");
 
-    let cases: [(&str, i32, Vec<&str>, &str); 6] = [
+    // Each case: its code, its exit, the command, the route it reaches
+    // and how many requests to that route it makes (0: refused here).
+    let cases: [(&str, i32, Vec<&str>, &str, usize); 6] = [
         (
             "memory_conflict",
             6,
             vec!["memory", "confirm", &id, "--evidence", "e", "--rev", "1"],
             "/confirm",
+            1,
         ),
         (
             "memory_duplicate",
             6,
             vec!["memory", "remember", "--title", "Deploys need the VPN up!"],
             "/memories",
+            1,
         ),
         (
             "memory_not_current",
             6,
             vec!["memory", "revise", &gone, "--title", "x", "--reason", "r"],
             "/revise",
+            1,
         ),
         (
             "memory_not_found",
             5,
             vec!["memory", "show", &purged],
             &purged,
+            1,
         ),
-        // Inherited from the replaced memory, so the gateway's guard
-        // finds it, not the CLI's own check.
+        // A secret in a replacement's own title is refused before the
+        // replaced memory is read: no request on either path.
         (
             "memory_secret_detected",
             7,
@@ -327,6 +341,7 @@ fn refusals_are_reported_byte_for_byte_alike_on_both_paths() {
                 "r",
             ],
             "/memories",
+            0,
         ),
         // Ten tags there and one more: only the store knows.
         (
@@ -342,9 +357,11 @@ fn refusals_are_reported_byte_for_byte_alike_on_both_paths() {
                 "r",
             ],
             "/revise",
+            1,
         ),
     ];
-    for (code, exit, args, route) in cases {
+    for (code, exit, args, route, sent) in cases {
+        let all = fake.requests().len();
         let asked = fake
             .requests()
             .iter()
@@ -356,15 +373,19 @@ fn refusals_are_reported_byte_for_byte_alike_on_both_paths() {
         let error: Value = serde_json::from_str(api.1.trim()).unwrap();
         assert_eq!(error["error"]["code"], code);
         assert!(!api.1.contains(&secret));
-        // The refusal came from the gateway's memory route.
+        // The refusal came from the gateway's memory route, or from
+        // nowhere but this machine.
         assert_eq!(
             fake.requests()
                 .iter()
                 .filter(|r| r.path.ends_with(route))
                 .count(),
-            asked + 1,
+            asked + sent,
             "{code}"
         );
+        if sent == 0 {
+            assert_eq!(fake.requests().len(), all, "{code}");
+        }
     }
     let error: Value =
         serde_json::from_str(both(&a, &sql, &["memory", "show", &purged])[0].1.trim()).unwrap();
@@ -446,4 +467,86 @@ fn a_writer_that_may_not_read_is_not_shown_the_duplicates() {
         ],
     );
     assert_eq!(forced["author"]["principal"], "key_fake_writer");
+}
+
+#[test]
+fn the_first_answer_of_a_memory_route_settles_the_path() {
+    let fake = Fake::start();
+    let dir = tempfile::tempdir().unwrap();
+    let a = agent(&fake, dir.path(), MEMBER_KEY, "agent-a");
+    a.run(&["db", "create", "memory"], "").ok();
+    // The store answers, then its init route is missing: an error, never
+    // a second try through SQL.
+    fake.answer_once(
+        "POST",
+        "/v1/memoire/databases/memory/memory/init",
+        404,
+        json!({"error": {"code": "not_found", "classification": "permanent"}}),
+    );
+    let queries = count(&fake, "POST", "/query");
+    let run = json_run(&a, &["memory", "init"]);
+    assert_eq!(run.code, 5, "{}", run.stderr);
+    assert_eq!(run.error()["error"]["code"], "not_found");
+    assert_eq!(count(&fake, "GET", "/databases/memory/memory"), 1);
+    assert_eq!(count(&fake, "POST", "/query"), queries);
+}
+
+#[test]
+fn only_the_engines_input_refusals_are_rebuilt() {
+    let fake = Fake::start();
+    let dir = tempfile::tempdir().unwrap();
+    let a = agent(&fake, dir.path(), MEMBER_KEY, "agent-a");
+    ok(&a, &["memory", "init"]);
+    let refusal = json!({"error": {"code": "validation_failed", "classification": "permanent",
+                                   "details": [{"path": "/scpoe", "code": "unknown_field"}]}});
+    fake.answer_once(
+        "GET",
+        "/v1/memoire/databases/memory/memory/memories",
+        422,
+        refusal,
+    );
+    let run = json_run(&a, &["memory", "recall"]);
+    assert_eq!(run.code, 7, "{}", run.stderr);
+    let error = &run.error()["error"];
+    assert_eq!(
+        (&error["code"], &error["status"], &error["details"]),
+        (
+            &json!("validation_failed"),
+            &json!(422),
+            &json!([{"path": "/scpoe", "code": "unknown_field"}])
+        )
+    );
+}
+
+#[test]
+fn init_reports_the_version_the_gateway_keeps_the_store_at() {
+    let fake = Fake::start();
+    let dir = tempfile::tempdir().unwrap();
+    let a = agent(&fake, dir.path(), MEMBER_KEY, "agent-a");
+    ok(&a, &["memory", "init"]);
+    fake.answer_once(
+        "GET",
+        "/v1/memoire/databases/memory/memory",
+        200,
+        json!({"schema_version": 2, "supported_version": 2,
+               "store_id": "mst_01JD0Q7ZQ5Y8W1N3K4M5P6R7S8"}),
+    );
+    let init = ok(&a, &["memory", "init"]);
+    assert_eq!(
+        (&init["schema_version"], &init["migrated_from"]),
+        (&json!(2), &json!(2))
+    );
+    fake.answer_once(
+        "GET",
+        "/v1/memoire/databases/memory/memory",
+        200,
+        json!({"schema_version": 2, "supported_version": 2,
+               "store_id": "mst_01JD0Q7ZQ5Y8W1N3K4M5P6R7S8"}),
+    );
+    let run = a.run(&["memory", "init"], "").ok();
+    assert!(
+        run.stdout.contains("schema 2, up to date"),
+        "{}",
+        run.stdout
+    );
 }

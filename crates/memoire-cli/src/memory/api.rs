@@ -13,27 +13,52 @@ use memoire_memory::history::{ExportPage, Unseen};
 use memoire_memory::model::Event;
 use memoire_memory::store::Cursor;
 use memoire_memory::verbs::{Recall, Remember, Revise, Shown};
-use memoire_memory::{Labels, Refusal};
+use memoire_memory::{Invalid, Labels, Refusal};
 use serde_json::{Map, Value};
+use std::cell::Cell;
 
 /// What a verb returns, or how it failed, on either path.
 pub type Verb<T> = Result<T, memoire_memory::Error<Error>>;
 
 /// The refusal a memory route answered with `code`, its first `details`
-/// entry (path and code) and `data`; `None` when they make none.
+/// entry (path and code) and `data`; `None` when they make none. Of the
+/// `validation_failed` answers, only the engine's own input refusals are
+/// rebuilt; any other field problem stays the API error it is.
 fn rebuild(code: &str, detail: Option<(&str, &str)>, data: &Map<String, Value>) -> Option<Refusal> {
     Refusal::from_wire(code, detail, data)
+        .filter(|r| !matches!(r, Refusal::InvalidArgument(Invalid::Field { .. })))
+}
+
+/// The path a command takes to the store.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Path {
+    /// The API, until a memory route answers.
+    Ask,
+    Api,
+    Sql,
+}
+
+/// Whether the gateway answered that it has no such route: an older
+/// gateway, without the memory API.
+pub fn no_route(error: &Error) -> bool {
+    matches!(error, Error::Api { status: 404, error, .. } if error.code == "not_found")
 }
 
 /// The store of one database, through its memory routes.
 pub struct Api<'a> {
     pub gateway: &'a Gateway,
+    /// Set to [`Path::Api`] by the first answer that is not "no route".
+    pub path: &'a Cell<Path>,
 }
 
 impl Api<'_> {
     /// A route's answer as a verb's: a memory refusal rebuilt, any other
-    /// error as the query route's would be reported.
+    /// error as the query route's would be reported. Any answer but a
+    /// first "no route" settles the command on the API.
     fn answer<T>(&self, result: crate::error::Result<T>) -> Verb<T> {
+        if !matches!(&result, Err(e) if no_route(e) && self.path.get() == Path::Ask) {
+            self.path.set(Path::Api);
+        }
         result.map_err(|e| {
             if let Error::Api { error, data, .. } = &e {
                 let detail = error
@@ -53,17 +78,18 @@ impl Api<'_> {
     }
 
     /// `GET …/memory`, then `POST …/memory/init` unless the store is at
-    /// the gateway's version: the version the store had and its id. A
-    /// current store is not written to, so a read-only key can run this.
-    pub fn init(&self) -> Verb<(i64, String)> {
+    /// the gateway's version: the store's version now (the gateway's
+    /// engine's), the version it had and its id. A current store is not
+    /// written to, so a read-only key can run this.
+    pub fn init(&self) -> Verb<(i64, i64, String)> {
         let client = &self.gateway.client;
         match self.answer(client.memory_store(self.db())) {
-            Ok(store) => Ok((store.schema_version, store.store_id)),
+            Ok(store) => Ok((store.schema_version, store.schema_version, store.store_id)),
             Err(memoire_memory::Error::Refused(
                 Refusal::NotInitialized | Refusal::SchemaOlder { .. },
             )) => {
                 let done = self.answer(client.memory_init(self.db()))?;
-                Ok((done.migrated_from, done.store_id))
+                Ok((done.schema_version, done.migrated_from, done.store_id))
             }
             Err(e) => Err(e),
         }
