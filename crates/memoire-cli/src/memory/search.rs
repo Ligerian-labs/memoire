@@ -98,21 +98,38 @@ pub fn similarity(a: &BTreeSet<String>, b: &BTreeSet<String>) -> f64 {
 }
 
 /// Selects the duplicate candidates of a title with `tokens`: memories of
-/// `scope`, still current, whose title matches a token, best first.
-pub fn duplicate_candidates(batch: &mut Batch, tokens: &BTreeSet<String>, scope: &str) -> usize {
+/// `scope`, still current, whose title matches a token, best first. With
+/// `except`, the memory being replaced, which is never a candidate and
+/// takes none of the slots.
+pub fn duplicate_candidates(
+    batch: &mut Batch,
+    tokens: &BTreeSet<String>,
+    scope: &str,
+    except: Option<&str>,
+) -> usize {
     let tokens: Vec<String> = tokens.iter().cloned().collect();
+    let mut params = vec![
+        text(&format!("{{title}} : ({})", match_any(&tokens))),
+        text(scope),
+        int(DUPLICATE_CANDIDATES),
+    ];
+    let exclude = match except {
+        Some(id) => {
+            params.push(text(id));
+            "AND m.id <> ?4 "
+        }
+        None => "",
+    };
     batch.push(
-        "SELECT m.id, m.title, m.status FROM \
-         (SELECT rowid AS seq, bm25(memoire_memory_fts) AS rank FROM memoire_memory_fts \
-          WHERE memoire_memory_fts MATCH ?1) h \
-         JOIN memoire_memory_memories m ON m.seq = h.seq \
-         WHERE m.scope = ?2 AND m.status NOT IN ('superseded', 'forgotten') \
-         ORDER BY h.rank, m.id LIMIT ?3",
-        vec![
-            text(&format!("{{title}} : ({})", match_any(&tokens))),
-            text(scope),
-            int(DUPLICATE_CANDIDATES),
-        ],
+        format!(
+            "SELECT m.id, m.title, m.status FROM \
+             (SELECT rowid AS seq, bm25(memoire_memory_fts) AS rank FROM memoire_memory_fts \
+              WHERE memoire_memory_fts MATCH ?1) h \
+             JOIN memoire_memory_memories m ON m.seq = h.seq \
+             WHERE m.scope = ?2 AND m.status NOT IN ('superseded', 'forgotten') {exclude}\
+             ORDER BY h.rank, m.id LIMIT ?3"
+        ),
+        params,
     )
 }
 

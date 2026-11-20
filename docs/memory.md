@@ -78,10 +78,11 @@ revision holds:
 | `status` | The status right after this revision |
 | `supersedes`, `superseded_by` | Links to other memories, or `null` |
 | `author_principal`, `author_agent`, `author_session` | Who wrote it |
-| `reason` | Why: `remembered` for revision 1, else the verb's `--reason`, or `purged` once a purge erased the memory this revision linked to |
+| `reason` | Why: `remembered` for revision 1, or the `--reason` of a `remember --supersedes`; else the verb's `--reason`; or `purged` once a purge erased the memory this revision linked to |
 | `created_at` | When, on the gateway host's clock, to the millisecond |
 
-`remember`, `revise`, `supersede` (on both memories) and `forget` write a
+`remember` (and, with `--supersedes`, a revision of the memory it
+replaces), `revise`, `supersede` (on both memories) and `forget` write a
 revision. `confirm`, `dispute` and `resolve` do not.
 
 A `revise` takes the old text out of search at once, but the old revision
@@ -104,7 +105,8 @@ does not enforce:
 | `run:<id>` | One workload |
 
 Without `--scope`, `remember` uses the project scope of the git checkout it
-runs in, else `global`. The project scope is the host and the path of `git
+runs in, else `global`; with `--supersedes`, the scope of the memory it
+replaces. The project scope is the host and the path of `git
 remote get-url origin`, lowercased, without user, port or a trailing `.git`.
 Every clone gets the same scope, over SSH or HTTPS:
 
@@ -116,7 +118,8 @@ Every clone gets the same scope, over SSH or HTTPS:
 A checkout without `origin`, or with a local path or `file://` remote, has no
 project scope.
 
-A kind matches `^[a-z][a-z0-9-]{1,31}$` and defaults to `fact`. The documented
+A kind matches `^[a-z][a-z0-9-]{1,31}$` and defaults to `fact` (with
+`remember --supersedes`, to the replaced memory's kind). The documented
 kinds are `fact`, `decision`, `procedure`, `preference`, `pitfall` and
 `handoff`.
 
@@ -245,7 +248,8 @@ store had, `0` for a new store and `1` when it was already current.
 
 ```sh
 memoire memory remember --title TITLE [--body BODY | --body-file FILE] [--kind KIND] \
-  [--scope SCOPE] [--tag TAG]... [--evidence TEXT]... [--force]
+  [--scope SCOPE] [--tag TAG]... [--evidence TEXT]... [--force] \
+  [--supersedes OLD_ID --reason REASON]
 ```
 
 Records revision 1 of a new memory, `inferred`. `--body-file -` reads the
@@ -253,8 +257,31 @@ body from standard input; nothing else reads it, so an open standard input
 never blocks a verb. Unless `--force`, a memory with a similar title in the
 same scope refuses it (see [Near-duplicates](#near-duplicates)).
 
-Prints the memory object. Errors: `memory_duplicate`,
-`memory_secret_detected`, `memory_too_large`.
+With `--supersedes OLD_ID`, the new memory replaces `OLD_ID` in the same
+write, as `supersede OLD_ID --by NEW_ID` would, so both are never current
+at once. `--supersedes` and `--reason` each need the other (exit 2
+otherwise). `OLD_ID` must be current; a disputed memory may be replaced.
+
+- The new memory takes `OLD_ID`'s scope, kind and tags unless `--scope`,
+  `--kind` or `--tag` gives them. Any `--tag` replaces the whole list.
+- Its title, body and evidence are its own: no `--body` is an empty body, no
+  `--evidence` is none. It starts `inferred`; confirmations of `OLD_ID` do
+  not carry over.
+- `OLD_ID` gets a revision, `superseded` with `superseded_by` set, and leaves
+  recall. The reason is that revision's `reason` and the `reason` of the new
+  memory's revision 1.
+- The near-duplicate check skips `OLD_ID`, so a title close to its title
+  needs no `--force`.
+- The log gets a `remember` event on the new memory, then a `supersede` event
+  on `OLD_ID`.
+
+Prints the memory object, the new memory with `supersedes` set. Without
+`--json`, a note on standard error names the replaced memory. Errors:
+`memory_duplicate`, `memory_secret_detected`, `memory_too_large`; with
+`--supersedes`, also `memory_not_found` (for a purged id, its message says
+when it was purged), `memory_not_current` (`OLD_ID` superseded or
+forgotten; `superseded_by` says by what) and `memory_conflict` (see
+[Concurrency](#concurrency)).
 
 ### show
 
@@ -386,11 +413,12 @@ Prints the memory object. Errors: `memory_no_open_dispute`,
 memoire memory supersede ID --by NEW_ID --reason REASON
 ```
 
-Marks `ID` as replaced by `NEW_ID`. Both get a revision. `ID` becomes
-`superseded` with `superseded_by` set and leaves recall; `NEW_ID` keeps its
-status and gets `supersedes` set, the memory it replaced most recently. The
-replacement must exist first, so write it with `remember`, with `--force`
-when its title is close to the old one's.
+Marks `ID` as replaced by `NEW_ID`, two memories that both exist already.
+Both get a revision. `ID` becomes `superseded` with `superseded_by` set and
+leaves recall; `NEW_ID` keeps its status and gets `supersedes` set, the
+memory it replaced most recently. To write a replacement and retire the old
+memory in one step, use `remember --supersedes ID --reason REASON` (see
+[remember](#remember)).
 
 ```json
 {"superseded": {"id": "mem_01JD0Q7ZQ5Y8W1N3K4M5P6R7S8", "status": "superseded", …},
@@ -449,7 +477,7 @@ clock.
 | `remember` | The title |
 | `revise`, `dispute`, `resolve`, `forget` | The reason |
 | `confirm` | `confirmed rev N` |
-| `supersede` | `by NEW_ID: reason`, on the replaced memory; `by NEW_ID` once `NEW_ID` is purged |
+| `supersede` | `by NEW_ID: reason`, on the replaced memory, from `supersede` or `remember --supersedes`; `by NEW_ID` once `NEW_ID` is purged |
 | `purge` | `null`; `rev` and `scope` are `null` too |
 
 `--unseen` is described in [The log and cursors](#the-log-and-cursors).
@@ -515,7 +543,8 @@ same scope:
    more than three letters that do not end in `ss`. A title of stopwords only
    skips the check.
 2. Candidates: the 20 best memories of the same scope, not superseded or
-   forgotten, whose title matches any token.
+   forgotten, whose title matches any token. With `--supersedes`, the memory
+   being replaced is never a candidate.
 3. Similarity: the Dice coefficient of the two token sets,
    `2 * |A ∩ B| / (|A| + |B|)`. At 0.65 or more, the candidate is a hit.
 
@@ -567,6 +596,14 @@ A write that finds the memory purged in between exits 5 with
 A revision never writes back the links of a stale read. It carries the
 `supersedes` and `superseded_by` that the memory's row has when the write
 runs, so a link to a memory purged in between does not come back.
+
+`remember --supersedes` writes the old memory's revision first, guarded on
+the rev it read. When the old memory was revised, superseded, forgotten or
+purged in between, nothing of the batch applies, the new memory included,
+and the CLI reports what is true now: `memory_not_found`,
+`memory_not_current`, or `memory_conflict` with the old memory's `id` and
+`current_rev`. Read it again and decide whether the replacement still
+applies.
 
 Two `supersede` runs cannot close a cycle (see [supersede](#supersede)), and
 two `forget --purge` runs of one memory leave one purge event: the second

@@ -3178,3 +3178,605 @@ fn json_paths_that_are_not_utf8_do_not_panic() {
     assert!(run.json()["path"].as_str().unwrap().ends_with(".jsonl"));
     assert!(odd.exists());
 }
+
+/// `memory remember TITLE --supersedes OLD --reason REASON EXTRA…`.
+fn replace_args<'a>(
+    title: &'a str,
+    old: &'a str,
+    reason: &'a str,
+    extra: &[&'a str],
+) -> Vec<&'a str> {
+    let mut args = vec![
+        "memory",
+        "remember",
+        "--title",
+        title,
+        "--supersedes",
+        old,
+        "--reason",
+        reason,
+    ];
+    args.extend_from_slice(extra);
+    args
+}
+
+fn ids_of(found: &Value) -> Vec<String> {
+    found["memories"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(id_of)
+        .collect()
+}
+
+#[test]
+fn remember_supersedes_replaces_a_memory_in_one_step() {
+    let (fake, dir) = world();
+    let a = agent(&fake, dir.path(), "agent-a", "s-1");
+    ok(&a, &["memory", "init"]);
+    let old = id_of(&remember(
+        &a,
+        "Acme deploys need the VPN connected",
+        &[
+            "--scope",
+            "client:acme",
+            "--kind",
+            "pitfall",
+            "--tag",
+            "deploy",
+            "--tag",
+            "vpn",
+            "--evidence",
+            "e1",
+            "--body",
+            "Connect first, then run make deploy.",
+        ],
+    ));
+    // A near-duplicate of the old title, and no --force.
+    let title = "Acme deploys need the VPN connected first";
+    let reason = "the gateway moved behind the VPN";
+    let new = ok(&a, &replace_args(title, &old, reason, &[]));
+    let new_id = id_of(&new);
+    assert_ne!(new_id, old);
+    assert_eq!(
+        [
+            &new["scope"],
+            &new["kind"],
+            &new["tags"],
+            &new["body"],
+            &new["evidence"],
+            &new["status"],
+            &new["supersedes"],
+            &new["superseded_by"],
+            &new["rev"],
+            &new["title"],
+        ],
+        [
+            &json!("client:acme"),
+            &json!("pitfall"),
+            &json!(["deploy", "vpn"]),
+            &json!(""),
+            &json!([]),
+            &json!("inferred"),
+            &json!(old),
+            &Value::Null,
+            &json!(1),
+            &json!(title),
+        ]
+    );
+
+    let old_now = show(&a, &old);
+    assert_eq!(old_now["memory"]["status"], "superseded");
+    assert_eq!(old_now["memory"]["superseded_by"], new_id);
+    assert_eq!(old_now["memory"]["rev"], 2);
+    let revisions = old_now["revisions"].as_array().unwrap();
+    assert_eq!(revisions.len(), 2);
+    assert_eq!(
+        (
+            revisions[1]["rev"].clone(),
+            revisions[1]["status"].clone(),
+            revisions[1]["superseded_by"].clone(),
+            revisions[1]["reason"].clone(),
+            revisions[1]["body"].clone(),
+        ),
+        (
+            json!(2),
+            json!("superseded"),
+            json!(new_id),
+            json!(reason),
+            json!("Connect first, then run make deploy.")
+        )
+    );
+    let new_now = show(&a, &new_id);
+    let revisions = new_now["revisions"].as_array().unwrap();
+    assert_eq!(revisions.len(), 1);
+    assert_eq!(
+        (
+            revisions[0]["reason"].clone(),
+            revisions[0]["supersedes"].clone()
+        ),
+        (json!(reason), json!(old))
+    );
+
+    for args in [
+        &["memory", "recall", "--scope", "client:acme"][..],
+        &[
+            "memory",
+            "recall",
+            "acme deploys vpn",
+            "--scope",
+            "client:acme",
+        ],
+    ] {
+        assert_eq!(ids_of(&ok(&a, args)), [new_id.as_str()], "{args:?}");
+    }
+
+    let events = ok(&a, &["memory", "log", "--limit", "2"])["events"].clone();
+    assert_eq!(
+        (
+            events[0]["verb"].clone(),
+            events[0]["memory_id"].clone(),
+            events[0]["summary"].clone(),
+            events[0]["rev"].clone(),
+        ),
+        (
+            json!("supersede"),
+            json!(old),
+            json!(format!("by {new_id}: {reason}")),
+            json!(2)
+        )
+    );
+    assert_eq!(
+        (
+            events[1]["verb"].clone(),
+            events[1]["memory_id"].clone(),
+            events[1]["summary"].clone(),
+            events[1]["rev"].clone(),
+        ),
+        (json!("remember"), json!(new_id), json!(title), json!(1))
+    );
+    assert!(events[0]["seq"].as_i64() > events[1]["seq"].as_i64());
+}
+
+#[test]
+fn remember_supersedes_keeps_what_the_flags_do_not_give() {
+    let (fake, dir) = world();
+    let a = agent(&fake, dir.path(), "agent-a", "s-1");
+    ok(&a, &["memory", "init"]);
+    let old_title = "Acme deploys need the VPN connected";
+    let acme = [
+        "--scope",
+        "client:acme",
+        "--kind",
+        "pitfall",
+        "--tag",
+        "deploy",
+        "--tag",
+        "vpn",
+    ];
+    let old = id_of(&remember(&a, old_title, &acme));
+    // The same title in another scope: only a replace into that scope
+    // meets it.
+    let beta = id_of(&remember(&a, old_title, &["--scope", "client:beta"]));
+    let title = "Acme deploys need the VPN connected first";
+    let error = refused(
+        &a,
+        &replace_args(title, &old, "moved", &["--scope", "client:beta"]),
+        6,
+    );
+    assert_eq!(error["code"], "memory_duplicate");
+    assert_eq!(error["candidates"].as_array().unwrap().len(), 1);
+    assert_eq!(error["candidates"][0]["id"], beta);
+
+    let new = ok(
+        &a,
+        &replace_args(
+            title,
+            &old,
+            "moved",
+            &[
+                "--scope",
+                "client:gamma",
+                "--kind",
+                "decision",
+                "--tag",
+                "network",
+                "--body",
+                "Its own body.",
+                "--evidence",
+                "e2",
+            ],
+        ),
+    );
+    assert_eq!(
+        (
+            new["scope"].clone(),
+            new["kind"].clone(),
+            new["tags"].clone(),
+            new["body"].clone(),
+            new["evidence"].clone(),
+            new["supersedes"].clone(),
+        ),
+        (
+            json!("client:gamma"),
+            json!("decision"),
+            json!(["network"]),
+            json!("Its own body."),
+            json!(["e2"]),
+            json!(old)
+        )
+    );
+
+    // Without --json: the memory as usual, and a note naming the old one.
+    let second = id_of(&remember(&a, "Beta builds use the shared runner", &acme));
+    let run = a
+        .run(
+            &[
+                "memory",
+                "remember",
+                "--title",
+                "Beta builds use the dedicated runner",
+                "--supersedes",
+                &second,
+                "--reason",
+                "runner split",
+                "--kind",
+                "fact",
+            ],
+            "",
+        )
+        .ok();
+    assert!(run.stdout.contains("supersedes"), "{}", run.stdout);
+    assert!(run.stdout.contains(&second), "{}", run.stdout);
+    assert!(run.stderr.contains(&second), "{}", run.stderr);
+    assert_eq!(run.stderr.lines().count(), 1, "{}", run.stderr);
+    let replaced = show(&a, &second)["memory"]["superseded_by"].clone();
+    let current = ok(&a, &["memory", "show", replaced.as_str().unwrap()])["memory"].clone();
+    assert_eq!(
+        (
+            current["kind"].clone(),
+            current["scope"].clone(),
+            current["tags"].clone()
+        ),
+        (
+            json!("fact"),
+            json!("client:acme"),
+            json!(["deploy", "vpn"])
+        )
+    );
+}
+
+#[test]
+fn remember_supersedes_still_checks_other_memories_for_duplicates() {
+    let (fake, dir) = world();
+    let a = agent(&fake, dir.path(), "agent-a", "s-1");
+    ok(&a, &["memory", "init"]);
+    let old = id_of(&remember(&a, "Acme deploys need the VPN connected", &[]));
+    let third = id_of(&remember(
+        &a,
+        "Acme deploys need the VPN connection",
+        &["--force"],
+    ));
+    let before = footprint(&fake);
+    let title = "Acme deploys need the VPN connected first";
+    let error = refused(&a, &replace_args(title, &old, "clearer", &[]), 6);
+    assert_eq!(error["code"], "memory_duplicate");
+    let candidates: Vec<&str> = error["candidates"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|c| c["id"].as_str().unwrap())
+        .collect();
+    assert_eq!(candidates, [third.as_str()]);
+    assert_eq!(footprint(&fake), before);
+    let old_now = show(&a, &old)["memory"].clone();
+    assert_eq!(
+        (old_now["status"].clone(), old_now["rev"].clone()),
+        (json!("inferred"), json!(1))
+    );
+
+    let new = ok(&a, &replace_args(title, &old, "clearer", &["--force"]));
+    assert_eq!(new["supersedes"], old);
+    assert_eq!(show(&a, &old)["memory"]["status"], "superseded");
+}
+
+#[test]
+fn remember_supersedes_refusals_write_nothing() {
+    let (fake, dir) = world();
+    let a = agent(&fake, dir.path(), "agent-a", "s-1");
+    let c = agent(&fake, dir.path(), "agent-c", "s-3");
+    ok(&a, &["memory", "init"]);
+    let replaced = id_of(&remember(&a, "Builds run on Jenkins", &[]));
+    let by = id_of(&remember(&a, "Builds run on GitHub Actions", &[]));
+    ok(
+        &a,
+        &[
+            "memory",
+            "supersede",
+            &replaced,
+            "--by",
+            &by,
+            "--reason",
+            "migrated",
+        ],
+    );
+    let forgotten = id_of(&remember(&a, "Temporary hostname is tmp-seven", &[]));
+    ok(&a, &["memory", "forget", &forgotten, "--reason", "gone"]);
+    let purged = id_of(&remember(&a, "Scratch note to purge", &[]));
+    ok(
+        &a,
+        &["memory", "forget", &purged, "--reason", "leak", "--purge"],
+    );
+    let current = id_of(&remember(&a, "Release notes go in the changelog", &[]));
+    let before = footprint(&fake);
+
+    let replace = |old: &str, code: i32| {
+        refused(
+            &a,
+            &replace_args("A replacement note", old, "newer", &[]),
+            code,
+        )
+    };
+    let error = replace(&replaced, 6);
+    assert_eq!(
+        (
+            error["code"].clone(),
+            error["status"].clone(),
+            error["superseded_by"].clone()
+        ),
+        (json!("memory_not_current"), json!("superseded"), json!(by))
+    );
+    let error = replace(&forgotten, 6);
+    assert_eq!(
+        (error["code"].clone(), error["status"].clone()),
+        (json!("memory_not_current"), json!("forgotten"))
+    );
+    let error = replace("mem_01JD0Q7ZQ5Y8W1N3K4M5P6R7S8", 5);
+    assert_eq!(error["code"], "memory_not_found");
+    let error = replace(&purged, 5);
+    assert_eq!(error["code"], "memory_not_found");
+    assert!(
+        error["message"].as_str().unwrap().contains("was purged at"),
+        "{error}"
+    );
+    for args in [
+        &[
+            "memory",
+            "remember",
+            "--title",
+            "t",
+            "--supersedes",
+            current.as_str(),
+        ][..],
+        &["memory", "remember", "--title", "t", "--reason", "r"],
+        &[
+            "memory",
+            "remember",
+            "--title",
+            "t",
+            "--supersedes",
+            "mem_x",
+            "--reason",
+            "r",
+        ],
+    ] {
+        let run = a.run(&with_json(args), "");
+        assert_eq!(run.code, 2, "{args:?}: {}", run.stderr);
+        assert_eq!(run.stdout, "");
+    }
+    let secret = fake_secret();
+    let error = refused(
+        &a,
+        &replace_args("A replacement note", &current, &secret, &[]),
+        7,
+    );
+    assert_eq!(
+        (error["code"].clone(), error["field"].clone()),
+        (json!("memory_secret_detected"), json!("reason"))
+    );
+    assert!(!error.to_string().contains(&secret));
+    assert_eq!(footprint(&fake), before);
+
+    // A disputed memory is current, so it may be replaced.
+    ok(&c, &["memory", "dispute", &current, "--reason", "outdated"]);
+    let new = ok(
+        &a,
+        &replace_args("Release notes go in the docs site", &current, "moved", &[]),
+    );
+    assert_eq!(new["supersedes"], current);
+    assert_eq!(show(&a, &current)["memory"]["status"], "superseded");
+}
+
+#[test]
+fn a_replace_racing_another_writer_is_refused_whole() {
+    let (fake, dir) = world();
+    let a = agent(&fake, dir.path(), "agent-a", "s-1");
+    ok(&a, &["memory", "init"]);
+    let rival = || agent(&fake, dir.path(), "agent-b", "s-2");
+
+    // Revised between the replace's read and its write.
+    let old = id_of(&remember(&a, "Proxy listens on port 3128", &[]));
+    let before = footprint(&fake);
+    let receiver = race(
+        &fake,
+        rival(),
+        strings(&[
+            "memory",
+            "revise",
+            &old,
+            "--add-tag",
+            "net",
+            "--reason",
+            "tag",
+        ]),
+    );
+    let error = refused(
+        &a,
+        &replace_args("Proxy listens on port 8080", &old, "moved", &[]),
+        6,
+    );
+    receiver.recv().unwrap().ok();
+    assert_eq!(
+        (
+            error["code"].clone(),
+            error["id"].clone(),
+            error["current_rev"].clone()
+        ),
+        (json!("memory_conflict"), json!(old), json!(2))
+    );
+    // Only the revise's revision and event: nothing of the replacement.
+    let (m, r, e, f) = (before[0], before[1], before[2], before[3]);
+    assert_eq!(footprint(&fake), [m, r + 1, e + 1, f]);
+    assert_eq!(
+        count(
+            &fake,
+            &format!(
+                "SELECT count(*) FROM memoire_memory_revisions \
+                 WHERE supersedes = '{old}' OR superseded_by IS NOT NULL"
+            )
+        ),
+        0
+    );
+    let old_now = show(&a, &old)["memory"].clone();
+    assert_eq!(
+        (old_now["status"].clone(), old_now["superseded_by"].clone()),
+        (json!("inferred"), Value::Null)
+    );
+
+    // Superseded meanwhile by a plain supersede.
+    let old = id_of(&remember(&a, "Mirror syncs every hour", &[]));
+    let by = id_of(&remember(&a, "Cache warms at midnight", &[]));
+    let receiver = race(
+        &fake,
+        rival(),
+        strings(&[
+            "memory",
+            "supersede",
+            &old,
+            "--by",
+            &by,
+            "--reason",
+            "newer",
+        ]),
+    );
+    let error = refused(
+        &a,
+        &replace_args("Mirror syncs every ten minutes", &old, "faster", &[]),
+        6,
+    );
+    receiver.recv().unwrap().ok();
+    assert_eq!(
+        (error["code"].clone(), error["superseded_by"].clone()),
+        (json!("memory_not_current"), json!(by))
+    );
+    assert_eq!(
+        count(
+            &fake,
+            "SELECT count(*) FROM memoire_memory_memories WHERE title LIKE 'Mirror syncs every ten%'"
+        ),
+        0
+    );
+
+    // Purged meanwhile.
+    let old = id_of(&remember(&a, "Scratch bucket is tmp-eight", &[]));
+    let receiver = race(
+        &fake,
+        rival(),
+        strings(&["memory", "forget", &old, "--reason", "leak", "--purge"]),
+    );
+    let error = refused(
+        &a,
+        &replace_args("Scratch bucket is tmp-nine", &old, "renamed", &[]),
+        5,
+    );
+    receiver.recv().unwrap().ok();
+    assert_eq!(error["code"], "memory_not_found");
+    assert!(
+        error["message"].as_str().unwrap().contains("purged"),
+        "{error}"
+    );
+    assert_eq!(
+        count(
+            &fake,
+            "SELECT count(*) FROM memoire_memory_memories WHERE title LIKE 'Scratch bucket%'"
+        ),
+        0
+    );
+}
+
+#[test]
+fn a_purge_after_a_replace_clears_the_link_both_ways() {
+    let (fake, dir) = world();
+    let a = agent(&fake, dir.path(), "agent-a", "s-1");
+    ok(&a, &["memory", "init"]);
+    let holds = |word: &str| {
+        dump(&fake)
+            .iter()
+            .any(|(_, bytes)| bytes.windows(word.len()).any(|w| w == word.as_bytes()))
+    };
+    let reason_of = |id: &str, rev: i64| -> String {
+        sqlite(&fake, "memory")
+            .query_row(
+                "SELECT reason FROM memoire_memory_revisions WHERE memory_id = ?1 AND rev = ?2",
+                rusqlite::params![id, rev],
+                |r| r.get(0),
+            )
+            .unwrap()
+    };
+
+    // The old one is purged: the new one no longer says what it replaced.
+    let old = id_of(&remember(&a, "Ledger exports run on Fridays", &[]));
+    let new = id_of(&ok(
+        &a,
+        &replace_args(
+            "Ledger exports run on Mondays",
+            &old,
+            "zibblort moved the schedule",
+            &[],
+        ),
+    ));
+    assert!(holds("zibblort"));
+    ok(
+        &a,
+        &["memory", "forget", &old, "--reason", "leak", "--purge"],
+    );
+    let now = show(&a, &new)["memory"].clone();
+    assert_eq!(
+        (now["supersedes"].clone(), now["status"].clone()),
+        (Value::Null, json!("inferred"))
+    );
+    assert_eq!(reason_of(&new, 1), "purged");
+    assert!(!holds("zibblort"), "the reason survived the purge");
+
+    // The new one is purged: the old one is current again.
+    let old = id_of(&remember(&a, "Invoices are numbered per year", &[]));
+    let new = id_of(&ok(
+        &a,
+        &replace_args(
+            "Invoices are numbered per month",
+            &old,
+            "quazzle asked for it",
+            &[],
+        ),
+    ));
+    ok(
+        &a,
+        &["memory", "forget", &new, "--reason", "leak", "--purge"],
+    );
+    let now = show(&a, &old)["memory"].clone();
+    assert_eq!(
+        (now["superseded_by"].clone(), now["status"].clone()),
+        (Value::Null, json!("inferred"))
+    );
+    assert!(ids_of(&ok(&a, &["memory", "recall"])).contains(&old));
+    assert_eq!(reason_of(&old, 2), "purged");
+    let summary: String = sqlite(&fake, "memory")
+        .query_row(
+            "SELECT summary FROM memoire_memory_events WHERE memory_id = ?1 AND verb = 'supersede'",
+            [&old],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(summary, format!("by {new}"));
+    assert!(!holds("quazzle"), "the reason survived the purge");
+}
