@@ -15,12 +15,12 @@ The CLI needs a server and an API key. Either `MEMOIRE_SERVER` and `MEMOIRE_API_
 memoire login --server https://memoire.example --key-file key.txt
 ```
 
-Choose a session id once, at the start of the run, and write it as a literal. It must be unique to this run and never shared with another agent, because two agents on one key with the same session count as one writer. Use the same literal for every command of the run. Never compute it in the command with `$(date)` or `$$`, because a shell that starts a new process per command would give each command a new session. If your shell does not keep the environment between commands, set both variables on each command or pass `--agent` and `--session`.
+Choose a session id once, at the start of the run, and write it as a literal. It must be unique to this run and never shared with another agent, because two agents on one key with the same session count as one writer and share one `log --unseen` cursor. Do not invent the unique part: agents pick the same letters. Run `od -An -N4 -tx4 /dev/urandom` once and copy the eight characters it prints into the id. Use the same literal for every command of the run. Never compute it in the command with `$(date)` or `$$`, because a shell that starts a new process per command would give each command a new session. If your shell does not keep the environment between commands, set both variables on each command or pass `--agent` and `--session`.
 
 ```sh
 export MEMOIRE_AGENT=claude-opus-5-5           # your model id
-export MEMOIRE_SESSION=widgets-20261119-a7     # an example: make up your own, then keep it for the whole run
-MEMOIRE_AGENT=claude-opus-5-5 MEMOIRE_SESSION=widgets-20261119-a7 memoire memory recall "deploy" --json  # when the shell forgets the environment
+export MEMOIRE_SESSION=widgets-5f3a9c1e       # an example: a name and the characters `od` printed for you, kept for the whole run
+MEMOIRE_AGENT=claude-opus-5-5 MEMOIRE_SESSION=widgets-5f3a9c1e memoire memory recall "deploy" --json  # when the shell forgets the environment
 ```
 
 - Every write records the key's principal (the server says who it is; `memoire whoami --json` prints it as `subject`), your agent and your session. A confirmation counts only from another key or another session than the one that wrote the text. Without `MEMOIRE_SESSION`, every run of a key is the same writer and can never confirm its earlier text.
