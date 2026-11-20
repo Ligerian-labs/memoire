@@ -63,6 +63,9 @@ pub async fn supersede<B: Backend>(
     by: &str,
     reason: &str,
 ) -> Result<(Memory, Memory), Error<B::Error>> {
+    labels.check()?;
+    let id = &model::memory_id("id", id)?;
+    let by = &model::memory_id("by", by)?;
     let reason = model::reason(reason)?;
     model::guard_secrets(
         [("reason", reason.as_str())]
@@ -136,6 +139,8 @@ pub async fn forget<B: Backend>(
     id: &str,
     reason: &str,
 ) -> Result<Memory, Error<B::Error>> {
+    labels.check()?;
+    let id = &model::memory_id("id", id)?;
     let reason = model::reason(reason)?;
     model::guard_secrets(
         [("reason", reason.as_str())]
@@ -179,6 +184,8 @@ pub async fn purge<B: Backend>(
     id: &str,
     reason: &str,
 ) -> Result<(), Error<B::Error>> {
+    labels.check()?;
+    let id = &model::memory_id("id", id)?;
     let reason = model::reason(reason)?;
     model::guard_secrets(
         [("reason", reason.as_str())]

@@ -78,7 +78,10 @@ PostgreSQL, migrations, jobs, health and telemetry.
    decisions: after an accepted `DatabaseCreated` it creates the file
    idempotently, and after a delete or expiry it removes the file. A
    reconciler at startup repairs drift between the files and the catalog
-   read model. It never reads another context's tables.
+   read model. It never reads another context's tables. The memory routes
+   run the memory engine (`crates/memoire-memory`) on these same
+   connections, one batch per transaction as the query route runs a
+   client's, recording the caller's subject as the writer.
 3. **Identity** (generic, Merezha's block). Accounts, teams, invitations,
    service accounts, API keys and RBAC. memoire registers the permissions
    `memoire.databases.create`, `.delete`, `.read`, `.write` and `.snapshots`;
@@ -196,7 +199,7 @@ paths stay inside the manifest's directory).
 | --- | --- |
 | `crates/memoire-api` | Wire types of the HTTP contract (`docs/api.md`), shared by the gateway and the CLI |
 | `crates/memoire-memory` | The memory engine: its model, SQL, guards and verbs, run through a backend that executes a batch as one transaction; no network or file access of its own |
-| `crates/memoire-gateway` | The memoire module and the `memoire-gateway` binary |
+| `crates/memoire-gateway` | The memoire module and the `memoire-gateway` binary; its memory routes run the memory engine on the data plane |
 | `crates/memoire-cli` | The `memoire` binary; `memoire memory` runs the engine over the query route |
 | `guests/` | WASM guests, a separate Cargo workspace; `guests/runtime.toml` lists them and is the gateway's runtime manifest |
 | `config/dev/` | The development gateway configuration: `memoire.toml` and the catalog application |

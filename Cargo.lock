@@ -2531,6 +2531,7 @@ dependencies = [
  "http-body-util",
  "jiff",
  "memoire-api",
+ "memoire-memory",
  "merezha-application",
  "merezha-cli",
  "merezha-domain",

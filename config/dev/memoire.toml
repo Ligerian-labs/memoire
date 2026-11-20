@@ -25,10 +25,10 @@ app_origin = "http://localhost:4200"
 secret_key = { file = "../../.memoire-dev/secrets/identity.key" }
 registration = "open"
 
-# The team roles hold memoire's five permissions; API keys carry a subset.
+# The team roles hold memoire's seven permissions; API keys carry a subset.
 [modules.identity.rbac.builtin_grants]
-admin = ["memoire.databases.*"]
-member = ["memoire.databases.*"]
+admin = ["memoire.databases.*", "memoire.memory.*"]
+member = ["memoire.databases.*", "memoire.memory.*"]
 
 [modules.identity.password]
 argon2_memory_kib = 19456

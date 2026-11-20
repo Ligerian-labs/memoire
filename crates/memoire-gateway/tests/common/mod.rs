@@ -92,8 +92,8 @@ app_origin = "{ORIGIN}"
 secret_key = {{ file = "identity.key" }}
 registration = "open"
 [modules.identity.rbac.builtin_grants]
-admin = ["memoire.databases.*"]
-member = ["memoire.databases.*"]
+admin = ["memoire.databases.*", "memoire.memory.*"]
+member = ["memoire.databases.*", "memoire.memory.*"]
 [modules.identity.password]
 argon2_memory_kib = 19456
 [modules.notifications]

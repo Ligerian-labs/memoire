@@ -3,8 +3,9 @@
 //! Errors use Merezha's shape, `{"error": {"code", "classification",
 //! "details"?}}`. `sql_error` carries which statement SQLite refused in
 //! `details` and SQLite's message in the [`SQL_MESSAGE_HEADER`] header; see
-//! [`SqlErrorDetail`]. Clients branch on `code` only; the HTTP status is
-//! fixed per code.
+//! [`SqlErrorDetail`]. A memory refusal carries its members in `data`,
+//! beside `error`. Clients branch on `code` only; the HTTP status is fixed
+//! per code.
 use serde::{Deserialize, Serialize};
 
 /// An error code and the one HTTP status it always has.
@@ -24,10 +25,19 @@ pub const CODES: &[ErrorCode] = &[
     code("database_not_found", 404),
     code("table_not_found", 404),
     code("snapshot_not_found", 404),
+    code("memory_not_found", 404),
     code("database_exists", 409),
     code("database_not_empty", 409),
     code("not_burstable", 409),
     code("not_persistent", 409),
+    code("memory_not_initialized", 409),
+    code("memory_schema_older", 409),
+    code("memory_schema_newer", 409),
+    code("memory_conflict", 409),
+    code("memory_duplicate", 409),
+    code("memory_not_current", 409),
+    code("memory_no_open_dispute", 409),
+    code("memory_cycle", 409),
     code("database_expired", 410),
     code("database_too_large", 413),
     code("database_limit", 422),
@@ -36,6 +46,10 @@ pub const CODES: &[ErrorCode] = &[
     code("statement_timeout", 422),
     code("result_too_large", 422),
     code("invalid_import", 422),
+    code("memory_self_confirm", 422),
+    code("memory_secret_detected", 422),
+    code("memory_too_large", 422),
+    code("memory_unchanged", 422),
     code("sqlite_busy", 503),
 ];
 
@@ -48,6 +62,10 @@ pub fn status_of(code: &str) -> Option<u16> {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ErrorBody {
     pub error: ErrorDetail,
+    /// The members a memory refusal carries (docs/api.md, "Refusals and
+    /// their `data`"); absent for every other error.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub data: Option<serde_json::Map<String, serde_json::Value>>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]

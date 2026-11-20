@@ -86,7 +86,12 @@ pub struct Candidate {
 pub enum Invalid {
     EmptyTitle,
     MultilineTitle,
-    EmptyEvidence,
+    /// Item `index` of the list `field` (`evidence`, `add_evidence`) is
+    /// empty.
+    EmptyEvidence {
+        field: &'static str,
+        index: usize,
+    },
     EmptyReason,
     /// A verdict about rev `rev`, past memory `id`'s current rev.
     RevPastCurrent {
@@ -94,7 +99,19 @@ pub enum Invalid {
         id: String,
         current_rev: i64,
     },
+    /// An input of the wrong syntax that the CLI's parser refuses before a
+    /// verb runs, refused by the verb for other callers: the JSON Pointer
+    /// of the field as the HTTP API names it (`/tags/2`, `/supersedes`,
+    /// `""` for the body as a whole) and a code (`invalid`, `required`,
+    /// `not_allowed`, `out_of_range`).
+    Field {
+        pointer: String,
+        code: &'static str,
+    },
 }
+
+/// The codes of [`Invalid::Field`].
+const FIELD_CODES: [&str; 4] = ["invalid", "required", "not_allowed", "out_of_range"];
 
 /// What kind of refusal it is, for an exit code or a status.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -207,6 +224,193 @@ impl Refusal {
             .collect()
     }
 
+    /// For a refusal of an input's form (class [`RefusalClass::Usage`]):
+    /// the JSON Pointer of the field it is about, as the HTTP API names
+    /// it, and a code, as a `validation_failed` detail reports them. An
+    /// empty title or reason is `required`, so each detail names one
+    /// refusal.
+    pub fn detail(&self) -> Option<(String, &'static str)> {
+        let at = |pointer: &str| Some((pointer.to_owned(), "invalid"));
+        match self {
+            Self::InvalidQuery => at("/query"),
+            Self::InvalidArgument(invalid) => match invalid {
+                Invalid::EmptyTitle => Some(("/title".into(), "required")),
+                Invalid::MultilineTitle => at("/title"),
+                Invalid::EmptyEvidence { field, index } => at(&format!("/{field}/{index}")),
+                Invalid::EmptyReason => Some(("/reason".into(), "required")),
+                Invalid::RevPastCurrent { .. } => Some(("/rev".into(), "out_of_range")),
+                Invalid::Field { pointer, code } => Some((pointer.clone(), code)),
+            },
+            _ => None,
+        }
+    }
+
+    /// The refusal as it travels: its code and every member needed to
+    /// build it again with [`Refusal::from_wire`], [`Refusal::data`] and
+    /// what that leaves out (a duplicate's scope, the purge time, the rev
+    /// a verdict was about, the ids, a too-large field's size, a
+    /// self-confirm without a session). Members without a value
+    /// (`since_rev`, `purged_at`) are left out.
+    ///
+    /// A refusal of an input's form travels as `validation_failed` with
+    /// its [`Refusal::detail`]; only a `rev` past the current one has
+    /// members, `id`, `rev` and `current_rev`.
+    pub fn to_wire(&self) -> (&'static str, Map<String, Value>) {
+        let mut map = self.data();
+        let mut put = |name: &str, value: Value| {
+            map.insert(name.to_owned(), value);
+        };
+        match self {
+            Self::Conflict {
+                since_rev: Some(rev),
+                ..
+            } => put("since_rev", json!(rev)),
+            Self::Duplicate { scope, .. } => put("scope", json!(scope)),
+            Self::NoOpenDispute { id } | Self::Unchanged { id } => put("id", json!(id)),
+            Self::Cycle { id, by } => {
+                put("id", json!(id));
+                put("by", json!(by));
+            }
+            Self::NotFound {
+                purged_at: Some(at),
+                ..
+            } => put("purged_at", json!(at)),
+            Self::SelfConfirm {
+                id,
+                without_session,
+            } => {
+                put("id", json!(id));
+                put("without_session", json!(without_session));
+            }
+            Self::TooLarge { size, .. } => put("size", json!(size)),
+            Self::InvalidArgument(Invalid::RevPastCurrent {
+                rev,
+                id,
+                current_rev,
+            }) => {
+                put("id", json!(id));
+                put("rev", json!(rev));
+                put("current_rev", json!(current_rev));
+            }
+            _ => {}
+        }
+        let code = match self.class() {
+            RefusalClass::Usage => "validation_failed",
+            _ => self.code(),
+        };
+        (code, map)
+    }
+
+    /// The refusal [`Refusal::to_wire`] sent as `code` and `data`, with
+    /// the path and code of a `validation_failed`'s detail; `None` for
+    /// another code or members that do not make one.
+    pub fn from_wire(
+        code: &str,
+        detail: Option<(&str, &str)>,
+        data: &Map<String, Value>,
+    ) -> Option<Self> {
+        let text = |name: &str| data.get(name)?.as_str().map(str::to_owned);
+        let int = |name: &str| data.get(name)?.as_i64();
+        let size = |name: &str| usize::try_from(data.get(name)?.as_u64()?).ok();
+        let opt_text = |name: &str| match data.get(name) {
+            None | Some(Value::Null) => Some(None),
+            Some(Value::String(s)) => Some(Some(s.clone())),
+            Some(_) => None,
+        };
+        Some(match code {
+            "memory_not_initialized" => Self::NotInitialized,
+            "memory_schema_older" => Self::SchemaOlder {
+                store_version: int("store_version")?,
+                supported_version: int("supported_version")?,
+            },
+            "memory_schema_newer" => Self::SchemaNewer {
+                store_version: int("store_version")?,
+                supported_version: int("supported_version")?,
+            },
+            "memory_conflict" => Self::Conflict {
+                id: text("id")?,
+                current_rev: int("current_rev")?,
+                since_rev: match data.get("since_rev") {
+                    None | Some(Value::Null) => None,
+                    Some(rev) => Some(rev.as_i64()?),
+                },
+            },
+            "memory_duplicate" => Self::Duplicate {
+                scope: text("scope")?,
+                candidates: data
+                    .get("candidates")?
+                    .as_array()?
+                    .iter()
+                    .map(|c| {
+                        Some(Candidate {
+                            id: c.get("id")?.as_str()?.to_owned(),
+                            title: c.get("title")?.as_str()?.to_owned(),
+                            status: c.get("status")?.as_str()?.to_owned(),
+                            similarity: c.get("similarity")?.as_f64()?,
+                        })
+                    })
+                    .collect::<Option<_>>()?,
+            },
+            "memory_not_current" => Self::NotCurrent {
+                id: text("id")?,
+                status: Status::parse(&text("status")?)?,
+                superseded_by: opt_text("superseded_by")?,
+            },
+            "memory_no_open_dispute" => Self::NoOpenDispute { id: text("id")? },
+            "memory_cycle" => Self::Cycle {
+                id: text("id")?,
+                by: text("by")?,
+            },
+            "memory_not_found" => Self::NotFound {
+                id: text("id")?,
+                purged_at: opt_text("purged_at")?,
+            },
+            "memory_self_confirm" => Self::SelfConfirm {
+                id: text("id")?,
+                without_session: data.get("without_session")?.as_bool()?,
+            },
+            "memory_secret_detected" => Self::SecretDetected {
+                pattern: text("pattern")?,
+                field: text("field")?,
+            },
+            "memory_too_large" => Self::TooLarge {
+                field: text("field")?,
+                limit: size("limit")?,
+                size: size("size")?,
+            },
+            "memory_unchanged" => Self::Unchanged { id: text("id")? },
+            "validation_failed" => {
+                let (pointer, why) = detail?;
+                let evidence = ["evidence", "add_evidence"].into_iter().find_map(|field| {
+                    let index = pointer.strip_prefix('/')?.strip_prefix(field)?;
+                    Some((field, index.strip_prefix('/')?.parse().ok()?))
+                });
+                match (pointer, why) {
+                    ("/query", "invalid") => Self::InvalidQuery,
+                    ("/title", "required") => Self::InvalidArgument(Invalid::EmptyTitle),
+                    ("/title", "invalid") => Self::InvalidArgument(Invalid::MultilineTitle),
+                    ("/reason", "required") => Self::InvalidArgument(Invalid::EmptyReason),
+                    ("/rev", "out_of_range") if data.contains_key("current_rev") => {
+                        Self::InvalidArgument(Invalid::RevPastCurrent {
+                            rev: int("rev")?,
+                            id: text("id")?,
+                            current_rev: int("current_rev")?,
+                        })
+                    }
+                    (_, "invalid") if evidence.is_some() => {
+                        let (field, index) = evidence?;
+                        Self::InvalidArgument(Invalid::EmptyEvidence { field, index })
+                    }
+                    _ => Self::InvalidArgument(Invalid::Field {
+                        pointer: pointer.to_owned(),
+                        code: FIELD_CODES.into_iter().find(|c| *c == why)?,
+                    }),
+                }
+            }
+            _ => return None,
+        })
+    }
+
     /// One line for a person. `memory_not_initialized` does not name the
     /// database, which only the caller knows.
     pub fn message(&self) -> String {
@@ -291,13 +495,16 @@ impl Refusal {
             Self::InvalidArgument(invalid) => match invalid {
                 Invalid::EmptyTitle => "--title is empty".into(),
                 Invalid::MultilineTitle => "--title is one line".into(),
-                Invalid::EmptyEvidence => "an --evidence item is empty".into(),
+                Invalid::EmptyEvidence { .. } => "an --evidence item is empty".into(),
                 Invalid::EmptyReason => "--reason is empty".into(),
                 Invalid::RevPastCurrent {
                     rev,
                     id,
                     current_rev,
                 } => format!("--rev {rev} is past memory {id}'s current rev {current_rev}"),
+                Invalid::Field { pointer, code } => {
+                    format!("the input at `{pointer}` is refused: {code}")
+                }
             },
         }
     }
@@ -321,5 +528,206 @@ fn too_large_message(field: &str, limit: usize, size: usize) -> String {
             format!("the reason has {size} characters; at most {REASON_MAX_CHARS}")
         }
         _ => format!("the {field} has {size}; at most {limit}"),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn every_variant() -> Vec<Refusal> {
+        let id = || "mem_01JD0Q7ZQ5Y8W1N3K4M5P6R7S8".to_owned();
+        vec![
+            Refusal::NotInitialized,
+            Refusal::SchemaOlder {
+                store_version: 0,
+                supported_version: 1,
+            },
+            Refusal::SchemaNewer {
+                store_version: 2,
+                supported_version: 1,
+            },
+            Refusal::Conflict {
+                id: id(),
+                current_rev: 3,
+                since_rev: None,
+            },
+            Refusal::Conflict {
+                id: id(),
+                current_rev: 3,
+                since_rev: Some(1),
+            },
+            Refusal::Duplicate {
+                scope: "global".into(),
+                candidates: vec![Candidate {
+                    id: id(),
+                    title: "Deploys need the VPN".into(),
+                    status: "inferred".into(),
+                    similarity: 0.75,
+                }],
+            },
+            Refusal::NotCurrent {
+                id: id(),
+                status: Status::Superseded,
+                superseded_by: Some(id()),
+            },
+            Refusal::NotCurrent {
+                id: id(),
+                status: Status::Forgotten,
+                superseded_by: None,
+            },
+            Refusal::NoOpenDispute { id: id() },
+            Refusal::Cycle { id: id(), by: id() },
+            Refusal::NotFound {
+                id: id(),
+                purged_at: None,
+            },
+            Refusal::NotFound {
+                id: id(),
+                purged_at: Some("2026-11-19T10:00:00.000Z".into()),
+            },
+            Refusal::SelfConfirm {
+                id: id(),
+                without_session: true,
+            },
+            Refusal::SecretDetected {
+                pattern: "github_token".into(),
+                field: "body".into(),
+            },
+            Refusal::TooLarge {
+                field: "title".into(),
+                limit: 120,
+                size: 121,
+            },
+            Refusal::Unchanged { id: id() },
+            Refusal::InvalidQuery,
+            Refusal::InvalidArgument(Invalid::EmptyTitle),
+            Refusal::InvalidArgument(Invalid::MultilineTitle),
+            Refusal::InvalidArgument(Invalid::EmptyEvidence {
+                field: "add_evidence",
+                index: 2,
+            }),
+            Refusal::InvalidArgument(Invalid::EmptyReason),
+            Refusal::InvalidArgument(Invalid::RevPastCurrent {
+                rev: 4,
+                id: id(),
+                current_rev: 3,
+            }),
+            Refusal::InvalidArgument(Invalid::Field {
+                pointer: "/tags/2".into(),
+                code: "invalid",
+            }),
+            // Beside the paths other refusals use: told apart by the code
+            // or the members.
+            Refusal::InvalidArgument(Invalid::Field {
+                pointer: "/rev".into(),
+                code: "out_of_range",
+            }),
+            Refusal::InvalidArgument(Invalid::Field {
+                pointer: "/evidence".into(),
+                code: "required",
+            }),
+            Refusal::InvalidArgument(Invalid::Field {
+                pointer: "".into(),
+                code: "required",
+            }),
+        ]
+    }
+
+    #[test]
+    fn every_refusal_round_trips_through_its_wire_form() {
+        for refusal in every_variant() {
+            let (code, map) = refusal.to_wire();
+            let detail = refusal.detail();
+            if detail.is_some() {
+                assert_eq!(code, "validation_failed");
+            } else {
+                assert_eq!(code, refusal.code());
+            }
+            // What the CLI prints is a part of the wire form.
+            for (name, value) in refusal.data() {
+                assert_eq!(map.get(&name), Some(&value), "{code} {name}");
+            }
+            assert_eq!(
+                Refusal::from_wire(code, detail.as_ref().map(|(p, c)| (p.as_str(), *c)), &map)
+                    .as_ref(),
+                Some(&refusal),
+                "{code} {map:?}"
+            );
+        }
+        assert_eq!(Refusal::from_wire("sql_error", None, &Map::new()), None);
+        assert_eq!(
+            Refusal::from_wire("memory_conflict", None, &Map::new()),
+            None
+        );
+        assert_eq!(
+            Refusal::from_wire("validation_failed", None, &Map::new()),
+            None
+        );
+    }
+
+    #[test]
+    fn values_without_a_value_stay_off_the_wire() {
+        let (_, map) = Refusal::Conflict {
+            id: "mem_x".into(),
+            current_rev: 3,
+            since_rev: None,
+        }
+        .to_wire();
+        assert_eq!(Value::Object(map), json!({"id": "mem_x", "current_rev": 3}));
+        let (_, map) = Refusal::NotFound {
+            id: "mem_x".into(),
+            purged_at: None,
+        }
+        .to_wire();
+        assert_eq!(Value::Object(map), json!({"id": "mem_x"}));
+        // Of the input refusals, only a rev past the current one has
+        // members.
+        let (code, map) = Refusal::InvalidArgument(Invalid::RevPastCurrent {
+            rev: 4,
+            id: "mem_x".into(),
+            current_rev: 3,
+        })
+        .to_wire();
+        assert_eq!(
+            (code, Value::Object(map)),
+            (
+                "validation_failed",
+                json!({"id": "mem_x", "rev": 4, "current_rev": 3})
+            )
+        );
+        for refusal in every_variant() {
+            if refusal.class() == RefusalClass::Usage
+                && !matches!(
+                    refusal,
+                    Refusal::InvalidArgument(Invalid::RevPastCurrent { .. })
+                )
+            {
+                assert!(refusal.to_wire().1.is_empty(), "{refusal:?}");
+            }
+        }
+    }
+
+    #[test]
+    fn input_refusals_name_their_field() {
+        for refusal in every_variant() {
+            assert_eq!(
+                refusal.detail().is_some(),
+                refusal.class() == RefusalClass::Usage,
+                "{refusal:?}"
+            );
+        }
+        assert_eq!(
+            Refusal::InvalidArgument(Invalid::EmptyEvidence {
+                field: "evidence",
+                index: 1
+            })
+            .detail(),
+            Some(("/evidence/1".into(), "invalid"))
+        );
+        assert_eq!(
+            Refusal::InvalidQuery.detail(),
+            Some(("/query".into(), "invalid"))
+        );
     }
 }

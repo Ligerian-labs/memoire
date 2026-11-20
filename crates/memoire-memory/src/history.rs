@@ -1,11 +1,12 @@
 //! `log` and `export`: what happened in the store, and its memories page
 //! by page. Both only read, so a read-only key can use them.
-use crate::model::{Event, Memory};
+use crate::model::{self, Event, Memory};
 use crate::store::{self, After, Batch, Cursor, EventFilter, Store};
 use crate::{Backend, Error};
+use memoire_api::memory::{MAX_EVENTS_LIMIT, MAX_EXPORT_PAGE};
 
 /// Memories per export page.
-pub const EXPORT_PAGE: i64 = 500;
+pub const EXPORT_PAGE: i64 = MAX_EXPORT_PAGE;
 
 /// `log`: the newest `limit` events of `scopes` (all when `None`), of the
 /// last `since_seconds` when given, newest first.
@@ -15,6 +16,8 @@ pub async fn log<B: Backend>(
     since_seconds: Option<u64>,
     limit: i64,
 ) -> Result<Vec<Event>, Error<B::Error>> {
+    check_scopes(scopes)?;
+    model::check_limit(limit, MAX_EVENTS_LIMIT)?;
     let mut batch = Batch::new();
     let events = store::select_events(
         &mut batch,
@@ -27,6 +30,76 @@ pub async fn log<B: Backend>(
     );
     let results = Store { backend }.read(batch).await?;
     Ok(store::all(&results[events], |row| row.event())?)
+}
+
+fn check_scopes(scopes: Option<&[String]>) -> Result<(), crate::Refusal> {
+    model::check_items("scope", scopes.unwrap_or_default(), model::parse_scope)
+}
+
+/// Which events [`events`] reads.
+#[derive(Clone, Copy, Debug)]
+pub struct Events<'a> {
+    /// `None`: every scope.
+    pub scopes: Option<&'a [String]>,
+    /// Only events of the last this many seconds; only with
+    /// [`After::Start`].
+    pub since_seconds: Option<u64>,
+    pub after: After<'a>,
+    pub limit: i64,
+}
+
+/// What [`events`] read.
+#[derive(Clone, Debug, PartialEq)]
+pub struct EventsPage {
+    /// The newest `limit` events after `after`, newest first.
+    pub events: Vec<Event>,
+    pub store_id: String,
+    /// The `seq` the read started after.
+    pub after: i64,
+    /// The store's highest `seq`, whatever the filter.
+    pub top: i64,
+    /// How many events pass the filter after `after`.
+    pub matching: i64,
+}
+
+/// The log as a reader that keeps its own cursor reads it: the events
+/// from where `after` says, and where the read started, the store's top
+/// and how many passed the filter, all from one read.
+pub async fn events<B: Backend>(
+    backend: &B,
+    args: Events<'_>,
+) -> Result<EventsPage, Error<B::Error>> {
+    check_scopes(args.scopes)?;
+    model::check_limit(args.limit, MAX_EVENTS_LIMIT)?;
+    if let After::Cursor(cursor) = args.after {
+        model::check_store_id(&cursor.store_id)?;
+        if cursor.seq < 0 {
+            return Err(model::invalid_field("/after", "out_of_range").into());
+        }
+    }
+    if args.since_seconds.is_some() && !matches!(args.after, After::Start) {
+        return Err(model::invalid_field("/since_seconds", "not_allowed").into());
+    }
+    let filter = EventFilter {
+        scopes: args.scopes,
+        since_seconds: args.since_seconds,
+        after: args.after,
+    };
+    let mut batch = Batch::new();
+    let store_id = store::select_store_id(&mut batch);
+    let events = store::select_events(&mut batch, &filter, args.limit);
+    let counted = store::count_events(&mut batch, &filter);
+    let results = Store { backend }.read(batch).await?;
+    let row = store::rows(&results[counted])
+        .next()
+        .ok_or_else(|| store::invalid_response("the count of events"))?;
+    Ok(EventsPage {
+        events: store::all(&results[events], |row| row.event())?,
+        store_id: store::store_id_of(&results[store_id])?,
+        after: row.int("after")?,
+        top: row.int("top")?,
+        matching: row.int("events")?,
+    })
 }
 
 /// What `log --unseen` read.
@@ -65,6 +138,8 @@ pub async fn unseen<B: Backend>(
     saved: Option<&Cursor>,
     limit: i64,
 ) -> Result<Unseen, Error<B::Error>> {
+    check_scopes(scopes)?;
+    model::check_limit(limit, MAX_EVENTS_LIMIT)?;
     let filter = EventFilter {
         scopes,
         since_seconds: None,
@@ -116,12 +191,28 @@ pub async fn export_page<B: Backend>(
     scopes: Option<&[String]>,
     after: i64,
 ) -> Result<ExportPage, Error<B::Error>> {
+    export(backend, scopes, after, EXPORT_PAGE).await
+}
+
+/// [`export_page`] with pages of `limit` memories, 1 to
+/// [`EXPORT_PAGE`].
+pub async fn export<B: Backend>(
+    backend: &B,
+    scopes: Option<&[String]>,
+    after: i64,
+    limit: i64,
+) -> Result<ExportPage, Error<B::Error>> {
+    check_scopes(scopes)?;
+    model::check_limit(limit, EXPORT_PAGE)?;
+    if after < 0 {
+        return Err(model::invalid_field("/after", "out_of_range").into());
+    }
     let mut batch = Batch::new();
-    let page = store::select_export_page(&mut batch, scopes, after, EXPORT_PAGE);
+    let page = store::select_export_page(&mut batch, scopes, after, limit);
     let results = Store { backend }.read(batch).await?;
     let memories = store::all(&results[page], |row| row.memory())?;
     let next = match memories.last() {
-        Some(last) if memories.len() as i64 == EXPORT_PAGE => Some(last.seq),
+        Some(last) if memories.len() as i64 == limit => Some(last.seq),
         _ => None,
     };
     Ok(ExportPage { memories, next })
