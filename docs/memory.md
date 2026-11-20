@@ -5,9 +5,10 @@ memoire database. Agents record what they verified, recall it before they
 work, and confirm, dispute, revise or retire what others wrote. Every change
 is a new revision, so the history stays readable.
 
-The memory is a convention of the CLI over the query route of
-[api.md](api.md). It sends versioned SQL as read and write batches, and the
-gateway knows nothing about it. Any database can hold a store, and every table of a
+The memory is versioned SQL in the database. This CLI sends it as read and
+write batches over the query route of [api.md](api.md); the gateway also
+serves the same verbs, run by the same engine on the same tables, under
+`…/{name}/memory` (see [api.md](api.md#memory-routes)). Any database can hold a store, and every table of a
 store starts with `memoire_memory_`, so a store can share a database with an
 application's own tables without touching them.
 
@@ -191,6 +192,11 @@ an agent that reports another session can confirm its own text. When it
 matters who confirmed what, give each agent or machine its own key
 (`memoire keys create`). Without `MEMOIRE_SESSION`, every run of one key is
 the same writer and cannot confirm text an earlier run wrote.
+
+Through the gateway's memory routes, the principal and the guards are the
+server's: the client cannot change them. A key holding only
+`memoire.memory.read` and `memoire.memory.write` can use the memory and
+cannot write its tables any other way.
 
 ## Verbs
 
@@ -789,8 +795,8 @@ read:
 The last two carry `store_version` and `supported_version`. A missing
 database answers exit 5 `database_not_found`, with a hint to run `init`.
 
-The schema is plain SQL in the database, so a server-side API added later can
-read and write the same tables.
+The schema is plain SQL in the database, so the gateway's memory routes and
+this CLI read and write the same tables.
 
 ## Read-only keys
 

@@ -92,12 +92,30 @@ pub async fn remember<B: Backend>(
     input: Remember,
     default_scope: impl FnOnce() -> Option<String>,
 ) -> Result<Memory, Error<B::Error>> {
+    labels.check()?;
+    let supersedes = input
+        .supersedes
+        .as_deref()
+        .map(|id| model::memory_id("supersedes", id))
+        .transpose()?;
+    match (&supersedes, &input.reason) {
+        (Some(_), None) => return Err(model::invalid_field("/reason", "required").into()),
+        (None, Some(_)) => return Err(model::invalid_field("/supersedes", "required").into()),
+        _ => {}
+    }
+    if let Some(kind) = &input.kind {
+        model::check_kind("kind", kind)?;
+    }
+    if let Some(scope) = &input.scope {
+        model::check_scope("scope", scope)?;
+    }
+    model::check_items("tags", &input.tags, model::parse_tag)?;
     let title = model::title(&input.title)?;
     let body = model::body(input.body)?;
     let tags = model::tags(input.tags)?;
     let evidence = model::evidence(input.evidence)?;
     let reason = input.reason.as_deref().map(model::reason).transpose()?;
-    let old = match input.supersedes.as_deref() {
+    let old = match supersedes.as_deref() {
         Some(id) => Some(read_memory(backend, id).await?),
         None => None,
     };
@@ -292,6 +310,7 @@ pub async fn show<B: Backend>(
     id: &str,
     history: bool,
 ) -> Result<Shown, Error<B::Error>> {
+    let id = &model::memory_id("id", id)?;
     let mut batch = Batch::new();
     let memory = store::select_memory(&mut batch, id);
     let purge = store::select_purge(&mut batch, id);
@@ -341,13 +360,40 @@ pub async fn revise<B: Backend>(
     labels: &Labels,
     args: Revise,
 ) -> Result<Memory, Error<B::Error>> {
+    labels.check()?;
+    let id = model::memory_id("id", &args.id)?;
+    if let Some(kind) = &args.kind {
+        model::check_kind("kind", kind)?;
+    }
+    if let Some(scope) = &args.scope {
+        model::check_scope("scope", scope)?;
+    }
+    model::check_items("tags", &args.tags, model::parse_tag)?;
+    model::check_items("add_tags", &args.add_tags, model::parse_tag)?;
+    if !args.tags.is_empty() && !args.add_tags.is_empty() {
+        return Err(model::invalid_field("/add_tags", "not_allowed").into());
+    }
+    if !args.evidence.is_empty() && !args.add_evidence.is_empty() {
+        return Err(model::invalid_field("/add_evidence", "not_allowed").into());
+    }
+    let nothing = args.title.is_none()
+        && args.body.is_none()
+        && args.kind.is_none()
+        && args.scope.is_none()
+        && args.tags.is_empty()
+        && args.add_tags.is_empty()
+        && args.evidence.is_empty()
+        && args.add_evidence.is_empty();
+    if nothing {
+        return Err(model::invalid_field("", "required").into());
+    }
     let title = args.title.as_deref().map(model::title).transpose()?;
     let body = args.body.map(model::body).transpose()?;
     let reason = model::reason(&args.reason)?;
     let tags = model::tags(args.tags)?;
     let add_tags = model::tags(args.add_tags)?;
     let evidence = model::evidence(args.evidence)?;
-    let add_evidence = model::evidence(args.add_evidence)?;
+    let add_evidence = model::evidence_in("add_evidence", args.add_evidence)?;
     model::guard_secrets(
         title
             .iter()
@@ -366,7 +412,7 @@ pub async fn revise<B: Backend>(
             .chain(labels.fields()),
     )?;
 
-    let current = read_memory(backend, &args.id).await?;
+    let current = read_memory(backend, &id).await?;
     if !current.status.is_current() {
         return Err(not_current(&current).into());
     }
@@ -519,6 +565,10 @@ pub async fn recall<B: Backend>(
     backend: &B,
     args: Recall<'_>,
 ) -> Result<Vec<(Memory, Option<f64>)>, Error<B::Error>> {
+    model::check_items("scope", args.scopes.unwrap_or_default(), model::parse_scope)?;
+    model::check_items("kind", args.kinds, model::parse_kind)?;
+    model::check_items("tag", args.tags, model::parse_tag)?;
+    model::check_limit(args.limit, memoire_api::memory::MAX_RECALL_LIMIT)?;
     let terms = match args.query {
         Some(query) => {
             let terms = search::terms(query);
@@ -552,4 +602,260 @@ pub async fn recall<B: Backend>(
         memories.push((row.memory()?, score));
     }
     Ok(memories)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{BackendError, SqlFailure, history, retire, trust};
+    use memoire_api::{QueryMode, StatementResult};
+    use std::pin::pin;
+    use std::task::{Context, Poll, Waker};
+
+    /// A backend no verb may reach: these inputs are refused first.
+    struct Unreachable;
+
+    #[derive(Debug)]
+    struct Reached;
+
+    impl BackendError for Reached {
+        fn sql(&self) -> Option<SqlFailure<'_>> {
+            None
+        }
+    }
+
+    impl Backend for Unreachable {
+        type Error = Reached;
+        async fn run(&self, _: QueryMode, _: Batch) -> Result<Vec<StatementResult>, Reached> {
+            Err(Reached)
+        }
+        async fn principal(&self) -> Result<String, Reached> {
+            Err(Reached)
+        }
+    }
+
+    fn ready<T>(future: impl Future<Output = T>) -> T {
+        match pin!(future)
+            .as_mut()
+            .poll(&mut Context::from_waker(Waker::noop()))
+        {
+            Poll::Ready(output) => output,
+            Poll::Pending => panic!("the fake backend never waits"),
+        }
+    }
+
+    /// The pointer and code a verb refused with.
+    fn refused<T: std::fmt::Debug>(result: Result<T, Error<Reached>>) -> (String, &'static str) {
+        match result {
+            Err(Error::Refused(refusal)) => refusal
+                .detail()
+                .unwrap_or_else(|| panic!("not an input refusal: {refusal:?}")),
+            other => panic!("not refused: {other:?}"),
+        }
+    }
+
+    const ID: &str = "mem_01JD0Q7ZQ5Y8W1N3K4M5P6R7S8";
+
+    fn remember_with(input: Remember) -> (String, &'static str) {
+        let input = Remember {
+            title: "A title".into(),
+            ..input
+        };
+        refused(ready(remember(
+            &Unreachable,
+            &Labels::default(),
+            input,
+            || None,
+        )))
+    }
+
+    #[test]
+    fn verbs_check_what_the_cli_parser_checks() {
+        let at = |pointer: &str, code: &'static str| (pointer.to_owned(), code);
+        assert_eq!(
+            remember_with(Remember {
+                tags: vec!["ok".into(), "Bad".into()],
+                ..Remember::default()
+            }),
+            at("/tags/1", "invalid")
+        );
+        assert_eq!(
+            remember_with(Remember {
+                kind: Some("K".into()),
+                ..Remember::default()
+            }),
+            at("/kind", "invalid")
+        );
+        assert_eq!(
+            remember_with(Remember {
+                scope: Some("a b".into()),
+                ..Remember::default()
+            }),
+            at("/scope", "invalid")
+        );
+        assert_eq!(
+            remember_with(Remember {
+                supersedes: Some("mem_x".into()),
+                reason: Some("r".into()),
+                ..Remember::default()
+            }),
+            at("/supersedes", "invalid")
+        );
+        assert_eq!(
+            remember_with(Remember {
+                supersedes: Some(ID.into()),
+                ..Remember::default()
+            }),
+            at("/reason", "required")
+        );
+        assert_eq!(
+            remember_with(Remember {
+                reason: Some("r".into()),
+                ..Remember::default()
+            }),
+            at("/supersedes", "required")
+        );
+        assert_eq!(
+            remember_with(Remember {
+                evidence: vec!["e".into(), " ".into()],
+                ..Remember::default()
+            }),
+            at("/evidence/1", "invalid")
+        );
+        let control = Labels {
+            agent: "a\u{7}".into(),
+            session: String::new(),
+        };
+        let input = Remember {
+            title: "t".into(),
+            ..Remember::default()
+        };
+        assert_eq!(
+            refused(ready(remember(&Unreachable, &control, input, || None))),
+            at("/agent", "invalid")
+        );
+
+        let labels = Labels::default();
+        let revise_with = |revise: Revise| {
+            refused(ready(super::revise(
+                &Unreachable,
+                &labels,
+                Revise {
+                    id: ID.into(),
+                    reason: "r".into(),
+                    ..revise
+                },
+            )))
+        };
+        assert_eq!(revise_with(Revise::default()), at("", "required"));
+        assert_eq!(
+            revise_with(Revise {
+                tags: vec!["a".into()],
+                add_tags: vec!["b".into()],
+                ..Revise::default()
+            }),
+            at("/add_tags", "not_allowed")
+        );
+        assert_eq!(
+            revise_with(Revise {
+                add_evidence: vec![String::new()],
+                ..Revise::default()
+            }),
+            at("/add_evidence/0", "invalid")
+        );
+        assert_eq!(
+            refused(ready(super::revise(
+                &Unreachable,
+                &labels,
+                Revise {
+                    id: "nope".into(),
+                    title: Some("t".into()),
+                    reason: "r".into(),
+                    ..Revise::default()
+                },
+            ))),
+            at("/id", "invalid")
+        );
+
+        assert_eq!(
+            refused(ready(trust::confirm(
+                &Unreachable,
+                &labels,
+                ID,
+                vec![],
+                None
+            ))),
+            at("/evidence", "required")
+        );
+        assert_eq!(
+            refused(ready(trust::confirm(
+                &Unreachable,
+                &labels,
+                ID,
+                vec!["e".into()],
+                Some(0)
+            ))),
+            at("/rev", "out_of_range")
+        );
+        assert_eq!(
+            refused(ready(retire::supersede(
+                &Unreachable,
+                &labels,
+                ID,
+                "x",
+                "r"
+            ))),
+            at("/by", "invalid")
+        );
+        assert_eq!(
+            refused(ready(show(&Unreachable, "mem_", false))),
+            at("/id", "invalid")
+        );
+
+        let recall_with = |kinds: &[String], limit: i64| {
+            refused(ready(recall(
+                &Unreachable,
+                Recall {
+                    query: None,
+                    scopes: None,
+                    statuses: &[],
+                    kinds,
+                    tags: &[],
+                    limit,
+                },
+            )))
+        };
+        assert_eq!(
+            recall_with(&["fact".into(), "x".into()], 10),
+            at("/kind/1", "invalid")
+        );
+        assert_eq!(recall_with(&[], 101), at("/limit", "out_of_range"));
+        assert_eq!(
+            refused(ready(history::export(&Unreachable, None, -1, 10))),
+            at("/after", "out_of_range")
+        );
+        let cursor = store::Cursor {
+            store_id: "mst_bad".into(),
+            seq: 1,
+        };
+        let events = |after, since_seconds| {
+            refused(ready(history::events(
+                &Unreachable,
+                history::Events {
+                    scopes: None,
+                    since_seconds,
+                    after,
+                    limit: 50,
+                },
+            )))
+        };
+        assert_eq!(
+            events(store::After::Cursor(&cursor), None),
+            at("/store_id", "invalid")
+        );
+        assert_eq!(
+            events(store::After::FirstLook, Some(60)),
+            at("/since_seconds", "not_allowed")
+        );
+    }
 }

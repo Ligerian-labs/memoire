@@ -9,8 +9,11 @@
 //! The engine reaches no network and no file: it reads the clock and the
 //! operating system's randomness for new ids, builds the batches and runs
 //! them through a [`Backend`], which runs each one as a transaction (the
-//! CLI over the gateway's query route). The verbs are `async fn`s generic
-//! over the backend; they return values, and the caller prints them.
+//! CLI over the gateway's query route, the gateway's memory routes on its
+//! data plane). The verbs are `async fn`s generic over the backend; they
+//! return values, and the caller prints them. Each verb checks every input
+//! it is given, so a caller without the CLI's parser cannot store text of
+//! the wrong form.
 pub mod history;
 pub mod model;
 mod refusal;
@@ -106,6 +109,15 @@ impl Labels {
     /// guard.
     pub fn fields(&self) -> [(&'static str, &str); 2] {
         [("agent", &self.agent), ("session", &self.session)]
+    }
+
+    /// Refuses an agent or a session the CLI's parser would refuse: at
+    /// most 64 and 128 characters, no control character.
+    pub fn check(&self) -> Result<(), Refusal> {
+        model::parse_agent(&self.agent).map_err(|_| model::invalid_field("/agent", "invalid"))?;
+        model::parse_session(&self.session)
+            .map_err(|_| model::invalid_field("/session", "invalid"))?;
+        Ok(())
     }
 
     /// The writer: the backend's principal, never a client-reported one,

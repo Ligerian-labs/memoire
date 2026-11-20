@@ -18,7 +18,9 @@ gateway, CLI and web owners.
 - Timestamps are RFC 3339 UTC strings (`2026-11-19T10:00:00Z`). Durations are
   whole seconds in fields named `*_seconds`.
 - Ids are opaque prefixed strings: databases `db_…`, snapshots `snap_…`,
-  teams `org_…`, users `usr_…`. Do not parse them.
+  teams `org_…`, users `usr_…`, API keys `key_…`, memory stores `mst_…`.
+  Do not parse them. Memory ids (`mem_…`) are the exception, see
+  [Memory routes](#memory-routes).
 - `{name}` in a path is a database name. `{name}` of another team answers
   `404 database_not_found`, the same as a name that does not exist, so
   names cannot be probed across teams.
@@ -55,20 +57,23 @@ Every memoire route needs a credential.
   the application origin and proxying `/v1` to the gateway, meets both.
   Bearer requests skip both checks.
 - A route answers `403 unauthorized` when the caller lacks its permission at
-  the team. memoire adds the five permissions below to identity's catalog;
-  the team roles `admin` and `member` hold all five by default, and an API
+  the team. memoire adds the seven permissions below to identity's catalog;
+  the team roles `admin` and `member` hold all seven by default, and an API
   key may carry a subset (a read-only agent key holds only
-  `memoire.databases.read`). The permissions are registered together with
-  the database routes; until they are, identity refuses them in a key
-  request (`422 unknown_permission`).
+  `memoire.databases.read`; an agent that only uses the memory holds
+  `memoire.memory.read` and `memoire.memory.write`). The permissions are
+  registered together with the database routes; until they are, identity
+  refuses them in a key request (`422 unknown_permission`).
 
 | Permission | Allows |
 | --- | --- |
-| `memoire.databases.read` | list, detail, read queries, schema, rows, export, snapshot list |
-| `memoire.databases.write` | write queries, extend, import |
+| `memoire.databases.read` | list, detail, read queries, schema, rows, export, snapshot list; the memory's read routes |
+| `memoire.databases.write` | write queries, extend, import; the memory's write routes |
 | `memoire.databases.create` | create |
 | `memoire.databases.delete` | delete |
 | `memoire.databases.snapshots` | snapshot restore |
+| `memoire.memory.read` | the memory's read routes: store, recall, show, events, export |
+| `memoire.memory.write` | the memory's write routes: init and every verb that writes |
 
 Teams, invitations, machines and keys are Merezha identity's routes; see
 "Identity routes the clients use" below.
@@ -109,6 +114,16 @@ the same status.
              "details": [{"path": "/statements/1/sql", "code": "sqlite_constraint"}]}}
   ```
 
+- A refusal of the memory routes carries what a client acts on in a member
+  `data` beside `error`, present only when the code has such members (see
+  [Memory routes](#memory-routes) for the members of each code). `error`
+  keeps Merezha's shape; Merezha's edge checks that member only.
+
+  ```json
+  {"error": {"code": "memory_conflict", "classification": "conflict"},
+   "data": {"id": "mem_01JD0Q7ZQ5Y8W1N3K4M5P6R7S8", "current_rev": 3}}
+  ```
+
 memoire's codes:
 
 | Code | Status | When |
@@ -117,11 +132,20 @@ memoire's codes:
 | `database_not_found` | 404 | No database of that name in the team |
 | `table_not_found` | 404 | No table or view of that name in the database |
 | `snapshot_not_found` | 404 | No snapshot of that id for the database |
+| `memory_not_found` | 404 | No memory of that id in the store |
 | `database_exists` | 409 | Create with a name an active database of the team holds |
 | `database_not_empty` | 409 | Import into a database that has a user table, view, index or trigger |
 | `not_burstable` | 409 | Extend on a persistent database |
 | `not_persistent` | 409 | A snapshot route on a burstable database |
-| `database_expired` | 410 | Query, schema, rows, export, import, extend or snapshots on an expired database |
+| `memory_not_initialized` | 409 | A memory route but `init` on a database that holds no store |
+| `memory_schema_older` | 409 | The store is older than the gateway's engine; `init` migrates it |
+| `memory_schema_newer` | 409 | The store is newer than the gateway's engine |
+| `memory_conflict` | 409 | The memory moved after it was read, or its text changed after the `rev` a verdict names |
+| `memory_duplicate` | 409 | `remember` without `force` and a memory of the scope has a similar title |
+| `memory_not_current` | 409 | The memory is superseded or forgotten |
+| `memory_no_open_dispute` | 409 | `resolve` on a memory without an open dispute |
+| `memory_cycle` | 409 | A `supersede` that would close a cycle |
+| `database_expired` | 410 | Query, schema, rows, export, import, extend, snapshots or a memory route on an expired database |
 | `database_too_large` | 413 | A write or import would pass the 1 GiB file limit |
 | `database_limit` | 422 | Create when the team already has 50 active databases |
 | `read_only` | 422 | A statement in `read` mode tried to write |
@@ -129,7 +153,14 @@ memoire's codes:
 | `statement_timeout` | 422 | A statement ran past its deadline and was interrupted |
 | `result_too_large` | 422 | A statement returned more than 10 000 rows, or the response passed 16 MiB |
 | `invalid_import` | 422 | The import body is not a SQLite database or fails `PRAGMA integrity_check` |
+| `memory_self_confirm` | 422 | A confirmation by the text's author, same principal and session |
+| `memory_secret_detected` | 422 | A field looks like it holds a secret |
+| `memory_too_large` | 422 | A field passes its size limit |
+| `memory_unchanged` | 422 | A `revise` that would change nothing |
 | `sqlite_busy` | 503 | The writer stayed locked past the busy timeout; transient |
+
+The `memory_*` codes of status 422 have the classification `permanent`,
+those of 409 `conflict`, and `memory_not_found` `permanent`.
 
 Merezha codes a client also meets: `400 ambiguous_credentials`,
 `401 unauthenticated`, `403 unauthorized`, `403 tenant_required`,
@@ -196,7 +227,7 @@ Every database route returns databases in this shape.
 | `name` | `^[a-z][a-z0-9-]{1,62}$`: 2 to 63 characters, a lowercase letter, then lowercase letters, digits and `-`. Unique among the team's active databases. |
 | `kind` | `burstable` (scratch: expires when idle, no backups) or `persistent` (lives until deleted, snapshots every 6 hours kept 7 days) |
 | `state` | `active` or `expired`. Deleted databases are never returned. |
-| `last_used_at` | Last query, import or extend; `null` until the first. Updated in memory and flushed about every minute, so it may lag by that much. |
+| `last_used_at` | Last query, import, extend or memory request; `null` until the first. Updated in memory and flushed about every minute, so it may lag by that much. |
 | `size_bytes` | File size; `null` when the file is not on disk (expired) |
 | `idle_ttl_seconds` | Burstable: idle time before expiry, 60 to 604 800, default 86 400. `null` for persistent. |
 | `expires_at` | Burstable: `min((last_used_at or created_at) + idle_ttl_seconds, expires_at_max)`. `null` for persistent. |
@@ -262,7 +293,8 @@ succeeded.
 ### `GET {name}`
 
 `memoire.databases.read`. Answers `200` with the database, active or
-expired.
+expired. A key holding only `memoire.memory.*` cannot list databases or
+read their detail: the memory routes name the database themselves.
 
 ### `DELETE {name}`
 
@@ -453,6 +485,278 @@ with the snapshot; requests in flight finish on the old contents first.
 Answers `200` with the database. Errors: `snapshot_not_found`,
 `not_persistent`.
 
+## Memory routes
+
+These routes serve the shared memory of [memory.md](memory.md) under
+`{name}/memory`. They run the same engine, on the same `memoire_memory_*`
+tables, as the CLI's SQL convention over `POST {name}/query`, so both can
+be used on one store. The model, the statuses, the ranking, the guards and
+the limits are in memory.md; this section gives the HTTP form.
+
+| Route | Permission | Answers |
+| --- | --- | --- |
+| `GET {name}/memory` | read | `200` the store |
+| `POST {name}/memory/init` | write | `200` the store's migration |
+| `POST {name}/memory/memories` | write | `201` the memory object (remember) |
+| `GET {name}/memory/memories` | read | `200 {"memories"}` (recall) |
+| `GET {name}/memory/memories/{id}` | read | `200 {"memory", "confirmations", "disputes"}` (show) |
+| `POST {name}/memory/memories/{id}/revise` | write | `200` the memory object |
+| `POST {name}/memory/memories/{id}/confirm` | write | `200` the memory object |
+| `POST {name}/memory/memories/{id}/dispute` | write | `200` the memory object |
+| `POST {name}/memory/memories/{id}/resolve` | write | `200` the memory object |
+| `POST {name}/memory/memories/{id}/supersede` | write | `200 {"superseded", "by"}` |
+| `POST {name}/memory/memories/{id}/forget` | write | `200` the memory object, or `{"id", "purged": true}` |
+| `GET {name}/memory/events` | read | `200 {"events", "store_id", "after", "top", "matching"}` |
+| `GET {name}/memory/export` | read | `200 {"memories", "next_after"}` |
+
+- Admission: a read route admits a caller holding `memoire.memory.read` or
+  `memoire.databases.read`, a write route one holding `memoire.memory.write`
+  or `memoire.databases.write`. A key that may run SQL on a database can
+  already do all of this, so keys minted before the memory permissions keep
+  working. A key holding only `memoire.memory.*` gets `403 unauthorized` on
+  every other database route. The refusals come in the usual order:
+  `401 unauthenticated`, `403 tenant_required`, `403 unauthorized`, before
+  the body is read.
+- The database must exist and be active: `404 database_not_found`,
+  `410 database_expired`, as for `query`. `init` creates the store's tables
+  in an existing database; it never creates the database
+  (`POST /v1/memoire/databases` does, with its own permission). Every
+  memory request counts as a use of the database (`last_used_at`).
+- Every route but `init` first checks the store's version, as the CLI does:
+  `409 memory_not_initialized`, `memory_schema_older`, `memory_schema_newer`.
+- `{id}` is a memory id: `mem_` and 26 Crockford base32 characters, in
+  either case; answers carry it in upper case. Anything else answers
+  `404 memory_not_found`, without `data`.
+- Who writes: every write records the authenticated caller's subject as its
+  principal (`key_…` for an API key, `usr_…` for a member signed in), never a
+  value from the body. Every write body may carry `agent` (at most 64
+  characters) and `session` (at most 128), without control characters,
+  reported by the client and stored as given; both default to `""`. The
+  author rules of memory.md (a confirmation counts from another principal or
+  session) apply to the subject and the reported session.
+- Request bodies are JSON objects; unknown fields, a wrong type or a bad
+  syntax fail `422 validation_failed` with one detail per field
+  (`/title` `required`, `/tags/2` `invalid`, `/add_tags` `not_allowed`…).
+  An empty list is the same as an absent one. A query parameter that is not
+  understood fails the same way, its path naming the parameter (`/limit`
+  `out_of_range`, `/scope/1` `invalid` for the second `scope`).
+- A failure of the store's own SQL that is not one of the memory's guards
+  (its tables altered by hand, the database full, the writer busy) answers
+  what `query` would: `sql_error` with its header, `database_too_large`,
+  `sqlite_busy`, `statement_timeout`.
+
+### The memory object
+
+The memory routes return memories in this shape, the CLI's `--json` shape
+(memory.md describes each field):
+
+```json
+{"id": "mem_01JD0Q7ZQ5Y8W1N3K4M5P6R7S8", "rev": 2, "kind": "pitfall",
+ "scope": "project:github.com/acme/widgets",
+ "title": "Widgets deploys fail with a timeout unless the VPN is connected",
+ "body": "", "tags": ["deploy"], "evidence": ["make deploy, run at 14:02 UTC"],
+ "status": "confirmed", "supersedes": null, "superseded_by": null,
+ "author": {"principal": "key_0192…", "agent": "claude-opus-5-5", "session": "s-41"},
+ "confirmers": 1, "open_disputes": 0,
+ "created_at": "2026-11-19T10:00:00.000Z", "updated_at": "2026-11-19T11:00:00.000Z"}
+```
+
+### Refusals and their `data`
+
+| Code | `data` members |
+| --- | --- |
+| `memory_not_initialized` | none |
+| `memory_schema_older`, `memory_schema_newer` | `store_version`, `supported_version` |
+| `memory_conflict` | `id`, `current_rev`; `since_rev`, the rev a verdict was about, when its text changed after it |
+| `memory_duplicate` | `candidates` (`[{"id", "title", "status", "similarity"}]`, closest first), `scope` |
+| `memory_not_current` | `id`, `status`, `superseded_by` |
+| `memory_no_open_dispute` | `id` |
+| `memory_cycle` | `id`, `by` (the same id when a memory would supersede itself) |
+| `memory_not_found` | `id`; `purged_at` when it was purged |
+| `memory_self_confirm` | `id`, `without_session` (the author's session is `""`) |
+| `memory_secret_detected` | `field`, `pattern`; the text is never echoed |
+| `memory_too_large` | `field`, `limit`, `size` |
+| `memory_unchanged` | `id` |
+
+A field the engine refuses for its form (an empty or multi-line title, an
+empty reason or evidence item, a `rev` past the current one, a query
+without a word) answers `422 validation_failed` with the field's path, like
+any other field problem, without `data`.
+
+### `GET {name}/memory`
+
+Read. Whether the database holds a store at this gateway's version. Answers
+`200`:
+
+```json
+{"schema_version": 1, "supported_version": 1, "store_id": "mst_01JD0Q7ZQ5Y8W1N3K4M5P6R7S8"}
+```
+
+Errors: `memory_not_initialized`, `memory_schema_older`,
+`memory_schema_newer`.
+
+### `POST {name}/memory/init`
+
+Write. No body, or `{}`. Creates the store's tables, or applies the
+versions it lacks; safe to repeat. Answers `200`:
+
+```json
+{"schema_version": 1, "migrated_from": 0, "store_id": "mst_01JD0Q7ZQ5Y8W1N3K4M5P6R7S8"}
+```
+
+`migrated_from` is the version the store had: `0` for a new store, the
+current version when there was nothing to do. Errors:
+`memory_schema_newer`.
+
+### `POST {name}/memory/memories`
+
+Write. Remember: revision 1 of a new memory.
+
+```json
+{"title": "Widgets deploys fail with a timeout unless the VPN is connected",
+ "body": "", "kind": "pitfall", "scope": "project:github.com/acme/widgets",
+ "tags": ["deploy"], "evidence": ["make deploy, run at 14:02 UTC"],
+ "force": false, "supersedes": null, "reason": null,
+ "agent": "claude-opus-5-5", "session": "s-41"}
+```
+
+`title` is required. `scope` defaults to `global` and `kind` to `fact`;
+with `supersedes` (a memory id) both default, with the tags, to the
+replaced memory's. `supersedes` and `reason` each need the other. The
+client chooses the scope: the CLI's default from a git checkout is its own.
+Answers `201` with the memory object. Errors: `memory_duplicate`,
+`memory_secret_detected`, `memory_too_large`; with `supersedes`, also
+`memory_not_found`, `memory_not_current` and `memory_conflict`.
+
+### `GET {name}/memory/memories`
+
+Read. Recall. Query: `query` (plain words, optional), `scope`, `kind`,
+`tag` and `status` (each repeatable), `limit` (1 to 100, default 10).
+No `scope` searches every scope; no `status` means `inferred`, `confirmed`
+and `disputed`. `kind` matches any of the given, `tag` all of them.
+Answers `200`, best first with a query, else newest first:
+
+```json
+{"memories": [{"id": "mem_01JD0Q7ZQ5Y8W1N3K4M5P6R7S8", "...": "...", "score": 2.84}]}
+```
+
+Each entry is the memory object; `score` is present only with a query.
+A query without a word to search for fails `validation_failed`, path
+`/query`.
+
+### `GET {name}/memory/memories/{id}`
+
+Read. Show. Query: `history` (`true` or `false`, default `false`).
+Answers `200`:
+
+```json
+{"memory": {"id": "mem_01JD0Q7ZQ5Y8W1N3K4M5P6R7S8", "...": "..."},
+ "confirmations": [{"rev": 1, "principal": "key_0192…", "agent": "claude-opus-5-5",
+                    "session": "s-42", "evidence": ["make deploy with the VPN up"],
+                    "created_at": "2026-11-19T11:00:00.000Z", "counts": true}],
+ "disputes": [{"rev": 2, "principal": "key_0193…", "agent": "codex", "session": "r-7",
+               "reason": "the deploy passed without the VPN", "evidence": ["make deploy"],
+               "created_at": "2026-11-19T12:00:00.000Z",
+               "resolved_at": null, "resolution": null}]}
+```
+
+With `history=true` it adds `"revisions"`, every revision oldest first,
+with the fields of memory.md's Revisions table. Every status is shown,
+`forgotten` included. Errors: `memory_not_found`.
+
+### `POST {name}/memory/memories/{id}/revise`
+
+Write. `reason` (required) and at least one of `title`, `body`, `kind`,
+`scope`, `tags`, `add_tags`, `evidence`, `add_evidence` (otherwise path `""`
+`required`). `tags` replaces the list and `add_tags` appends to it; the two
+exclude each other, and so do `evidence` and `add_evidence`. Answers `200`
+with the memory object. Errors: `memory_conflict`, `memory_not_current`,
+`memory_unchanged`, `memory_not_found`, `memory_secret_detected`,
+`memory_too_large`.
+
+### `POST {name}/memory/memories/{id}/confirm`
+
+Write. `evidence` (at least one item) and `rev` (optional, a positive
+integer: the revision the confirmer verified; default the current one).
+Answers `200` with the memory object. Errors: `memory_conflict`,
+`memory_self_confirm`, `memory_not_current`, `memory_not_found`,
+`memory_secret_detected`, `memory_too_large`.
+
+### `POST {name}/memory/memories/{id}/dispute`
+
+Write. `reason` (required), `evidence` (optional), `rev` (as for
+confirm). Answers `200` with the memory object. Errors: `memory_conflict`,
+`memory_not_current`, `memory_not_found`, `memory_secret_detected`,
+`memory_too_large`.
+
+### `POST {name}/memory/memories/{id}/resolve`
+
+Write. `reason` (required). Closes every open dispute. Answers `200` with
+the memory object. Errors: `memory_no_open_dispute`, `memory_not_current`,
+`memory_not_found`, `memory_secret_detected`, `memory_too_large`.
+
+### `POST {name}/memory/memories/{id}/supersede`
+
+Write. `by` (required, a memory id) and `reason` (required). Answers `200`:
+
+```json
+{"superseded": {"id": "mem_01JD0Q7ZQ5Y8W1N3K4M5P6R7S8", "status": "superseded", "...": "..."},
+ "by": {"id": "mem_01JD0RB2C3D4E5F6G7H8J9K0M1", "supersedes": "mem_01JD0Q7ZQ5Y8W1N3K4M5P6R7S8", "...": "..."}}
+```
+
+Errors: `memory_cycle`, `memory_not_current`, `memory_conflict`,
+`memory_not_found`, `memory_secret_detected`, `memory_too_large`.
+
+### `POST {name}/memory/memories/{id}/forget`
+
+Write. `reason` (required) and `purge` (default `false`). Without `purge`,
+a tombstone: answers `200` with the memory object. With `purge: true`,
+erases the memory (the reason is checked, not stored) and answers `200
+{"id": "mem_…", "purged": true}`. Errors: `memory_not_current` (already
+forgotten, without `purge`), `memory_conflict`, `memory_not_found`,
+`memory_secret_detected`, `memory_too_large`.
+
+### `GET {name}/memory/events`
+
+Read. The log, newest first. Query: `scope` (repeatable; every scope
+without it), `limit` (1 to 1 000, default 50), and where the read starts:
+
+- nothing: at the first event;
+- `since_seconds`: the events of that many seconds before the store's now;
+- `after` and `store_id` together: a reader's cursor, the events after
+  `after` when `store_id` is this store's, otherwise a first look;
+- `first_look=true`: a reader with no cursor yet; the events of the last
+  24 hours.
+
+`since_seconds` combines with none of the other three, and `first_look`
+with neither `after` nor `store_id`. Answers `200`:
+
+```json
+{"events": [{"seq": 41, "memory_id": "mem_01JD0Q7ZQ5Y8W1N3K4M5P6R7S8", "verb": "confirm",
+             "rev": 2, "scope": "project:github.com/acme/widgets",
+             "principal": "key_0192…", "agent": "claude-opus-5-5", "session": "s-42",
+             "summary": "confirmed rev 2", "created_at": "2026-11-19T11:00:00.000Z"}],
+ "store_id": "mst_01JD0Q7ZQ5Y8W1N3K4M5P6R7S8", "after": 12, "top": 41, "matching": 1}
+```
+
+`after` is the `seq` the read started after, `top` the store's highest
+`seq` whatever the filter, `matching` how many events pass the filter after
+`after`, of which `events` holds the newest `limit`. A reader keeps
+`store_id` and `top` as its next cursor; the gateway keeps none.
+
+### `GET {name}/memory/export`
+
+Read. The memories of every status but `forgotten`, in creation order, a
+page at a time. Query: `scope` (repeatable), `after` (default 0) and
+`limit` (1 to 500, default 500). Answers `200`:
+
+```json
+{"memories": [{"id": "mem_01JD0Q7ZQ5Y8W1N3K4M5P6R7S8", "...": "..."}], "next_after": 12}
+```
+
+Pass `next_after` back as `after` for the next page; it is `null` when the
+page is not full.
+
 ## Identity routes the clients use
 
 These are Merezha identity's own routes, served by the gateway under
@@ -496,7 +800,7 @@ both permissions and `member` does not. `memoire keys create --name MACHINE
    application origin in a deployment.
 3. Sends `Merezha-Organization` for that team, creates the service account,
    assigns it the team role `member` (found by `key` among the team's
-   roles), then the key: the five memoire permissions (only
+   roles), then the key: the five `memoire.databases.*` permissions (only
    `memoire.databases.read` with `--read-only`) and `expires_at` = now plus
    `--expires` (default 90 days; identity refuses more than 365 days with
    `422 validation_failed`, path `/expires_at`).

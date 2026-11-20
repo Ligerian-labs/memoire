@@ -6,6 +6,7 @@
 
 pub mod database;
 pub mod error;
+pub mod memory;
 pub mod query;
 pub mod schema;
 pub mod snapshot;

@@ -10,6 +10,7 @@ pub mod data;
 mod http;
 mod last_used;
 mod lifecycle;
+mod memory;
 pub mod module;
 mod routes;
 mod store;

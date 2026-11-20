@@ -31,6 +31,12 @@ description = "Delete databases"
 [[permissions]]
 name = "memoire.databases.snapshots"
 description = "Restore databases from snapshots"
+[[permissions]]
+name = "memoire.memory.read"
+description = "Read a database's memory store: recall, show, events, export"
+[[permissions]]
+name = "memoire.memory.write"
+description = "Write a database's memory store: init, remember and every verb that writes"
 
 [[commands]]
 tag = "CreateDatabase"

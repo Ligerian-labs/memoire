@@ -1,5 +1,6 @@
 //! What a memory is on this side of the wire: ids, validated fields, size
-//! limits and the JSON shapes the verbs print.
+//! limits and the JSON shapes the verbs print (defined in `memoire-api`,
+//! which the gateway's memory routes share).
 use crate::{Invalid, Refusal};
 use serde::Serialize;
 
@@ -138,48 +139,7 @@ pub fn parse_session(text: &str) -> Result<String, String> {
     label(text, "a session", SESSION_MAX_CHARS)
 }
 
-/// The live status of a memory.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
-#[serde(rename_all = "snake_case")]
-pub enum Status {
-    Inferred,
-    Confirmed,
-    Disputed,
-    Superseded,
-    Forgotten,
-}
-
-impl Status {
-    /// What recall searches without `--status`.
-    pub const RECALLED: [Status; 3] = [Status::Inferred, Status::Confirmed, Status::Disputed];
-
-    pub fn as_str(self) -> &'static str {
-        match self {
-            Self::Inferred => "inferred",
-            Self::Confirmed => "confirmed",
-            Self::Disputed => "disputed",
-            Self::Superseded => "superseded",
-            Self::Forgotten => "forgotten",
-        }
-    }
-
-    pub fn parse(text: &str) -> Option<Self> {
-        [
-            Self::Inferred,
-            Self::Confirmed,
-            Self::Disputed,
-            Self::Superseded,
-            Self::Forgotten,
-        ]
-        .into_iter()
-        .find(|s| s.as_str() == text)
-    }
-
-    /// Whether the memory may still be revised or confirmed.
-    pub fn is_current(self) -> bool {
-        !matches!(self, Self::Superseded | Self::Forgotten)
-    }
-}
+pub use memoire_api::memory::{Author, Confirmation, Dispute, Event, Memory, Revision, Status};
 
 fn too_large(field: &'static str, limit: usize, size: usize) -> Refusal {
     Refusal::TooLarge {
@@ -229,10 +189,20 @@ pub fn tags(list: impl IntoIterator<Item = String>) -> Result<Vec<String>, Refus
 /// Evidence items, trimmed, repeats dropped: at most 10, each 1 to 500
 /// characters.
 pub fn evidence(list: impl IntoIterator<Item = String>) -> Result<Vec<String>, Refusal> {
-    let items = dedupe(list.into_iter().map(|e| e.trim().to_owned()));
-    if items.iter().any(String::is_empty) {
-        return Err(usage(Invalid::EmptyEvidence));
+    evidence_in("evidence", list)
+}
+
+/// [`evidence`] for the input field `field` (`evidence`, `add_evidence`),
+/// which an empty item's refusal names.
+pub fn evidence_in(
+    field: &'static str,
+    list: impl IntoIterator<Item = String>,
+) -> Result<Vec<String>, Refusal> {
+    let list: Vec<String> = list.into_iter().collect();
+    if let Some(index) = list.iter().position(|e| e.trim().is_empty()) {
+        return Err(usage(Invalid::EmptyEvidence { field, index }));
     }
+    let items = dedupe(list.into_iter().map(|e| e.trim().to_owned()));
     if items.len() > EVIDENCE_MAX_ITEMS {
         return Err(too_large("evidence", EVIDENCE_MAX_ITEMS, items.len()));
     }
@@ -262,6 +232,70 @@ pub fn reason(text: &str) -> Result<String, Refusal> {
     Ok(text.to_owned())
 }
 
+/// An input refused for its syntax, at JSON Pointer `pointer` of the
+/// request (the HTTP API's field names), with `code` (`invalid`,
+/// `required`, `not_allowed`, `out_of_range`).
+pub fn invalid_field(pointer: impl Into<String>, code: &'static str) -> Refusal {
+    usage(Invalid::Field {
+        pointer: pointer.into(),
+        code,
+    })
+}
+
+/// A memory id given as `field`, normalised as [`parse_memory_id`] does.
+pub fn memory_id(field: &str, text: &str) -> Result<String, Refusal> {
+    parse_memory_id(text).map_err(|_| invalid_field(format!("/{field}"), "invalid"))
+}
+
+/// A kind given as `field`.
+pub fn check_kind(field: &str, text: &str) -> Result<(), Refusal> {
+    parse_kind(text)
+        .map(drop)
+        .map_err(|_| invalid_field(format!("/{field}"), "invalid"))
+}
+
+/// A scope given as `field`.
+pub fn check_scope(field: &str, text: &str) -> Result<(), Refusal> {
+    parse_scope(text)
+        .map(drop)
+        .map_err(|_| invalid_field(format!("/{field}"), "invalid"))
+}
+
+/// Each item of the list `field`, checked by `check`; the first bad one
+/// is refused at its index.
+pub fn check_items(
+    field: &str,
+    items: &[String],
+    check: fn(&str) -> Result<String, String>,
+) -> Result<(), Refusal> {
+    match items.iter().position(|item| check(item).is_err()) {
+        Some(i) => Err(invalid_field(format!("/{field}/{i}"), "invalid")),
+        None => Ok(()),
+    }
+}
+
+/// A list `limit` within `1..=max`.
+pub fn check_limit(limit: i64, max: i64) -> Result<(), Refusal> {
+    if (1..=max).contains(&limit) {
+        Ok(())
+    } else {
+        Err(invalid_field("/limit", "out_of_range"))
+    }
+}
+
+/// A store id, `mst_` and a ULID, as `init` generates it.
+pub fn check_store_id(text: &str) -> Result<(), Refusal> {
+    let ulid = text.strip_prefix("mst_").unwrap_or("");
+    let ok = ulid.len() == ULID_LEN
+        && ulid.bytes().all(|b| CROCKFORD.contains(&b))
+        && ulid.as_bytes()[0] <= b'7';
+    if ok {
+        Ok(())
+    } else {
+        Err(invalid_field("/store_id", "invalid"))
+    }
+}
+
 fn dedupe(list: impl IntoIterator<Item = String>) -> Vec<String> {
     let mut seen = Vec::new();
     for item in list {
@@ -288,51 +322,6 @@ pub fn guard_secrets<'a>(
     Ok(())
 }
 
-/// Who wrote a revision.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
-pub struct Author {
-    pub principal: String,
-    pub agent: String,
-    pub session: String,
-}
-
-/// A memory's current state, as every verb prints it.
-#[derive(Clone, Debug, PartialEq, Serialize)]
-pub struct Memory {
-    #[serde(skip)]
-    pub seq: i64,
-    pub id: String,
-    pub rev: i64,
-    /// The latest revision that changed title, body or kind, and its
-    /// author's principal and session: confirmations are compared with
-    /// them.
-    #[serde(skip)]
-    pub content_rev: i64,
-    #[serde(skip)]
-    pub content_principal: String,
-    #[serde(skip)]
-    pub content_session: String,
-    pub kind: String,
-    pub scope: String,
-    pub title: String,
-    pub body: String,
-    pub tags: Vec<String>,
-    pub evidence: Vec<String>,
-    pub status: Status,
-    pub supersedes: Option<String>,
-    pub superseded_by: Option<String>,
-    /// The latest revision's author.
-    pub author: Author,
-    /// Distinct (principal, session) pairs whose confirmation counts.
-    pub confirmers: i64,
-    pub open_disputes: i64,
-    pub created_at: String,
-    /// The last time anything was written about the memory: a revision, a
-    /// confirmation, a dispute or a resolution. Recall's recency and its
-    /// newest-first order follow it.
-    pub updated_at: String,
-}
-
 /// A memory with its recall score.
 #[derive(Serialize)]
 pub struct Scored<'a> {
@@ -340,68 +329,6 @@ pub struct Scored<'a> {
     pub memory: &'a Memory,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub score: Option<f64>,
-}
-
-/// One entry of a memory's history.
-#[derive(Clone, Debug, PartialEq, Serialize)]
-pub struct Revision {
-    pub memory_id: String,
-    pub rev: i64,
-    pub kind: String,
-    pub scope: String,
-    pub title: String,
-    pub body: String,
-    pub tags: Vec<String>,
-    pub evidence: Vec<String>,
-    pub status: Status,
-    pub supersedes: Option<String>,
-    pub superseded_by: Option<String>,
-    pub author_principal: String,
-    pub author_agent: String,
-    pub author_session: String,
-    pub reason: String,
-    pub created_at: String,
-}
-
-#[derive(Clone, Debug, PartialEq, Serialize)]
-pub struct Confirmation {
-    pub rev: i64,
-    pub principal: String,
-    pub agent: String,
-    pub session: String,
-    pub evidence: Vec<String>,
-    pub created_at: String,
-    /// Whether it covers the current text and comes from someone other
-    /// than the content author.
-    pub counts: bool,
-}
-
-/// One entry of the store's log.
-#[derive(Clone, Debug, PartialEq, Serialize)]
-pub struct Event {
-    pub seq: i64,
-    pub memory_id: String,
-    pub verb: String,
-    pub rev: Option<i64>,
-    pub scope: Option<String>,
-    pub principal: String,
-    pub agent: String,
-    pub session: String,
-    pub summary: Option<String>,
-    pub created_at: String,
-}
-
-#[derive(Clone, Debug, PartialEq, Serialize)]
-pub struct Dispute {
-    pub rev: i64,
-    pub principal: String,
-    pub agent: String,
-    pub session: String,
-    pub reason: String,
-    pub evidence: Vec<String>,
-    pub created_at: String,
-    pub resolved_at: Option<String>,
-    pub resolution: Option<String>,
 }
 
 #[cfg(test)]

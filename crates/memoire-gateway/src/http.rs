@@ -98,6 +98,16 @@ pub fn admit(
     policy: &Arc<dyn Authorizer>,
     permission: &str,
 ) -> Result<TeamCaller, Refusal> {
+    admit_any(request, policy, &[permission])
+}
+
+/// [`admit`] for a route that any of `permissions` opens; the refusal of
+/// the first when the caller holds none.
+pub fn admit_any(
+    request: &Request,
+    policy: &Arc<dyn Authorizer>,
+    permissions: &[&str],
+) -> Result<TeamCaller, Refusal> {
     let principal = principal(request)?;
     let team = principal
         .tenant
@@ -108,15 +118,24 @@ pub fn admit(
         team,
         policy: policy.clone(),
     };
-    let permission = Identity::new(permission).map_err(refuse)?;
-    policy
-        .check(
+    let mut denied = None;
+    for permission in permissions {
+        let permission = Identity::new(*permission).map_err(refuse)?;
+        match policy.check(
             Some(&caller.principal),
             &permission,
             &ResourceScope::Tenant(caller.team.clone()),
-        )
-        .map_err(|denied| refuse(Failure::from(denied)))?;
-    Ok(caller)
+        ) {
+            Ok(_) => return Ok(caller),
+            Err(refused) => {
+                denied.get_or_insert(refused);
+            }
+        }
+    }
+    Err(refuse(denied.map_or_else(
+        || Failure::permanent("unauthorized"),
+        Failure::from,
+    )))
 }
 
 /// A JSON object body of at most 1 MiB: `415 unsupported_media_type`

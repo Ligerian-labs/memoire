@@ -173,7 +173,7 @@ pub(super) async fn active(
 }
 
 /// The response for a refused batch or page.
-pub(super) fn refusal(refused: Refused) -> Response {
+pub(crate) fn refusal(refused: Refused) -> Response {
     match refused {
         Refused::Invalid { path, code } => invalid(vec![(path, code)]),
         Refused::Code(code) => refuse(match code {

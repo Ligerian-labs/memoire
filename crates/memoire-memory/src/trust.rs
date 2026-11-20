@@ -56,6 +56,14 @@ fn text_read_at(memory: &Memory, rev: Option<i64>) -> Result<i64, Refusal> {
     Ok(read)
 }
 
+/// A `--rev` is a revision number, 1 or more.
+fn check_rev(rev: Option<i64>) -> Result<(), Refusal> {
+    match rev {
+        Some(rev) if rev < 1 => Err(model::invalid_field("/rev", "out_of_range")),
+        _ => Ok(()),
+    }
+}
+
 /// The text of `memory` changed after rev `read`.
 fn text_moved(memory: &Memory, read: i64) -> Refusal {
     Refusal::Conflict {
@@ -73,6 +81,12 @@ pub async fn confirm<B: Backend>(
     evidence: Vec<String>,
     rev: Option<i64>,
 ) -> Result<Memory, Error<B::Error>> {
+    labels.check()?;
+    let id = &model::memory_id("id", id)?;
+    if evidence.is_empty() {
+        return Err(model::invalid_field("/evidence", "required").into());
+    }
+    check_rev(rev)?;
     let evidence = model::evidence(evidence)?;
     model::guard_secrets(
         evidence
@@ -127,6 +141,9 @@ pub async fn dispute<B: Backend>(
     evidence: Vec<String>,
     rev: Option<i64>,
 ) -> Result<Memory, Error<B::Error>> {
+    labels.check()?;
+    let id = &model::memory_id("id", id)?;
+    check_rev(rev)?;
     let reason = model::reason(reason)?;
     let evidence = model::evidence(evidence)?;
     model::guard_secrets(
@@ -170,6 +187,8 @@ pub async fn resolve<B: Backend>(
     id: &str,
     reason: &str,
 ) -> Result<Memory, Error<B::Error>> {
+    labels.check()?;
+    let id = &model::memory_id("id", id)?;
     let reason = model::reason(reason)?;
     model::guard_secrets(
         [("reason", reason.as_str())]

@@ -4,6 +4,9 @@
 #![allow(clippy::result_large_err)]
 mod data;
 mod lifecycle;
+mod memory;
+
+pub(crate) use data::refusal;
 
 use crate::{
     catalog::{Catalog, random_hex},
@@ -42,6 +45,13 @@ pub mod permission {
     pub const CREATE: &str = "memoire.databases.create";
     pub const DELETE: &str = "memoire.databases.delete";
     pub const SNAPSHOTS: &str = "memoire.databases.snapshots";
+    pub const MEMORY_READ: &str = "memoire.memory.read";
+    pub const MEMORY_WRITE: &str = "memoire.memory.write";
+    /// A memory read route admits either: a key that may read the
+    /// database with SQL may read its store.
+    pub const MEMORY_READERS: &[&str] = &[MEMORY_READ, READ];
+    /// A memory write route admits either, for the same reason.
+    pub const MEMORY_WRITERS: &[&str] = &[MEMORY_WRITE, WRITE];
 }
 
 #[derive(Clone)]
@@ -73,6 +83,39 @@ pub fn router(routes: Routes) -> Router {
             "/databases/{name}/import",
             axum::routing::put(lifecycle::import),
         )
+        .route("/databases/{name}/memory", get(memory::store))
+        .route("/databases/{name}/memory/init", post(memory::init))
+        .route(
+            "/databases/{name}/memory/memories",
+            get(memory::recall).post(memory::remember),
+        )
+        .route("/databases/{name}/memory/memories/{id}", get(memory::show))
+        .route(
+            "/databases/{name}/memory/memories/{id}/revise",
+            post(memory::revise),
+        )
+        .route(
+            "/databases/{name}/memory/memories/{id}/confirm",
+            post(memory::confirm),
+        )
+        .route(
+            "/databases/{name}/memory/memories/{id}/dispute",
+            post(memory::dispute),
+        )
+        .route(
+            "/databases/{name}/memory/memories/{id}/resolve",
+            post(memory::resolve),
+        )
+        .route(
+            "/databases/{name}/memory/memories/{id}/supersede",
+            post(memory::supersede),
+        )
+        .route(
+            "/databases/{name}/memory/memories/{id}/forget",
+            post(memory::forget),
+        )
+        .route("/databases/{name}/memory/events", get(memory::events))
+        .route("/databases/{name}/memory/export", get(memory::export))
         .with_state(routes)
         .layer(middleware::map_response(no_store))
 }
