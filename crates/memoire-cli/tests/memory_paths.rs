@@ -160,8 +160,72 @@ fn a_memory_only_key_uses_the_api_and_nothing_else() {
     let run = json_run(&sql, &["memory", "recall"]);
     assert_eq!(run.code, 4, "{}", run.stderr);
     assert_eq!(run.error()["error"]["code"], "unauthorized");
-    // Nor the catalog: `init` looks the database up.
-    assert_eq!(json_run(&a, &["memory", "init"]).code, 4);
+    // Nor the catalog.
+    assert_eq!(a.run(&["db", "ls"], "").code, 4);
+}
+
+#[test]
+fn a_memory_only_key_initialises_a_store_in_a_database_that_exists() {
+    let fake = Fake::start();
+    let dir = tempfile::tempdir().unwrap();
+    let member = agent(&fake, dir.path(), MEMBER_KEY, "member");
+    member.run(&["db", "create", "memory"], "").ok();
+    fake.add_key_as(
+        "mzk_fake_memory_key",
+        "key_fake_memory",
+        Some(TEAM),
+        &["memoire.memory.read", "memoire.memory.write"],
+    );
+    let a = agent(&fake, dir.path(), "mzk_fake_memory_key", "agent-a");
+
+    let init = ok(&a, &["memory", "init", "--burstable"]);
+    assert_eq!(
+        (&init["database"], &init["created"], &init["migrated_from"]),
+        (&json!(null), &json!(false), &json!(0))
+    );
+    assert!(init["store_id"].as_str().unwrap().starts_with("mst_"));
+    let run = a.run(&["memory", "init"], "").ok();
+    assert!(
+        run.stdout
+            .starts_with("memory store     schema 1, up to date")
+            && !run.stdout.contains("database"),
+        "{}",
+        run.stdout
+    );
+    assert_eq!(run.stderr, "", "no note on a kind it cannot see");
+    ok(
+        &a,
+        &[
+            "memory",
+            "remember",
+            "--title",
+            "Stores start from memory keys",
+        ],
+    );
+    // A full key's init is unchanged.
+    let full = ok(&member, &["memory", "init"]);
+    assert_eq!(
+        (
+            &full["database"]["name"],
+            &full["created"],
+            &full["migrated_from"]
+        ),
+        (&json!("memory"), &json!(false), &json!(1))
+    );
+
+    // A missing database needs a key that may create one.
+    let run = json_run(&a, &["memory", "--db", "other", "init"]);
+    assert_eq!(run.code, 5, "{}", run.stderr);
+    let error = &run.error()["error"];
+    assert_eq!(error["code"], "database_not_found");
+    let message = error["message"].as_str().unwrap();
+    assert!(
+        message.contains("may not create") && message.contains("memoire memory init"),
+        "{message}"
+    );
+    let listed = member.run(&["db", "ls", "--json"], "").ok().stdout;
+    assert!(!listed.contains("\"other\""), "{listed}");
+    assert_eq!(count(&fake, "POST", "/databases/other/memory/init"), 0);
 }
 
 /// The same command on both paths, against the same state: its exit code

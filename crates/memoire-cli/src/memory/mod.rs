@@ -146,6 +146,8 @@ pub fn run(out: &Out, env: &Env, args: MemoryArgs) -> Result<()> {
 }
 
 /// `init`: the database, persistent unless `--burstable`, then the schema.
+/// A key that may not read the catalog (a memory-only key) skips the
+/// database step on the API path: the store's routes find the database.
 fn init(ctx: &Context<'_>, args: &MemoryInitArgs) -> Result<()> {
     let (client, db) = (&ctx.store.gateway.client, &ctx.store.gateway.db);
     let kind = if args.burstable {
@@ -160,28 +162,47 @@ fn init(ctx: &Context<'_>, args: &MemoryInitArgs) -> Result<()> {
             idle_ttl_seconds: args.ttl,
         })
     };
+    // Without the permission to read or create it, the database is left to
+    // the store's routes, which find it or answer `database_not_found`.
+    let unseen = |e: &Error| e.code() == "unauthorized" && !ctx.env.memory_sql;
     let existing = match client.database(db) {
-        Ok(db) if db.state == DatabaseState::Active => Some(db),
+        Ok(db) if db.state == DatabaseState::Active => Some(Some(db)),
         Ok(_) => None,
         Err(e) if e.code() == "database_not_found" => None,
+        Err(e) if unseen(&e) => Some(None),
         Err(e) => return Err(e),
     };
     let (database, created) = match existing {
         Some(db) => (db, false),
         None => match create() {
-            Ok(db) => (db, true),
+            Ok(db) => (Some(db), true),
             // Another init created it in between: use that one.
-            Err(e) if e.code() == "database_exists" => (client.database(db)?, false),
+            Err(e) if e.code() == "database_exists" => (Some(client.database(db)?), false),
+            Err(e) if unseen(&e) => (None, false),
             Err(e) => return Err(e),
         },
     };
-    if !created && (args.burstable || args.persistent) && database.kind != kind {
+    if let Some(database) = &database
+        && !created
+        && (args.burstable || args.persistent)
+        && database.kind != kind
+    {
         ctx.out.note(&format!(
             "note: `{db}` already exists as a {} database; keeping it",
-            crate::output::kind(&database)
+            crate::output::kind(database)
         ));
     }
-    let (migrated_from, store_id) = ctx.store.init()?;
+    let (migrated_from, store_id) = ctx.store.init().map_err(|e| match e {
+        e if database.is_none() && e.code() == "database_not_found" => Error::local(
+            "database_not_found",
+            exit::NOT_FOUND,
+            format!(
+                "no database `{db}` in the team, and this key may not create one; run `memoire memory init` once with a key that may create databases"
+            ),
+        )
+        .with("status", 404),
+        e => e,
+    })?;
     if ctx.out.json {
         return ctx.out.json(&json!({
             "database": database,
@@ -191,8 +212,12 @@ fn init(ctx: &Context<'_>, args: &MemoryInitArgs) -> Result<()> {
             "store_id": store_id,
         }));
     }
-    ctx.out
-        .line(&render::init(&database, created, migrated_from, &store_id))
+    ctx.out.line(&render::init(
+        database.as_ref(),
+        created,
+        migrated_from,
+        &store_id,
+    ))
 }
 
 /// The body from `--body`, `--body-file FILE` or `--body-file -`.

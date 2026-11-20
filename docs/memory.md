@@ -836,9 +836,11 @@ too large) is refused the same way on both paths, before any request.
 It cannot run `query` or the shell, read the schema or the rows, export,
 import, list or restore snapshots, or create, list or delete databases, so
 it cannot use the SQL path either (`MEMOIRE_MEMORY_SQL=1` exits 4). `init`
-looks the database up and creates it when it is missing, so it needs a key
-that may read the catalog and, for a new database, create one; run it once
-with a member's key. A key with the write permission but neither read
+creates the store in a database that exists, through the memory API, and
+prints `"database": null` because the key may not read the catalog; kind
+flags are ignored then. It cannot create the database: on a missing one it
+exits 5 `database_not_found`, and a key that may create databases must run
+`memoire memory init` once. A key with the write permission but neither read
 permission gets `memory_duplicate` with an empty `candidates` list. A
 gateway without the memory API does not know these permissions, and
 `keys create --memory` fails with `unknown_permission`.
