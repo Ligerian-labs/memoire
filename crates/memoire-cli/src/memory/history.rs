@@ -85,7 +85,9 @@ fn unseen(
     // first look, as the query took it.
     let first = saved.is_none_or(|c| c.store_id != store_id);
     let through = top.max(after);
-    let skipped = matching - events.len() as i64;
+    // The two statements read the clock apart: an event that crossed the
+    // first look's start between them is in one and not the other.
+    let skipped = (matching - events.len() as i64).max(0);
     if ctx.out.json {
         ctx.out.json(&json!({
             "events": events,

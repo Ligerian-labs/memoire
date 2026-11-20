@@ -630,8 +630,8 @@ cursor, then moves the cursor once they are printed:
   reviewer, for example) and continues where its last run stopped;
   `session:ID` when the session (`--session`, `MEMOIRE_SESSION`) is set and
   not empty; else `machine`. `NAME` has the syntax of a tag; another value
-  exits 2. An empty `MEMOIRE_READER` counts as unset. Without `--unseen`,
-  the reader is ignored.
+  exits 2, with or without `--unseen`. An empty `MEMOIRE_READER` counts as
+  unset. Without `--unseen`, a valid reader is ignored.
 - There is one cursor per server URL, database, scope filter (the sorted
   `--scope` list) and reader. Sessions on one machine each have their own
   cursor, so one does not consume another's news. A filtered read keeps its
@@ -677,8 +677,8 @@ cursor, then moves the cursor once they are printed:
   A session that looks again after that gets a first look. Named and
   `machine` cursors are kept.
 - A version 1 file, from an earlier CLI, is read as version 2: each of its
-  cursors becomes a `machine` cursor, and an entry the CLI cannot parse is
-  dropped. The file is rewritten as version 2 at the next `log --unseen`. An
+  cursors becomes a `machine` cursor, and an entry whose key the CLI cannot
+  parse is dropped. The file is rewritten as version 2 at the next `log --unseen`. An
   earlier CLI refuses a version 2 file with `invalid_cursors`.
 - A purge event has no scope, so a log filtered by `--scope` does not show
   it.

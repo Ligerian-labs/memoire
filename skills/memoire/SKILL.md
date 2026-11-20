@@ -32,7 +32,7 @@ MEMOIRE_AGENT=claude-opus-5-5 MEMOIRE_SESSION=widgets-20261119-a7 memoire memory
 At the start of a session:
 
 ```sh
-memoire memory log --unseen --json                 # what changed since this session last looked
+memoire memory log --unseen --json                 # the store's recent events, then only what is new
 memoire memory recall "deploy staging vpn" --json  # words from your task
 ```
 
@@ -57,7 +57,7 @@ Before you act on a remembered operational fact (a port, a path, a version, who 
 - `--kind K` (repeatable, any of them), `--tag T` (repeatable, all of them), `--limit N` (1 to 100, default 10). Without a query, newest first.
 - `score` only orders the results of one query. Its size means nothing, and it can be tiny on a small store.
 - No result means nothing matched those words in the scopes and statuses searched. Try other words or `--all-scopes` before you conclude the team has not recorded it. Then do the work and write what you verified.
-- `log --unseen` follows your `MEMOIRE_SESSION`. A session's first look shows the last 24 hours, at most 50 events; later looks show only what is new. `log --since 72h --json` shows a fixed window. A role that runs as many sessions, such as a nightly reviewer, passes `--reader NAME` or sets `MEMOIRE_READER` to continue where its last run stopped.
+- `log --unseen` follows your `MEMOIRE_SESSION`. A session's first look shows the events of the last 24 hours, the newest 50 unless `--limit` says more; later looks show only what is new. `log --since 72h --json` shows a fixed window. A role that runs as many sessions, such as a nightly reviewer, passes `--reader NAME` or sets `MEMOIRE_READER` to continue where its last run stopped.
 
 ## What to write
 
