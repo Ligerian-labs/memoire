@@ -50,7 +50,7 @@ as well.
 | `import DB FILE` | Load a SQLite file into an empty database |
 | `snapshots ls DB` | List a persistent database's snapshots |
 | `snapshots restore DB SNAPSHOT_ID` | Restore one, after a `pre_restore` snapshot of the current contents |
-| `keys create --name MACHINE [--team org_…] [--expires 90d] [--read-only]` | Create a machine and an API key for it |
+| `keys create --name MACHINE [--team org_…] [--expires 90d] [--read-only] [--memory]` | Create a machine and an API key for it |
 | `memory init [--burstable [--ttl 24h] \| --persistent]` | Create a memory store's database and tables; persistent is the default |
 | `memory remember --title TITLE [--body BODY \| --body-file FILE] [--kind KIND] [--scope SCOPE] [--tag TAG]... [--evidence TEXT]... [--force] [--supersedes OLD_ID --reason REASON]` | Record a memory; with `--supersedes`, it replaces `OLD_ID` in the same write |
 | `memory recall [QUERY] [--scope SCOPE... \| --all-scopes] [--kind KIND]... [--tag TAG]... [--status STATUS]... [--limit 10]` | Search memories, best first; without QUERY, the newest |
@@ -103,7 +103,11 @@ from the terminal (the password without echo), or as two lines of standard
 input. Then it creates the machine, gives it the team role `member` (a
 machine holds no permission without a role), and creates its key with the
 five memoire permissions, or only `memoire.databases.read` with
-`--read-only`. Creating machines and assigning roles takes a team admin or
+`--read-only`. With `--memory`, the key holds only `memoire.memory.read` and
+`memoire.memory.write` (only `memoire.memory.read` with `--read-only`): an
+agent on it can use the memory and nothing else, see
+[memory.md](memory.md#memory-only-keys). A gateway without the memory API
+refuses those permissions with `unknown_permission`. Creating machines and assigning roles takes a team admin or
 owner; a plain member cannot run it. It prints
 the key once and signs the temporary session out. The team is `--team`,
 else the stored key's team. `--expires` is at most `365d`, identity's limit. The `--server` URL must be the gateway's
@@ -121,8 +125,10 @@ memoire keys create --name ci-runner > ci-runner.key
 `memory` keeps a shared memory for agents in a database, `memory` unless
 `--db NAME` or `MEMOIRE_MEMORY_DB` names another. Writes record the key's
 principal with `--agent` (`MEMOIRE_AGENT`) and `--session`
-(`MEMOIRE_SESSION`). [memory.md](memory.md) is the reference: records,
-statuses, ranking, concurrency and the error codes.
+(`MEMOIRE_SESSION`). The verbs call the gateway's memory API, and fall back
+to SQL over the query route against a gateway without it
+(`MEMOIRE_MEMORY_SQL=1` forces that). [memory.md](memory.md) is the
+reference: records, statuses, ranking, concurrency and the error codes.
 
 ```sh
 memoire memory init

@@ -1,0 +1,385 @@
+//! How `memoire memory` picks its path: the gateway's memory API, the SQL
+//! fallback against a gateway without it, `MEMOIRE_MEMORY_SQL=1`, and what
+//! a key holding only the memory permissions can do.
+mod support;
+
+use serde_json::{Value, json};
+use std::path::Path;
+use support::{
+    Memoire, Run,
+    fake::{Fake, MEMBER_KEY, TEAM},
+};
+
+/// A CLI logged in with `key`, in `dir`, as agent `name` in session `s-1`.
+fn agent(fake: &Fake, dir: &Path, key: &str, name: &str) -> Memoire {
+    let memoire = Memoire::new()
+        .dir(dir)
+        .env("MEMOIRE_AGENT", name)
+        .env("MEMOIRE_SESSION", "s-1");
+    memoire
+        .run(&["login", "--server", &fake.url], &format!("{key}\n"))
+        .ok();
+    memoire
+}
+
+/// `memoire`'s login, agent and session, on the SQL path.
+fn on_sql(memoire: &Memoire, dir: &Path, name: &str) -> Memoire {
+    Memoire::new()
+        .dir(dir)
+        .env(
+            "MEMOIRE_CONFIG_DIR",
+            memoire.config.path().join("memoire").to_str().unwrap(),
+        )
+        .env("MEMOIRE_AGENT", name)
+        .env("MEMOIRE_SESSION", "s-1")
+        .env("MEMOIRE_MEMORY_SQL", "1")
+}
+
+fn json_run(memoire: &Memoire, args: &[&str]) -> Run {
+    let mut args = args.to_vec();
+    args.push("--json");
+    memoire.run(&args, "")
+}
+
+fn ok(memoire: &Memoire, args: &[&str]) -> Value {
+    json_run(memoire, args).ok().json()
+}
+
+/// Requests to paths ending in `suffix`, by `method`.
+fn count(fake: &Fake, method: &str, suffix: &str) -> usize {
+    fake.requests()
+        .iter()
+        .filter(|r| r.method == method && r.path.ends_with(suffix))
+        .count()
+}
+
+/// Write queries the fake has run.
+fn write_queries(fake: &Fake) -> usize {
+    fake.requests()
+        .iter()
+        .filter(|r| {
+            r.path.ends_with("/query")
+                && serde_json::from_slice::<Value>(&r.body).is_ok_and(|b| b["mode"] == "write")
+        })
+        .count()
+}
+
+#[test]
+fn a_gateway_without_the_memory_api_gets_the_sql_convention() {
+    let fake = Fake::start_without_memory();
+    let dir = tempfile::tempdir().unwrap();
+    let a = agent(&fake, dir.path(), MEMBER_KEY, "agent-a");
+    assert_eq!(ok(&a, &["memory", "init"])["migrated_from"], 0);
+    assert_eq!(count(&fake, "GET", "/databases/memory/memory"), 1);
+
+    // The write asks the API once, finds no route, and writes once.
+    let writes = write_queries(&fake);
+    let memory = ok(
+        &a,
+        &["memory", "remember", "--title", "Old gateways still work"],
+    );
+    assert_eq!(count(&fake, "POST", "/memory/memories"), 1);
+    assert_eq!(write_queries(&fake), writes + 1);
+    // Through SQL, the principal comes from whoami.
+    assert_eq!(memory["author"]["principal"], "key_fake_member");
+    let found = ok(&a, &["memory", "recall", "old gateways"]);
+    assert_eq!(found["memories"][0]["id"], memory["id"]);
+    let rows: i64 = rusqlite::Connection::open(fake.database_path("memory"))
+        .unwrap()
+        .query_row("SELECT count(*) FROM memoire_memory_memories", [], |r| {
+            r.get(0)
+        })
+        .unwrap();
+    assert_eq!(rows, 1);
+    // An answer of the gateway is not a missing route.
+    let run = json_run(&a, &["memory", "--db", "nope", "recall"]);
+    assert_eq!(run.code, 5);
+    assert_eq!(run.error()["error"]["code"], "database_not_found");
+}
+
+#[test]
+fn a_memory_only_key_uses_the_api_and_nothing_else() {
+    let fake = Fake::start();
+    let dir = tempfile::tempdir().unwrap();
+    let member = agent(&fake, dir.path(), MEMBER_KEY, "member");
+    ok(&member, &["memory", "init"]);
+    fake.add_key_as(
+        "mzk_fake_memory_key",
+        "key_fake_memory",
+        Some(TEAM),
+        &["memoire.memory.read", "memoire.memory.write"],
+    );
+    let a = agent(&fake, dir.path(), "mzk_fake_memory_key", "agent-a");
+    let whoami = count(&fake, "GET", "/whoami");
+
+    let memory = ok(
+        &a,
+        &["memory", "remember", "--title", "Agents run on memory keys"],
+    );
+    let id = memory["id"].as_str().unwrap();
+    assert_eq!(memory["author"]["principal"], "key_fake_memory");
+    assert_eq!(memory["author"]["agent"], "agent-a");
+    let found = ok(&a, &["memory", "recall", "memory keys"]);
+    assert_eq!(found["memories"][0]["id"], id);
+    let confirmed = ok(
+        &member,
+        &["memory", "confirm", id, "--evidence", "ran an agent"],
+    );
+    assert_eq!(confirmed["status"], "confirmed");
+    ok(&a, &["memory", "show", id, "--history"]);
+    ok(
+        &a,
+        &[
+            "memory",
+            "revise",
+            id,
+            "--add-tag",
+            "keys",
+            "--reason",
+            "tag",
+        ],
+    );
+    assert_eq!(
+        ok(&a, &["memory", "log", "--unseen"])["unseen"]["first"],
+        true
+    );
+    let output = dir.path().join("out.jsonl");
+    assert_eq!(
+        ok(&a, &["memory", "export", "-o", output.to_str().unwrap()])["count"],
+        1
+    );
+    assert_eq!(
+        count(&fake, "GET", "/whoami"),
+        whoami,
+        "the API path never asks"
+    );
+
+    // No SQL: neither a query nor the memory's SQL convention.
+    assert_eq!(a.run(&["query", "memory", "SELECT 1"], "").code, 4);
+    let sql = on_sql(&a, dir.path(), "agent-a");
+    let run = json_run(&sql, &["memory", "recall"]);
+    assert_eq!(run.code, 4, "{}", run.stderr);
+    assert_eq!(run.error()["error"]["code"], "unauthorized");
+    // Nor the catalog: `init` looks the database up.
+    assert_eq!(json_run(&a, &["memory", "init"]).code, 4);
+}
+
+/// The same command on both paths, against the same state: its exit code
+/// and standard error.
+fn both(memoire: &Memoire, sql: &Memoire, args: &[&str]) -> [(i32, String); 2] {
+    let api = json_run(memoire, args);
+    let sql = json_run(sql, args);
+    assert_eq!(api.stdout, "");
+    assert_eq!(sql.stdout, "");
+    [(api.code, api.stderr), (sql.code, sql.stderr)]
+}
+
+#[test]
+fn refusals_are_reported_byte_for_byte_alike_on_both_paths() {
+    let fake = Fake::start();
+    let dir = tempfile::tempdir().unwrap();
+    let a = agent(&fake, dir.path(), MEMBER_KEY, "agent-a");
+    let sql = on_sql(&a, dir.path(), "agent-a");
+    ok(&a, &["memory", "init"]);
+    let id = ok(
+        &a,
+        &["memory", "remember", "--title", "Deploys need the VPN"],
+    )["id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    ok(
+        &a,
+        &[
+            "memory",
+            "revise",
+            &id,
+            "--title",
+            "Deploys need the VPN up",
+            "--reason",
+            "r",
+        ],
+    );
+    let gone = ok(&a, &["memory", "remember", "--title", "Forgotten note"])["id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    ok(&a, &["memory", "forget", &gone, "--reason", "old"]);
+    let purged = ok(&a, &["memory", "remember", "--title", "Purged note"])["id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    ok(
+        &a,
+        &["memory", "forget", &purged, "--reason", "leak", "--purge"],
+    );
+    let mut ten = vec!["memory", "revise", &id, "--reason", "tags"];
+    let tags: Vec<String> = (0..10).map(|i| format!("t{i}")).collect();
+    for tag in &tags {
+        ten.extend(["--tag", tag]);
+    }
+    ok(&a, &ten);
+    let secret = format!("{}{}", ["mz", "k_"].concat(), "q7Rx".repeat(6));
+    let title = format!("token {secret}");
+
+    let cases: [(&str, i32, Vec<&str>, &str); 6] = [
+        (
+            "memory_conflict",
+            6,
+            vec!["memory", "confirm", &id, "--evidence", "e", "--rev", "1"],
+            "/confirm",
+        ),
+        (
+            "memory_duplicate",
+            6,
+            vec!["memory", "remember", "--title", "Deploys need the VPN up!"],
+            "/memories",
+        ),
+        (
+            "memory_not_current",
+            6,
+            vec!["memory", "revise", &gone, "--title", "x", "--reason", "r"],
+            "/revise",
+        ),
+        (
+            "memory_not_found",
+            5,
+            vec!["memory", "show", &purged],
+            &purged,
+        ),
+        // Inherited from the replaced memory, so the gateway's guard
+        // finds it, not the CLI's own check.
+        (
+            "memory_secret_detected",
+            7,
+            vec![
+                "memory",
+                "remember",
+                "--title",
+                &title,
+                "--supersedes",
+                &id,
+                "--reason",
+                "r",
+            ],
+            "/memories",
+        ),
+        // Ten tags there and one more: only the store knows.
+        (
+            "memory_too_large",
+            7,
+            vec![
+                "memory",
+                "revise",
+                &id,
+                "--add-tag",
+                "eleventh",
+                "--reason",
+                "r",
+            ],
+            "/revise",
+        ),
+    ];
+    for (code, exit, args, route) in cases {
+        let asked = fake
+            .requests()
+            .iter()
+            .filter(|r| r.path.ends_with(route))
+            .count();
+        let [api, sql] = both(&a, &sql, &args);
+        assert_eq!(api, sql, "{code}");
+        assert_eq!(api.0, exit, "{code}: {}", api.1);
+        let error: Value = serde_json::from_str(api.1.trim()).unwrap();
+        assert_eq!(error["error"]["code"], code);
+        assert!(!api.1.contains(&secret));
+        // The refusal came from the gateway's memory route.
+        assert_eq!(
+            fake.requests()
+                .iter()
+                .filter(|r| r.path.ends_with(route))
+                .count(),
+            asked + 1,
+            "{code}"
+        );
+    }
+    let error: Value =
+        serde_json::from_str(both(&a, &sql, &["memory", "show", &purged])[0].1.trim()).unwrap();
+    assert!(
+        error["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("was purged at")
+    );
+}
+
+#[test]
+fn init_on_a_current_store_writes_nothing_so_a_reader_may_run_it() {
+    let fake = Fake::start();
+    let dir = tempfile::tempdir().unwrap();
+    let member = agent(&fake, dir.path(), MEMBER_KEY, "member");
+    let first = ok(&member, &["memory", "init"]);
+    fake.add_key_as(
+        "mzk_fake_reader_key",
+        "key_fake_reader",
+        Some(TEAM),
+        &["memoire.databases.read", "memoire.memory.read"],
+    );
+    let reader = agent(&fake, dir.path(), "mzk_fake_reader_key", "reader");
+    let posts = count(&fake, "POST", "");
+    let again = ok(&reader, &["memory", "init"]);
+    assert_eq!(
+        (
+            &again["created"],
+            &again["migrated_from"],
+            &again["store_id"]
+        ),
+        (&json!(false), &json!(1), &first["store_id"])
+    );
+    assert_eq!(count(&fake, "POST", ""), posts, "nothing was written");
+    assert_eq!(count(&fake, "GET", "/databases/memory/memory"), 2);
+}
+
+#[test]
+fn a_writer_that_may_not_read_is_not_shown_the_duplicates() {
+    let fake = Fake::start();
+    let dir = tempfile::tempdir().unwrap();
+    let member = agent(&fake, dir.path(), MEMBER_KEY, "member");
+    ok(&member, &["memory", "init"]);
+    ok(
+        &member,
+        &["memory", "remember", "--title", "Backups run at midnight"],
+    );
+    fake.add_key_as(
+        "mzk_fake_writer_key",
+        "key_fake_writer",
+        Some(TEAM),
+        &["memoire.memory.write"],
+    );
+    let writer = agent(&fake, dir.path(), "mzk_fake_writer_key", "writer");
+    let run = json_run(
+        &writer,
+        &["memory", "remember", "--title", "Backups run at midnight!"],
+    );
+    assert_eq!(run.code, 6, "{}", run.stderr);
+    let error = &run.error()["error"];
+    assert_eq!(
+        (&error["code"], &error["candidates"]),
+        (&json!("memory_duplicate"), &json!([]))
+    );
+    let message = error["message"].as_str().unwrap();
+    assert!(
+        !message.contains("()") && message.contains("--force"),
+        "{message}"
+    );
+    let forced = ok(
+        &writer,
+        &[
+            "memory",
+            "remember",
+            "--title",
+            "Backups run at midnight!",
+            "--force",
+        ],
+    );
+    assert_eq!(forced["author"]["principal"], "key_fake_writer");
+}

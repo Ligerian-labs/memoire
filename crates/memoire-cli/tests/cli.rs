@@ -585,6 +585,67 @@ fn keys_create_mints_a_machine_key_through_a_temporary_session() {
 }
 
 #[test]
+fn keys_create_memory_mints_a_key_for_the_memory_only() {
+    let (fake, memoire) = logged_in();
+    memoire.run(&["db", "create", "memory"], "").ok();
+    let login = format!("{EMAIL}\n{PASSWORD}\n");
+    let requested = || -> serde_json::Value {
+        let mint = fake.requests();
+        let mint = mint
+            .iter()
+            .rev()
+            .find(|r| r.path.ends_with("/api-keys"))
+            .unwrap();
+        serde_json::from_slice::<serde_json::Value>(&mint.body).unwrap()["permissions"].clone()
+    };
+    for (extra, permissions, said) in [
+        (
+            &[][..],
+            json!(["memoire.memory.read", "memoire.memory.write"]),
+            "memory, read and write",
+        ),
+        (
+            &["--read-only"][..],
+            json!(["memoire.memory.read"]),
+            "memory, read-only",
+        ),
+    ] {
+        let mut args = vec!["keys", "create", "--name", "agent", "--memory"];
+        args.extend_from_slice(extra);
+        let run = memoire.run(&args, &login).ok();
+        assert_eq!(requested(), permissions, "{extra:?}");
+        assert!(run.stderr.contains(said), "{}", run.stderr);
+        let key = run.stdout.trim();
+        // The key reaches the memory, and nothing else.
+        let machine = Memoire::new()
+            .env("MEMOIRE_SERVER", &fake.url)
+            .env("MEMOIRE_API_KEY", key);
+        assert_eq!(machine.run(&["db", "ls"], "").code, 4);
+        assert_eq!(machine.run(&["query", "memory", "SELECT 1"], "").code, 4);
+    }
+
+    // A gateway from before the memory API does not know the permissions.
+    let old = Fake::start_without_memory();
+    let memoire = Memoire::new();
+    memoire
+        .run(&["login", "--server", &old.url], MEMBER_KEY)
+        .ok();
+    let run = memoire.run(
+        &["keys", "create", "--name", "agent", "--memory", "--json"],
+        &login,
+    );
+    assert_eq!(run.code, 7, "{}", run.stderr);
+    let error = &run.error()["error"];
+    assert_eq!(error["code"], "unknown_permission");
+    assert_eq!(error["status"], 422);
+    assert!(
+        error["message"].as_str().unwrap().contains("no memory API"),
+        "{error}"
+    );
+    assert_eq!(old.open_sessions(), 0);
+}
+
+#[test]
 fn failures_map_to_stable_exit_codes() {
     let (fake, memoire) = logged_in();
     fake.fail_next(503, "sqlite_busy", "transient", Some(2));

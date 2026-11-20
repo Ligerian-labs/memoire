@@ -43,6 +43,9 @@ pub enum Error {
         retry_after: Option<u64>,
         /// A `sql_error`'s statement, code and SQLite message.
         sql: Option<Box<SqlErrorDetail>>,
+        /// The `data` member beside `error`, which a memory route's refusal
+        /// carries; empty for every other error.
+        data: Box<Map<String, Value>>,
     },
     /// A failure on this side, with a stable snake_case code.
     Local {
@@ -132,6 +135,7 @@ impl Error {
                 error,
                 retry_after,
                 sql,
+                data,
             } => {
                 let mut body = serde_json::to_value(error).unwrap_or(Value::Null);
                 if let Some(object) = body.as_object_mut() {
@@ -142,6 +146,9 @@ impl Error {
                     }
                     if let Some(sql) = sql {
                         object.insert("sql".into(), json!(sql));
+                    }
+                    if !data.is_empty() {
+                        object.insert("data".into(), Value::Object((**data).clone()));
                     }
                 }
                 json!({ "error": body })
@@ -248,6 +255,7 @@ mod tests {
             }),
             retry_after: None,
             sql: None,
+            data: Box::default(),
         }
     }
 
@@ -294,6 +302,7 @@ mod tests {
                 sqlite_code: "SQLITE_ERROR".into(),
                 message: "no such table: t".into(),
             })),
+            data: Box::default(),
         };
         assert_eq!(
             failure.message(),
@@ -316,6 +325,7 @@ mod tests {
             error,
             retry_after: Some(3),
             sql: None,
+            data: Box::default(),
         };
         assert_eq!(
             failure.message(),

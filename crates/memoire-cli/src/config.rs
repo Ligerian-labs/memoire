@@ -22,6 +22,9 @@ pub struct Env {
     pub config_dir: Option<PathBuf>,
     pub server: Option<String>,
     pub api_key: Option<Secret>,
+    /// `MEMOIRE_MEMORY_SQL=1`: the memory verbs use the SQL convention over
+    /// the query route without asking the gateway for its memory API.
+    pub memory_sql: bool,
 }
 
 impl Env {
@@ -35,6 +38,7 @@ impl Env {
             config_dir,
             server: var("MEMOIRE_SERVER"),
             api_key: var("MEMOIRE_API_KEY").map(Secret::new),
+            memory_sql: var("MEMOIRE_MEMORY_SQL").is_some_and(|v| v == "1"),
         }
     }
 

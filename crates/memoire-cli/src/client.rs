@@ -3,7 +3,7 @@ use crate::config::Secret;
 use crate::error::{Error, Result, exit};
 use memoire_api::{
     CreateDatabase, Database, ErrorBody, ExtendDatabase, Page, QueryRequest, QueryResponse, Schema,
-    Snapshot, SqlErrorDetail, Whoami,
+    Snapshot, SqlErrorDetail, Whoami, memory,
 };
 use reqwest::{
     Method, StatusCode, Url,
@@ -290,6 +290,140 @@ impl Client {
         self.json(self.database_request(Method::POST, name, &["snapshots", snapshot, "restore"]))
     }
 
+    // The memory routes (docs/api.md, "Memory routes"), under
+    // `{name}/memory`. `query` holds the query parameters, repeatable ones
+    // once per value.
+
+    fn memory_get<T: DeserializeOwned>(
+        &self,
+        name: &str,
+        rest: &[&str],
+        query: &[(&str, String)],
+    ) -> Result<T> {
+        let mut segments = vec!["v1", "memoire", "databases", name, "memory"];
+        segments.extend_from_slice(rest);
+        let mut url = self.url(&segments);
+        if !query.is_empty() {
+            url.query_pairs_mut().extend_pairs(query);
+        }
+        self.json(self.authorized(self.http.get(url)))
+    }
+
+    fn memory_post<T: DeserializeOwned>(
+        &self,
+        name: &str,
+        rest: &[&str],
+        body: &impl Serialize,
+    ) -> Result<T> {
+        let mut segments = vec!["memory"];
+        segments.extend_from_slice(rest);
+        self.json(
+            self.database_request(Method::POST, name, &segments)
+                .body_json(body),
+        )
+    }
+
+    /// `GET {name}/memory`.
+    pub fn memory_store(&self, name: &str) -> Result<memory::StoreInfo> {
+        self.memory_get(name, &[], &[])
+    }
+
+    /// `POST {name}/memory/init`.
+    pub fn memory_init(&self, name: &str) -> Result<memory::Initialized> {
+        self.memory_post(name, &["init"], &json!({}))
+    }
+
+    /// `POST {name}/memory/memories`.
+    pub fn remember(&self, name: &str, body: &memory::RememberRequest) -> Result<memory::Memory> {
+        self.memory_post(name, &["memories"], body)
+    }
+
+    /// `GET {name}/memory/memories`.
+    pub fn recall(&self, name: &str, query: &[(&str, String)]) -> Result<memory::RecallResponse> {
+        self.memory_get(name, &["memories"], query)
+    }
+
+    /// `GET {name}/memory/memories/{id}`.
+    pub fn show(&self, name: &str, id: &str, history: bool) -> Result<memory::ShowResponse> {
+        let query = [("history", history.to_string())];
+        self.memory_get(name, &["memories", id], if history { &query } else { &[] })
+    }
+
+    /// `POST {name}/memory/memories/{id}/revise`.
+    pub fn revise(
+        &self,
+        name: &str,
+        id: &str,
+        body: &memory::ReviseRequest,
+    ) -> Result<memory::Memory> {
+        self.memory_post(name, &["memories", id, "revise"], body)
+    }
+
+    /// `POST {name}/memory/memories/{id}/confirm`.
+    pub fn confirm(
+        &self,
+        name: &str,
+        id: &str,
+        body: &memory::ConfirmRequest,
+    ) -> Result<memory::Memory> {
+        self.memory_post(name, &["memories", id, "confirm"], body)
+    }
+
+    /// `POST {name}/memory/memories/{id}/dispute`.
+    pub fn dispute(
+        &self,
+        name: &str,
+        id: &str,
+        body: &memory::DisputeRequest,
+    ) -> Result<memory::Memory> {
+        self.memory_post(name, &["memories", id, "dispute"], body)
+    }
+
+    /// `POST {name}/memory/memories/{id}/resolve`.
+    pub fn resolve(
+        &self,
+        name: &str,
+        id: &str,
+        body: &memory::ResolveRequest,
+    ) -> Result<memory::Memory> {
+        self.memory_post(name, &["memories", id, "resolve"], body)
+    }
+
+    /// `POST {name}/memory/memories/{id}/supersede`.
+    pub fn supersede(
+        &self,
+        name: &str,
+        id: &str,
+        body: &memory::SupersedeRequest,
+    ) -> Result<memory::SupersedeResponse> {
+        self.memory_post(name, &["memories", id, "supersede"], body)
+    }
+
+    /// `POST {name}/memory/memories/{id}/forget`: the memory object, or
+    /// [`memory::Purged`] with `purge`.
+    pub fn forget<T: DeserializeOwned>(
+        &self,
+        name: &str,
+        id: &str,
+        body: &memory::ForgetRequest,
+    ) -> Result<T> {
+        self.memory_post(name, &["memories", id, "forget"], body)
+    }
+
+    /// `GET {name}/memory/events`.
+    pub fn events(&self, name: &str, query: &[(&str, String)]) -> Result<memory::EventsResponse> {
+        self.memory_get(name, &["events"], query)
+    }
+
+    /// `GET {name}/memory/export`.
+    pub fn memory_export(
+        &self,
+        name: &str,
+        query: &[(&str, String)],
+    ) -> Result<memory::ExportResponse> {
+        self.memory_get(name, &["export"], query)
+    }
+
     // Identity's routes (docs/api.md, "Identity routes the clients use").
 
     /// Signs a member in for a bearer session; its `mzs_…` token. Needs the
@@ -463,6 +597,7 @@ fn failure(status: StatusCode, response: Response) -> Error {
                 error: Box::new(body.error),
                 retry_after,
                 sql: sql.map(Box::new),
+                data: Box::new(body.data.unwrap_or_default()),
             }
         }
         None => Error::local(

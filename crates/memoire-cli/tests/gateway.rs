@@ -1135,6 +1135,121 @@ fn memory_is_shared_between_machines_on_a_real_gateway() {
     }
     assert!(conflicts > 0, "no burst ever made a writer conflict");
 
+    // Two agents on keys that hold only the memory permissions.
+    let memory_key = |name: &str| {
+        let created = member
+            .run(
+                &["keys", "create", "--name", name, "--memory", "--json"],
+                &sign_in,
+            )
+            .ok()
+            .json();
+        assert_eq!(
+            created["api_key"]["permissions"],
+            json!(["memoire.memory.read", "memoire.memory.write"])
+        );
+        (
+            created["key"].as_str().unwrap().to_owned(),
+            created["api_key"]["id"].as_str().unwrap().to_owned(),
+        )
+    };
+    let (key_ma, subject_ma) = memory_key("memory-a");
+    let (key_mb, _) = memory_key("memory-b");
+    let ma = machine(&gateway, work.path(), &key_ma, "agent-ma", "run-ma");
+    let mb = machine(&gateway, work.path(), &key_mb, "agent-mb", "run-mb");
+    let kept = json_of(
+        &ma,
+        &[
+            "memory",
+            "remember",
+            "--title",
+            "Memory keys write through the gateway",
+        ],
+    );
+    let kept_id = kept["id"].as_str().unwrap().to_owned();
+    assert_eq!(kept["author"]["principal"], subject_ma.as_str());
+    assert_eq!(
+        ids(&json_of(&mb, &["memory", "recall", "memory keys gateway"])),
+        [kept_id.as_str()]
+    );
+    let checked = json_of(
+        &mb,
+        &["memory", "confirm", &kept_id, "--evidence", "read it back"],
+    );
+    assert_eq!(checked["status"], "confirmed");
+    let error = failing(&mb, &["query", "memory", "SELECT 1"], 4);
+    assert_eq!(error["code"], "unauthorized");
+    let sql_mb = machine(&gateway, work.path(), &key_mb, "agent-mb", "run-mb")
+        .env("MEMOIRE_MEMORY_SQL", "1");
+    assert_eq!(
+        failing(&sql_mb, &["memory", "recall"], 4)["code"],
+        "unauthorized"
+    );
+
+    // One store, two ways: what the SQL convention writes the API reads
+    // and confirms, and the reverse.
+    let a_sql = machine(&gateway, work.path(), &key_a, "agent-a", "run-a-sql")
+        .env("MEMOIRE_MEMORY_SQL", "1");
+    let b_sql = machine(&gateway, work.path(), &key_b, "agent-b", "run-b-sql")
+        .env("MEMOIRE_MEMORY_SQL", "1");
+    let by_sql = json_of(
+        &a_sql,
+        &[
+            "memory",
+            "remember",
+            "--title",
+            "Written by the SQL convention",
+        ],
+    );
+    let by_sql_id = by_sql["id"].as_str().unwrap().to_owned();
+    assert_eq!(by_sql["author"]["principal"], principal_a.as_str());
+    let through_api = json_of(
+        &b,
+        &[
+            "memory",
+            "confirm",
+            &by_sql_id,
+            "--evidence",
+            "read through the API",
+        ],
+    );
+    assert_eq!(through_api["status"], "confirmed");
+    assert_eq!(
+        json_of(&a, &["memory", "show", &by_sql_id])["confirmations"][0]["agent"],
+        "agent-b"
+    );
+    let by_api = json_of(
+        &ma,
+        &[
+            "memory",
+            "remember",
+            "--title",
+            "Pagers rotate every Monday",
+        ],
+    );
+    let by_api_id = by_api["id"].as_str().unwrap().to_owned();
+    assert_eq!(
+        ids(&json_of(
+            &b_sql,
+            &["memory", "recall", "pagers rotate monday"]
+        )),
+        [by_api_id.as_str()]
+    );
+    let through_sql = json_of(
+        &b_sql,
+        &[
+            "memory",
+            "confirm",
+            &by_api_id,
+            "--evidence",
+            "read through SQL",
+        ],
+    );
+    assert_eq!(
+        (through_sql["status"].clone(), through_sql["rev"].clone()),
+        (json!("confirmed"), json!(1))
+    );
+
     let logs = gateway.logs.lock().unwrap().join("\n");
     assert!(!logs.contains(&key_a) && !logs.contains(&key_b) && !logs.contains(&secret));
 }
