@@ -516,6 +516,31 @@ fn only_the_engines_input_refusals_are_rebuilt() {
             &json!([{"path": "/scpoe", "code": "unknown_field"}])
         )
     );
+    // Nor is a detail that reads like one of the engine's own, without the
+    // `data` only the engine's answer carries.
+    let collides = json!({"error": {"code": "validation_failed", "classification": "permanent",
+                                    "details": [{"path": "/title", "code": "required"},
+                                                {"path": "/extra", "code": "unknown_field"}]}});
+    fake.answer_once(
+        "POST",
+        "/v1/memoire/databases/memory/memory/memories",
+        422,
+        collides.clone(),
+    );
+    let run = json_run(
+        &a,
+        &["memory", "remember", "--title", "A title that is there"],
+    );
+    assert_eq!(run.code, 7, "{}", run.stderr);
+    let error = &run.error()["error"];
+    assert_eq!(
+        (&error["code"], &error["status"], &error["details"]),
+        (
+            &json!("validation_failed"),
+            &json!(422),
+            &collides["error"]["details"]
+        )
+    );
 }
 
 #[test]

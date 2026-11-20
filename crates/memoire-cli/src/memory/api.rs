@@ -21,10 +21,15 @@ use std::cell::Cell;
 pub type Verb<T> = Result<T, memoire_memory::Error<Error>>;
 
 /// The refusal a memory route answered with `code`, its first `details`
-/// entry (path and code) and `data`; `None` when they make none. Of the
-/// `validation_failed` answers, only the engine's own input refusals are
-/// rebuilt; any other field problem stays the API error it is.
+/// entry (path and code) and `data`; `None` when they make none. A
+/// `validation_failed` is rebuilt only when it carries `data`, which the
+/// contract gives to the one input refusal that needs the store (a `rev`
+/// past the current one); the CLI checks every other input before it
+/// sends, so any other field problem stays the API error it is.
 fn rebuild(code: &str, detail: Option<(&str, &str)>, data: &Map<String, Value>) -> Option<Refusal> {
+    if code == "validation_failed" && data.is_empty() {
+        return None;
+    }
     Refusal::from_wire(code, detail, data)
         .filter(|r| !matches!(r, Refusal::InvalidArgument(Invalid::Field { .. })))
 }
