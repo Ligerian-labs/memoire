@@ -19,19 +19,22 @@ export function createStart(root: HTMLElement): Scene {
   const blocks = navigator.clipboard ? Array.from(root.querySelectorAll<HTMLElement>("[data-copy]")) : [];
   for (const block of blocks) {
     const button = must<HTMLButtonElement>(block, "button");
-    const what = (button.getAttribute("aria-label") ?? "Copy the command").replace(/^Copy /, "");
+    const name = button.getAttribute("aria-label") ?? "Copy the command";
+    const what = name.replace(/^Copy /, "");
     const command = must<HTMLElement>(block, ".cmd code");
     let reset = 0;
 
-    const say = (label: string, announcement: string, done: boolean): void => {
-      button.textContent = label;
+    // The accessible name starts with the visible label, so voice control finds the button.
+    const label = (text: string, done: boolean): void => {
+      button.textContent = text;
+      button.setAttribute("aria-label", `${text} ${what}`);
       button.classList.toggle("is-done", done);
+    };
+    const say = (text: string, announcement: string, done: boolean): void => {
+      label(text, done);
       status.textContent = announcement;
       window.clearTimeout(reset);
-      reset = window.setTimeout(() => {
-        button.textContent = "Copy";
-        button.classList.remove("is-done");
-      }, SAID_FOR);
+      reset = window.setTimeout(() => label("Copy", false), SAID_FOR);
     };
 
     button.hidden = false;
@@ -43,9 +46,9 @@ export function createStart(root: HTMLElement): Scene {
           say("Copied", `Copied ${what}.`, true);
         },
         () => {
-          // The browser refused: select the text, so one more key press copies it.
+          // The browser refused: select the text, so the visitor's own copy takes it.
           window.getSelection()?.selectAllChildren(command);
-          say("Selected", `Could not copy. Selected ${what} instead.`, false);
+          say("Selected", `Could not copy. Selected ${what} instead, so copy it by hand.`, false);
         },
       );
     });

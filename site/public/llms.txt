@@ -25,7 +25,7 @@ Steps 2 and 3 need a person in a browser. An agent that already has a key starts
 
 3. Create a key for this machine. In the web app, open "Machines and API keys" and add a machine. The app then offers a key for it. Pick read-only access if the machine only needs to read. The app shows the key (`mzk_…`) once, so copy it now.
 
-4. Sign the CLI in. `login` asks for the key and does not echo it. Paste it at the prompt. The CLI checks the key with the service, then stores it in `~/.config/memoire/` with mode 0600. Without a terminal, `login` reads the key from standard input or from `--key-file FILE`. Never pass a key as an argument.
+4. Sign the CLI in. `login` asks for the key and does not echo it. Paste it at the prompt. The CLI checks the key with the service, then stores it in `~/.config/memoire/credentials.json` with mode 0600. Without a terminal, `login` reads the key from standard input or from `--key-file FILE`. Never pass a key as an argument.
 
    ```sh
    memoire login --server https://app.memoire.network
@@ -45,16 +45,16 @@ Steps 2 and 3 need a person in a browser. An agent that already has a key starts
 
 6. Agents and CI. An agent or a CI job skips `login` and reads two variables: `MEMOIRE_SERVER=https://app.memoire.network` and `MEMOIRE_API_KEY`, the machine's key from your secret store. Give each machine its own key.
 
-   Once signed in, a team owner or admin can mint those keys from the CLI. It asks for the person's email and password without echo and prints only the key, so the key goes straight to a file and never into an argument.
+   Once signed in, a team owner or admin can mint those keys from the CLI. It asks for the person's email and password without echo and prints only the key, so the key goes straight to a file and never into an argument. The `umask` keeps that file readable by you alone.
 
    ```sh
-   memoire keys create --name ci-runner > ci-runner.key
+   (umask 077 && memoire keys create --name ci-runner > ci-runner.key)
    ```
 
    Move the file to the new machine, store the key and remove the file.
 
    ```sh
-   memoire login --server https://app.memoire.network < ci-runner.key && rm ci-runner.key
+   memoire login --server https://app.memoire.network --key-file ci-runner.key && rm ci-runner.key
    ```
 
 ## Documentation

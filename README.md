@@ -45,7 +45,7 @@ invitation to get an account. You can also run your own gateway:
 
 4. Sign the CLI in. `login` asks for the key and does not echo it. Paste it
    at the prompt. The CLI checks the key with the service, then stores it in
-   `~/.config/memoire/` with mode 0600.
+   `~/.config/memoire/credentials.json` with mode 0600.
 
    ```sh
    memoire login --server https://app.memoire.network
@@ -71,16 +71,17 @@ invitation to get an account. You can also run your own gateway:
 
    Once signed in, a team owner or admin can mint those keys from the CLI. It
    asks for your email and password without echo and prints only the key, so
-   the key goes straight to a file and never into an argument.
+   the key goes straight to a file and never into an argument. The `umask`
+   keeps that file readable by you alone.
 
    ```sh
-   memoire keys create --name ci-runner > ci-runner.key
+   (umask 077 && memoire keys create --name ci-runner > ci-runner.key)
    ```
 
    Move the file to the new machine, store the key and remove the file.
 
    ```sh
-   memoire login --server https://app.memoire.network < ci-runner.key && rm ci-runner.key
+   memoire login --server https://app.memoire.network --key-file ci-runner.key && rm ci-runner.key
    ```
 
 [docs/cli.md](docs/cli.md) covers every command.

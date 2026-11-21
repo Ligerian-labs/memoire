@@ -125,17 +125,17 @@ server that `login` stored. That URL must be the gateway's application
 origin, because the sign-in carries it as `Origin`.
 
 Without `--json` the key is the only thing on standard output, so it can go
-straight to a file:
+straight to a file. The `umask` keeps that file readable by you alone:
 
 ```sh
-memoire keys create --name ci-runner > ci-runner.key
+(umask 077 && memoire keys create --name ci-runner > ci-runner.key)
 ```
 
 Before the first `login` there is no stored server or team, so name both.
 `memoire whoami` on a signed-in machine prints the team's id.
 
 ```sh
-MEMOIRE_SERVER=https://memoire.example memoire keys create --team org_… --name ci-runner > ci-runner.key
+(umask 077 && MEMOIRE_SERVER=https://memoire.example memoire keys create --team org_… --name ci-runner > ci-runner.key)
 ```
 
 ### Memory

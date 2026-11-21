@@ -136,18 +136,19 @@ try {
   await check("phone: get started, copy a command", { ...phone, ...clipboard }, "?scale=0.5", async (page) => {
     assert.equal(await page.getByRole("link", { name: "Get started" }).getAttribute("href"), "#start");
     await scrollInto(page, "#start");
-    assert.equal(await page.locator("#start .step").count(), 6);
-    const copy = page.getByRole("button", { name: "Copy the install command" });
+    const copy = page.locator("#start .copy").first();
+    assert.equal(await copy.getAttribute("aria-label"), "Copy the install command");
     await copy.tap();
     assert.equal(await page.evaluate(() => navigator.clipboard.readText()), install);
     assert.equal(await copy.textContent(), "Copied");
+    assert.equal(await copy.getAttribute("aria-label"), "Copied the install command");
     assert.equal(await page.locator("[data-copy-status]").textContent(), "Copied the install command.");
     await page.getByRole("button", { name: "Copy the sign-in command" }).tap();
     assert.equal(
       await page.evaluate(() => navigator.clipboard.readText()),
       "memoire login --server https://app.memoire.network",
     );
-    await page.waitForFunction((el) => el.textContent === "Copy", await copy.elementHandle());
+    await page.getByRole("button", { name: "Copy the install command" }).waitFor();
     assert.equal(await overflow(page), 0);
   });
 

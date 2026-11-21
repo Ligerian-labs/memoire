@@ -417,7 +417,7 @@
             <p>
               <code>login</code> asks for the key and does not echo it. Paste it at the prompt. The
               CLI checks the key with the service, then stores it in
-              <code>~/.config/memoire/</code> with mode 0600.
+              <code>~/.config/memoire/<wbr />credentials.json</code> with mode 0600.
             </p>
             <figure class="code code--shell" data-copy>
               <figcaption>
@@ -464,14 +464,15 @@
             <p>
               Once signed in, a team owner or admin can mint those keys from the CLI. It asks for
               your email and password without echo and prints only the key, so the key goes straight
-              to a file and never into an argument.
+              to a file and never into an argument. The <code>umask</code> keeps that file readable
+              by you alone.
             </p>
             <figure class="code code--shell" data-copy>
               <figcaption>
                 <span>a signed-in machine</span>
                 <button type="button" class="copy" aria-label="Copy the key command" hidden>Copy</button>
               </figcaption>
-              <p class="cmd"><code>memoire keys create <span class="w">--name</span> <span class="w">ci-runner</span> &gt; <span class="w">ci-runner.key</span></code></p>
+              <p class="cmd"><code>(umask 077 &amp;&amp; memoire keys create <span class="w">--name</span> <span class="w">ci-runner</span> &gt; <span class="w">ci-runner.key</span>)</code></p>
             </figure>
             <p>Move the file to the new machine, store the key and remove the file.</p>
             <figure class="code code--shell" data-copy>
@@ -479,7 +480,7 @@
                 <span>the new machine</span>
                 <button type="button" class="copy" aria-label="Copy the stored-key command" hidden>Copy</button>
               </figcaption>
-              <p class="cmd"><code>memoire login <span class="w">--server</span> https://app.memoire.network &lt; <span class="w">ci-runner.key</span> &amp;&amp; rm <span class="w">ci-runner.key</span></code></p>
+              <p class="cmd"><code>memoire login <span class="w">--server</span> https://app.memoire.network <span class="w">--key-file</span> <span class="w">ci-runner.key</span> &amp;&amp; rm <span class="w">ci-runner.key</span></code></p>
             </figure>
           </li>
         </ol>
