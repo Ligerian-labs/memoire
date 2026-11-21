@@ -114,6 +114,9 @@ and nothing else. [docs/memory.md](docs/memory.md) is the reference.
   and repository layout.
 - [docs/deploy/dokploy.md](docs/deploy/dokploy.md): the production images and
   their deployment on Dokploy.
+- [docs/benchmarks.md](docs/benchmarks.md): latency and throughput of the
+  hosted service measured from one client, with the method, the limits and
+  the script to run it again ([scripts/bench.py](scripts/bench.py)).
 
 ## Development
 

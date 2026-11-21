@@ -1110,6 +1110,157 @@ h3 {
   color: var(--ink);
 }
 
+/* ---------- bench ---------- */
+
+.bench__grid,
+.bench__notes {
+  display: grid;
+  gap: 2.5rem;
+  max-width: 62rem;
+}
+.bench__notes {
+  margin-top: 2.5rem;
+}
+.bench .plate {
+  margin-top: 0;
+}
+.timing {
+  min-width: 0;
+  border: 1px solid var(--rule);
+  border-radius: 4px;
+  background: var(--plate);
+}
+.timing__table {
+  width: 100%;
+  border-collapse: collapse;
+  font-variant-numeric: tabular-nums;
+}
+.timing__table caption,
+.timing figcaption {
+  padding: 0.7rem 0.9rem;
+  font-size: 0.875rem;
+  color: var(--ink-2);
+  text-align: left;
+  text-wrap: pretty;
+}
+.timing__table caption {
+  border-bottom: 1px solid var(--rule);
+}
+.timing__table th,
+.timing__table td {
+  padding: 0.7rem 0.45rem;
+  border-bottom: 1px solid var(--rule);
+  vertical-align: top;
+}
+.timing__table th:first-child {
+  padding-left: 0.9rem;
+  text-align: left;
+}
+.timing__table :is(th, td):last-child {
+  padding-right: 0.9rem;
+}
+.timing__table thead th,
+.timing__table td {
+  font-family: var(--mono);
+  font-stretch: 80%;
+  font-size: 0.8125rem;
+  text-align: right;
+  white-space: nowrap;
+}
+.timing__table thead th {
+  padding-block: 0.5rem;
+  font-weight: 400;
+  color: var(--ink-2);
+}
+.timing__table tbody th {
+  font-weight: 560;
+  line-height: 1.25;
+  /* A long route may break, so the number columns stay inside the plate. */
+  overflow-wrap: anywhere;
+}
+.timing__table tbody th small {
+  display: block;
+  margin-top: 0.25rem;
+  font-size: 0.8125rem;
+  font-weight: 380;
+  color: var(--ink-2);
+}
+.timing__table td {
+  padding-top: 0.8rem;
+  color: var(--ink-2);
+}
+/* The median leads; the tail columns sit back. */
+.timing__table td:nth-child(2) {
+  font-weight: 600;
+  color: var(--ink);
+}
+/* One bar per row, all on the same scale: its width is the median, the
+   notch the round trip inside it. Widths are SVG attributes because the
+   page's Content-Security-Policy refuses inline styles. */
+.bar {
+  display: block;
+  min-width: 3px;
+  margin-top: 0.5rem;
+  border-radius: 0 3px 3px 0;
+  background: var(--amber);
+}
+.timing__base .bar {
+  background: var(--ink-3);
+}
+.bar__notch {
+  fill: var(--cold);
+}
+.bench__range {
+  margin-top: 0.4rem;
+  font-size: 0.875rem;
+  color: var(--ink-2);
+}
+.facts {
+  margin-top: 0.8rem;
+  border-top: 1px solid var(--rule);
+}
+.facts > div {
+  padding: 0.7rem 0;
+  border-bottom: 1px solid var(--rule);
+}
+.facts dt {
+  font-size: 1.1875rem;
+  font-weight: 760;
+  font-stretch: 112%;
+  line-height: 1.1;
+  font-variant-numeric: tabular-nums;
+  color: var(--amber);
+}
+.facts dd {
+  margin-top: 0.25rem;
+  color: var(--ink-2);
+  text-wrap: pretty;
+}
+.bench__notes ul {
+  display: grid;
+  gap: 0.5rem;
+  margin-top: 0.8rem;
+  color: var(--ink-2);
+}
+.bench__notes li {
+  padding-left: 1rem;
+  border-left: 1px solid var(--rule);
+  text-wrap: pretty;
+}
+.bench__more {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0 2rem;
+  max-width: 62rem;
+  margin-top: 1.5rem;
+}
+.bench__more a {
+  display: inline-flex;
+  align-items: center;
+  min-height: 3rem;
+  font-weight: 560;
+}
+
 /* ---------- status + foot ---------- */
 
 section.status {
@@ -1281,6 +1432,24 @@ section.status {
     gap: 0.9rem;
     align-items: baseline;
   }
+  .bench__notes {
+    grid-template-columns: 1fr 1fr;
+    gap: 2rem;
+  }
+  .timing__table th,
+  .timing__table td {
+    padding-inline: 0.7rem;
+  }
+  .timing__table th:first-child {
+    padding-left: 1.1rem;
+  }
+  .timing__table :is(th, td):last-child {
+    padding-right: 1.1rem;
+  }
+  .timing__table caption,
+  .timing figcaption {
+    padding-inline: 1.1rem;
+  }
 }
 
 @media (min-width: 64rem) {
@@ -1320,6 +1489,14 @@ section.status {
   .start .section-head {
     position: sticky;
     top: 6rem;
+  }
+  .bench__grid {
+    grid-template-columns: minmax(0, 1.3fr) minmax(0, 1fr);
+    gap: 4.5rem;
+    align-items: start;
+  }
+  .bench__notes {
+    gap: 4.5rem;
   }
   .limits > div {
     grid-template-columns: 11rem 1fr;

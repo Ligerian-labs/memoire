@@ -368,6 +368,179 @@
         </div>
       </section>
 
+      <section class="bench" id="bench" aria-labelledby="bench-title">
+        <div class="section-head">
+          <h2 id="bench-title">Timed from the client, network included</h2>
+          <p>
+            One Python client in a datacenter, about 3 ms from the hosted service, on 21 November
+            2026. One burstable database holding 1.4 million synthetic rows. Each figure is a whole
+            HTTP request and its response, so the round trip in the first row is inside every
+            other row.
+          </p>
+        </div>
+
+        <div class="bench__grid">
+          <figure class="timing">
+            <table class="timing__table">
+              <caption>
+                Latency per request in milliseconds. 3,000 requests of each kind, taken in turn on
+                one open connection.
+              </caption>
+              <thead>
+                <tr>
+                  <th scope="col">Request</th>
+                  <th scope="col">p50</th>
+                  <th scope="col">p95</th>
+                  <th scope="col">p99</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr class="timing__base">
+                  <th scope="row">
+                    Round trip alone
+                    <small><code>GET /health/live</code>, no key, no database</small>
+                    <svg class="bar" width="19.6%" height="6" aria-hidden="true" focusable="false"></svg>
+                  </th>
+                  <td>2.8</td><td>8.4</td><td>18.0</td>
+                </tr>
+                <tr>
+                  <th scope="row">
+                    Credential check alone
+                    <small><code>GET /v1/<wbr />memoire/<wbr />whoami</code>, a key and no database</small>
+                    <svg class="bar" width="54.7%" height="6" aria-hidden="true" focusable="false"><rect class="bar__notch" x="35.9%" width="2" height="6" /></svg>
+                  </th>
+                  <td>7.7</td><td>18.9</td><td>42.1</td>
+                </tr>
+                <tr>
+                  <th scope="row">
+                    Read one row by primary key
+                    <svg class="bar" width="92.4%" height="6" aria-hidden="true" focusable="false"><rect class="bar__notch" x="21.3%" width="2" height="6" /></svg>
+                  </th>
+                  <td>13.0</td><td>30.5</td><td>55.6</td>
+                </tr>
+                <tr>
+                  <th scope="row">
+                    Read 20 rows through an index
+                    <svg class="bar" width="93.4%" height="6" aria-hidden="true" focusable="false"><rect class="bar__notch" x="21.0%" width="2" height="6" /></svg>
+                  </th>
+                  <td>13.2</td><td>31.4</td><td>68.0</td>
+                </tr>
+                <tr>
+                  <th scope="row">
+                    Join three tables for one order
+                    <svg class="bar" width="93.5%" height="6" aria-hidden="true" focusable="false"><rect class="bar__notch" x="21.0%" width="2" height="6" /></svg>
+                  </th>
+                  <td>13.2</td><td>31.5</td><td>64.8</td>
+                </tr>
+                <tr>
+                  <th scope="row">
+                    Read a page of 1,000 rows
+                    <svg class="bar" width="100.0%" height="6" aria-hidden="true" focusable="false"><rect class="bar__notch" x="19.6%" width="2" height="6" /></svg>
+                  </th>
+                  <td>14.1</td><td>32.9</td><td>72.7</td>
+                </tr>
+                <tr>
+                  <th scope="row">
+                    Insert one row
+                    <svg class="bar" width="94.5%" height="6" aria-hidden="true" focusable="false"><rect class="bar__notch" x="20.8%" width="2" height="6" /></svg>
+                  </th>
+                  <td>13.3</td><td>31.2</td><td>79.5</td>
+                </tr>
+                <tr>
+                  <th scope="row">
+                    Update and insert in one transaction
+                    <svg class="bar" width="94.5%" height="6" aria-hidden="true" focusable="false"><rect class="bar__notch" x="20.8%" width="2" height="6" /></svg>
+                  </th>
+                  <td>13.3</td><td>33.1</td><td>68.1</td>
+                </tr>
+              </tbody>
+            </table>
+            <figcaption>
+              Each bar is the median, on one scale. The notch marks the round trip inside it. A
+              small request costs about 13 ms whatever it reads or writes, and 1 to 2 ms of that
+              is SQLite.
+            </figcaption>
+          </figure>
+
+          <div class="bench__side">
+            <div class="plate">
+              <h3>Larger work</h3>
+              <p class="bench__range">A range spans the two runs at this size.</p>
+              <dl class="facts">
+                <div>
+                  <dt>48,000 to 77,000 rows/s</dt>
+                  <dd>Loading 421,000 rows over HTTP as multi-row INSERTs, in requests of up to 1 MiB.</dd>
+                </div>
+                <div>
+                  <dt>465,000 to 609,000 rows/s</dt>
+                  <dd>Generating 1,000,000 rows inside SQLite with one statement.</dd>
+                </div>
+                <div>
+                  <dt>350 to 380 requests/s</dt>
+                  <dd>Reads of one row over 16 connections at once. One connection alone does about 80.</dd>
+                </div>
+                <div>
+                  <dt>1.7 to 1.8 s</dt>
+                  <dd>
+                    A join and group over 100,000 orders and their 300,000 items. With four times the
+                    data it took 13.6 s, past the 5 s default deadline.
+                  </dd>
+                </div>
+                <div>
+                  <dt>100 MB in 5 to 9 s</dt>
+                  <dd>Exporting the whole database as a SQLite file.</dd>
+                </div>
+              </dl>
+            </div>
+          </div>
+        </div>
+
+        <div class="bench__notes">
+          <div>
+            <h3>What these numbers leave out</h3>
+            <ul>
+              <li>
+                Capacity. This is one client, one database and one small server. Nothing here says
+                how many teams or databases it carries at once.
+              </li>
+              <li>
+                Your network. From a home connection with 3% packet loss and 13 to 99 ms of ping,
+                the same reads took 36 to 82 ms at the median and 0.9 to 3.7 s at the 99th
+                percentile.
+              </li>
+              <li>
+                A new connection. TCP and TLS add 16 to 20 ms, and a command-line call pays that
+                every time.
+              </li>
+              <li>
+                Where the tails come from. The server, the proxy and the client were all shared. A
+                second run moved the medians by up to 14% and the 99th percentiles by up to 32%.
+              </li>
+              <li>
+                A cold database, persistent databases and their snapshots, import and the memory
+                routes. None of them is timed.
+              </li>
+            </ul>
+          </div>
+          <div>
+            <h3>Limits in force</h3>
+            <dl class="limits">
+              <div><dt>100</dt><dd>statements per request</dd></div>
+              <div><dt>999</dt><dd>parameters per statement</dd></div>
+              <div><dt>1 MiB</dt><dd>per request body</dd></div>
+              <div><dt>10,000</dt><dd>rows per statement, and 16 MiB per response</dd></div>
+              <div><dt>30 s</dt><dd>at most per statement, 5 s by default</dd></div>
+              <div><dt>1 GiB</dt><dd>per database</dd></div>
+            </dl>
+          </div>
+        </div>
+
+        <p class="bench__more">
+          <a href="https://github.com/ligerian-labs/memoire/blob/main/docs/benchmarks.md">Method, every number and the raw results</a>
+          <a href="https://github.com/ligerian-labs/memoire/blob/main/scripts/bench.py">The script, to run it yourself</a>
+        </p>
+      </section>
+
       <section class="start" id="start" aria-labelledby="start-title">
         <div class="section-head">
           <h2 id="start-title">Get started</h2>

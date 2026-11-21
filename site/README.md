@@ -64,3 +64,7 @@ Facts on the page come from `README.md`, `docs/architecture.md`,
 `docs/api.md` and `docs/cli.md` at the repository root. When those change,
 change the page. The "Get started" section, `public/llms.txt` and the
 README's "Get started" section give the same steps: change them together.
+The numbers in the benchmark section and in `public/llms.txt` come from
+`docs/benchmarks.md` and the result files in `docs/benchmarks/`: a new run
+changes all of them. The bars are inline SVG because the
+Content-Security-Policy refuses inline styles.

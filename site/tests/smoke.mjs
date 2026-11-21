@@ -164,11 +164,41 @@ try {
     assert.ok(await page.getByRole("heading", { name: "The life of a database" }).isVisible());
   });
 
+  await check("phone: benchmark table", phone, "?scale=0.5", async (page) => {
+    await scrollInto(page, "#bench");
+    const table = page.getByRole("table", { name: /Latency per request/ });
+    assert.ok(await table.isVisible());
+    // The round trip leads, and every row has a median, a p95 and a p99.
+    const rows = await table.locator("tbody tr").evaluateAll((trs) =>
+      trs.map((tr) => [tr.querySelector("th").textContent, ...Array.from(tr.querySelectorAll("td"), (td) => Number(td.textContent))]),
+    );
+    assert.match(rows[0][0], /Round trip alone/);
+    for (const [name, p50, p95, p99] of rows) {
+      assert.ok(p50 > 0 && p50 <= p95 && p95 <= p99, `${name.trim()}: ${p50} ${p95} ${p99}`);
+      assert.ok(p50 >= rows[0][1], `${name.trim()} is not faster than the round trip`);
+    }
+    // Every row has a bar that fits its cell, and a notch sits inside its bar.
+    const bars = await table.locator("svg.bar").evaluateAll((svgs) =>
+      svgs.map((svg) => [svg.getBoundingClientRect().width, svg.parentElement.clientWidth, parseFloat(svg.firstElementChild?.getAttribute("x") ?? "0")]),
+    );
+    assert.equal(bars.length, rows.length);
+    for (const [width, room, notch] of bars) assert.ok(width > 0 && width <= room && notch <= 100);
+    const method = page.getByRole("link", { name: /Method, every number/ });
+    assert.equal(await method.getAttribute("href"), "https://github.com/ligerian-labs/memoire/blob/main/docs/benchmarks.md");
+    assert.equal(await overflow(page), 0);
+  });
+
   for (const width of [320, 768, 1440]) {
     await check(`${width}px wide: no horizontal overflow`, { viewport: { width, height: 800 } }, "?scale=0.5", async (page) => {
       await page.evaluate(() => window.scrollTo(0, document.documentElement.scrollHeight));
       await page.waitForTimeout(300);
       assert.equal(await overflow(page), 0);
+      // The page clips sideways overflow, so check the widest table directly.
+      const spill = await page.evaluate(() => {
+        const table = document.querySelector(".timing__table");
+        return table.getBoundingClientRect().right - table.parentElement.getBoundingClientRect().right;
+      });
+      assert.ok(spill <= 0, `benchmark table spills ${spill}px past its frame`);
     });
   }
 } finally {
