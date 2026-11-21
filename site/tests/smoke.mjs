@@ -183,7 +183,7 @@ try {
     );
     assert.equal(bars.length, rows.length);
     for (const [width, room, notch] of bars) assert.ok(width > 0 && width <= room && notch <= 100);
-    const method = page.getByRole("link", { name: /Method, every number/ });
+    const method = page.getByRole("link", { name: /Method, full results/ });
     assert.equal(await method.getAttribute("href"), "https://github.com/ligerian-labs/memoire/blob/main/docs/benchmarks.md");
     assert.equal(await overflow(page), 0);
   });
@@ -196,7 +196,8 @@ try {
       // The page clips sideways overflow, so check the widest table directly.
       const spill = await page.evaluate(() => {
         const table = document.querySelector(".timing__table");
-        return table.getBoundingClientRect().right - table.parentElement.getBoundingClientRect().right;
+        const frame = table.parentElement.getBoundingClientRect();
+        return Math.max(table.getBoundingClientRect().right - frame.right, frame.right - window.innerWidth);
       });
       assert.ok(spill <= 0, `benchmark table spills ${spill}px past its frame`);
     });

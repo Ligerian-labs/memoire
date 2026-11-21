@@ -117,7 +117,9 @@ class Client:
                 break
             except (http.client.HTTPException, OSError):
                 # A dropped connection is retried once; the time of the
-                # failed attempt stays in the measurement.
+                # failed attempt stays in the measurement. A write whose
+                # answer was lost may then apply twice. The result file
+                # counts these retries as `reconnects`.
                 self.connection.close()
                 self.connection = self._open()
                 self.reconnects += 1
@@ -203,7 +205,7 @@ class Bench:
         self.db = args.db
         self.client = Client(server, key)
         self.rng = random.Random(SEED)
-        self.created = False
+        self.created, self.created_id = False, None
         self.reconnects = 0
         self.customers = int(20_000 * args.scale)
         self.products = int(2_000 * args.scale)
@@ -213,7 +215,7 @@ class Bench:
             "tool": "scripts/bench.py",
             "format": 1,
             "started_at": utc_now(),
-            "server": f"{server.scheme}://{server.netloc}",
+            "server": f"{server.scheme}://{server.hostname}" + (f":{server.port}" if server.port else ""),
             "database": {"name": self.db, "kind": "burstable", "idle_ttl_seconds": args.ttl},
             "scale": args.scale,
             "samples": args.samples,
@@ -319,25 +321,33 @@ class Bench:
         """Creates the database, replacing a leftover of an earlier run."""
         existing = self.client.request("GET", self.path())
         if existing.status == 200:
-            if existing.body.get("kind") != "burstable":
+            kind, state = existing.body.get("kind"), existing.body.get("state")
+            if kind != "burstable":
                 raise BenchError(f"database {self.db!r} exists and is not burstable; refusing to touch it")
-            if existing.body.get("state") == "active":
+            if state == "active":
                 schema = self.client.request("GET", self.path("/schema")).ok("schema").body
-                names = [o["name"] for o in schema.get("tables", []) + schema.get("views", [])]
+                try:
+                    names = [o["name"] for o in schema["tables"] + schema["views"]]
+                except (KeyError, TypeError):
+                    raise BenchError(f"database {self.db!r}: cannot read its schema; refusing to touch it") from None
                 foreign = [n for n in names if not n.startswith(TABLE_PREFIX)]
                 if foreign:
                     raise BenchError(
                         f"database {self.db!r} holds {len(foreign)} table(s) or view(s) not named"
                         f" {TABLE_PREFIX}*; refusing to touch it"
                     )
-            print(f"replacing the leftover database {self.db!r}")
-            self.client.request("DELETE", self.path()).ok("delete leftover", 204)
+                print(f"replacing the leftover database {self.db!r}")
+                self.client.request("DELETE", self.path()).ok("delete leftover", 204)
+            elif state != "expired":
+                raise BenchError(f"database {self.db!r} is in an unknown state; refusing to touch it")
+            # An expired entry has no file left, and creating takes its name.
         elif existing.status != 404:
             existing.ok("database lookup")
         created = self.client.request(
             "POST", f"{PREFIX}/databases", {"name": self.db, "kind": "burstable", "idle_ttl_seconds": self.args.ttl}
         ).ok("create", 201)
         self.created = True
+        self.created_id = created.body.get("id")
         print(f"created burstable database {self.db!r}, idle TTL {self.args.ttl} s, in {created.ms:.0f} ms")
         self.result["database"]["create_ms"] = round(created.ms, 1)
 
@@ -345,7 +355,13 @@ class Bench:
         if not self.created or self.args.keep:
             return
         try:
-            deleted = Client(self.server, self.key).request("DELETE", self.path())
+            client = Client(self.server, self.key)
+            current = client.request("GET", self.path())
+            if current.status == 200 and current.body.get("id") != self.created_id:
+                # Another run took the name: that database is not ours.
+                print(f"database {self.db!r} was replaced during the run; leaving it", file=sys.stderr)
+                return
+            deleted = client.request("DELETE", self.path())
         except (http.client.HTTPException, OSError):
             print(f"could not delete database {self.db!r}: connection failed", file=sys.stderr)
             return
@@ -547,6 +563,7 @@ class Bench:
             ("reads", "select_1", 1, lambda: self.read("SELECT 1")),
             ("reads", "point_lookup", 1, lambda: self.read(
                 "SELECT * FROM bench_customers WHERE id = ?", [rng.randint(1, self.customers)])),
+            # One customer's orders, newest first: 5 on average, 20 at most.
             ("reads", "index_range_20_rows", 1, lambda: self.read(
                 "SELECT id, status, created_at FROM bench_orders WHERE customer_id = ?"
                 " ORDER BY created_at DESC LIMIT 20",
@@ -782,15 +799,15 @@ def main():
     parser.add_argument("--out", default="bench-result.json", help="JSON result file (default: bench-result.json)")
     parser.add_argument("--keep", action="store_true", help="leave the database in place at the end")
     args = parser.parse_args()
-    if args.scale <= 0 or args.samples < 20 or args.heavy_samples < 1:
-        parser.error("--scale must be positive, --samples at least 20 and --heavy-samples at least 1")
+    if not 0.01 <= args.scale <= 1000 or args.samples < 20 or args.heavy_samples < 1:
+        parser.error("--scale must be between 0.01 and 1000, --samples at least 20 and --heavy-samples at least 1")
 
     key = os.environ.get("MEMOIRE_API_KEY")
     if not key:
         sys.exit("MEMOIRE_API_KEY is not set")
     server = urllib.parse.urlsplit(os.environ.get("MEMOIRE_SERVER", "https://app.memoire.network"))
-    if server.scheme not in ("http", "https") or not server.hostname:
-        sys.exit("MEMOIRE_SERVER must be an http or https URL")
+    if server.scheme not in ("http", "https") or not server.hostname or server.username or server.password:
+        sys.exit("MEMOIRE_SERVER must be an http or https URL without credentials")
 
     bench, status = Bench(args, server, key), 0
     try:

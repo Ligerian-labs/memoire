@@ -420,7 +420,7 @@
                 </tr>
                 <tr>
                   <th scope="row">
-                    Read 20 rows through an index
+                    Read one customer's orders through an index
                     <svg class="bar" width="93.4%" height="6" aria-hidden="true" focusable="false"><rect class="bar__notch" x="21.0%" width="2" height="6" /></svg>
                   </th>
                   <td>13.2</td><td>31.4</td><td>68.0</td>
@@ -456,9 +456,9 @@
               </tbody>
             </table>
             <figcaption>
-              Each bar is the median, on one scale. The notch marks the round trip inside it. A
-              small request costs about 13 ms whatever it reads or writes, and 1 to 2 ms of that
-              is SQLite.
+              Each bar is the median, on one scale. The notch marks the median round trip on the
+              same scale. A small request costs about 13 ms whatever it reads or writes.
+              <code>SELECT 1</code>, which touches no table, takes 12.1 ms.
             </figcaption>
           </figure>
 
@@ -482,8 +482,8 @@
                 <div>
                   <dt>1.7 to 1.8 s</dt>
                   <dd>
-                    A join and group over 100,000 orders and their 300,000 items. With four times the
-                    data it took 13.6 s, past the 5 s default deadline.
+                    A join and group over about 100,000 orders and their 300,000 items. With four
+                    times the data it took 13.6 s, past the 5 s default deadline.
                   </dd>
                 </div>
                 <div>
@@ -504,9 +504,9 @@
                 how many teams or databases it carries at once.
               </li>
               <li>
-                Your network. From a home connection with 3% packet loss and 13 to 99 ms of ping,
-                the same reads took 36 to 82 ms at the median and 0.9 to 3.7 s at the 99th
-                percentile.
+                Your network. An earlier trial with an older version of the script ran from a home
+                connection with 3% packet loss and 13 to 99 ms of ping. The same reads took 36 to 82
+                ms at the median and 0.9 to 3.7 s at the 99th percentile.
               </li>
               <li>
                 A new connection. TCP and TLS add 16 to 20 ms, and a command-line call pays that
@@ -536,7 +536,7 @@
         </div>
 
         <p class="bench__more">
-          <a href="https://github.com/ligerian-labs/memoire/blob/main/docs/benchmarks.md">Method, every number and the raw results</a>
+          <a href="https://github.com/ligerian-labs/memoire/blob/main/docs/benchmarks.md">Method, full results and the raw files</a>
           <a href="https://github.com/ligerian-labs/memoire/blob/main/scripts/bench.py">The script, to run it yourself</a>
         </p>
       </section>

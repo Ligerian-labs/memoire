@@ -63,14 +63,14 @@ Measured on 21 November 2026 against the hosted service by one Python client abo
 
 - Round trip alone (`GET /health/live`): p50 2.8 ms, p99 18 ms.
 - Read one row by primary key: p50 13.0 ms, p95 30.5 ms, p99 55.6 ms. A 1,000-row page: p50 14.1 ms. Insert one row: p50 13.3 ms, p99 79.5 ms.
-- A small request costs about 13 ms whatever it reads or writes. About 12 ms of that is the round trip, the credential check and finding the database, and 1 to 2 ms is SQLite.
+- A small request costs about 13 ms whatever it reads or writes. `SELECT 1`, which touches no table, already takes 12.1 ms at the median, and the credential check alone (`GET /v1/memoire/whoami`) 7.7 ms.
 - A new connection adds 16 to 20 ms of TCP and TLS, so keep connections open.
-- A join and group over 100,000 orders and their 300,000 items: 1.8 s. With four times the data: 13.6 s, past the 5 s default deadline.
+- A join and group over about 100,000 orders and their 300,000 items: 1.8 s. With four times the data: 13.6 s, past the 5 s default deadline.
 - Loading over HTTP: 48,000 to 77,000 rows/s. Generating rows inside SQLite: 465,000 to 609,000 rows/s.
 - Limits in force: 100 statements per request, 999 parameters per statement, 1 MiB per request body, 10,000 rows per statement and 16 MiB per response, 5 s per statement by default and 30 s at most, 1 GiB per database.
 - Not measured: capacity with many clients or databases, a database's first request after 5 minutes idle, persistent databases and snapshots, import, the memory routes.
 
-The method, every number and the raw results are in the [benchmarks](https://github.com/ligerian-labs/memoire/blob/main/docs/benchmarks.md). [`scripts/bench.py`](https://github.com/ligerian-labs/memoire/blob/main/scripts/bench.py) runs them again.
+The method, the full results and the raw files are in the [benchmarks](https://github.com/ligerian-labs/memoire/blob/main/docs/benchmarks.md). [`scripts/bench.py`](https://github.com/ligerian-labs/memoire/blob/main/scripts/bench.py) runs them again.
 
 ## Documentation
 

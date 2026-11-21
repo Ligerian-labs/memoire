@@ -2,8 +2,8 @@
 
 One client timed the hosted service at `https://app.memoire.network` on
 21 November 2026 with [`scripts/bench.py`](../scripts/bench.py). This page
-gives the method, every number the script produced, the limits that were in
-force and what the numbers do not show. The raw results are in
+gives the method, the results, the limits that were in force and what the
+numbers do not show. The raw results are in
 [`docs/benchmarks/`](benchmarks/), and [Run it yourself](#run-it-yourself)
 has the command.
 
@@ -20,7 +20,7 @@ burstable database), 3 000 requests per row unless noted:
 | Credential check alone: `GET /v1/memoire/whoami` | 7.7 | 18.9 | 42.1 |
 | `SELECT 1` | 12.1 | 28.7 | 55.5 |
 | Read one row by primary key | 13.0 | 30.5 | 55.6 |
-| Read 20 rows through an index | 13.2 | 31.4 | 68.0 |
+| Read one customer's orders through an index | 13.2 | 31.4 | 68.0 |
 | Join three tables for one order | 13.2 | 31.5 | 64.8 |
 | Read a page of 1 000 rows | 14.1 | 32.9 | 72.7 |
 | Insert one row | 13.3 | 31.2 | 79.5 |
@@ -28,11 +28,10 @@ burstable database), 3 000 requests per row unless noted:
 | Insert 100 rows in one statement (600 requests) | 13.7 | 33.0 | 55.0 |
 
 In short, a small request takes about 13 ms from 3 ms away, whatever it
-reads or writes. `SELECT 1` costs almost as much as a point
-read, so most of that time is the request itself (the round trip, the
-credential check, finding the database) and 1 to 2 ms is SQLite. Queries
-that scan a lot of data cost what SQLite costs: a join and group over
-100 000 orders took 1.8 s.
+reads or writes. `SELECT 1`, which touches no table, already takes 12.1 ms
+at the median. Reading one row takes 0.9 ms more than that, and a page of
+1 000 rows 2.0 ms more. Queries that scan a lot of data take far longer: a
+join and group over about 100 000 orders took 1.8 s.
 
 ## Method
 
@@ -76,6 +75,12 @@ latency therefore includes:
 It excludes opening the connection (TCP and TLS, measured
 [separately](#opening-a-connection)), building the request body and parsing
 the response in Python.
+
+The script keeps each connection open and reuses it. In a separate check,
+3 000 requests on one connection never made the server close it. When a
+request fails on a dropped connection, the script opens a new one and
+retries once. That request's time then includes the new connection, and the
+result file counts it under `reconnects`: 0, 0 and 1 in the three runs.
 
 `GET /health/live` needs no key and touches no database. It is the round
 trip through the proxy to the gateway and back, and nothing else, so the
@@ -131,28 +136,30 @@ Milliseconds. 3 000 interleaved rounds on one open connection took 395 s.
 | Credential check alone: `GET /v1/memoire/whoami` | 3 000 | 7.7 | 18.9 | 42.1 | 327.2 |
 | `SELECT 1` | 3 000 | 12.1 | 28.7 | 55.5 | 527.8 |
 | Read one row by primary key | 3 000 | 13.0 | 30.5 | 55.6 | 766.8 |
-| Read 20 rows through an index | 3 000 | 13.2 | 31.4 | 68.0 | 247.8 |
+| Read one customer's orders through an index | 3 000 | 13.2 | 31.4 | 68.0 | 247.8 |
 | Join three tables for one order | 3 000 | 13.2 | 31.5 | 64.8 | 351.8 |
 | Read a page of 1 000 rows | 3 000 | 14.1 | 32.9 | 72.7 | 266.0 |
 | Insert one row | 3 000 | 13.3 | 31.2 | 79.5 | 313.0 |
 | Update and insert in one transaction | 3 000 | 13.3 | 33.1 | 68.1 | 331.7 |
 | Insert 100 rows in one statement | 600 | 13.7 | 33.0 | 55.0 | 667.0 |
 
-Reads use `"mode": "read"` and writes `"mode": "write"`, one request per
-statement batch, each in its own implicit or explicit transaction.
+Reads use `"mode": "read"` and writes `"mode": "write"`. A customer has 5
+orders on average and the orders query returns at most 20; the result files
+name that test `index_range_20_rows`.
 
-Where the 13 ms goes, from the medians above:
+How the medians compare:
 
-| Step | p50 | Added by the step |
+| Request | p50 | Above the row before |
 | --- | ---: | ---: |
-| Round trip through the proxy | 2.8 | 2.8 |
-| Plus the credential check (`whoami`) | 7.7 | 4.9 |
-| Plus finding the database and running `SELECT 1` | 12.1 | 4.4 |
-| Plus reading one row by primary key | 13.0 | 0.9 |
+| Round trip alone | 2.8 | |
+| Credential check alone (`whoami`) | 7.7 | 4.9 |
+| `SELECT 1` | 12.1 | 4.4 |
+| Read one row by primary key | 13.0 | 0.9 |
 
-Subtracting medians is a rough guide, not a measurement of each step. It
-still says where to look: about 12 ms of a small request is spent before
-SQLite sees a table.
+These are differences between the medians of four different requests, whose
+answers also differ in size. They do not measure the steps inside one
+request. They still say where to look: a query that touches no table takes
+12 ms at the median, and reading a row adds 1 ms to it.
 
 The same tests in the repeat run:
 
@@ -162,7 +169,7 @@ The same tests in the repeat run:
 | Credential check alone: `GET /v1/memoire/whoami` | 7.7 | 8.7 | 42.1 | 43.2 |
 | `SELECT 1` | 12.1 | 13.8 | 55.5 | 73.3 |
 | Read one row by primary key | 13.0 | 14.6 | 55.6 | 66.8 |
-| Read 20 rows through an index | 13.2 | 14.9 | 68.0 | 74.0 |
+| Read one customer's orders through an index | 13.2 | 14.9 | 68.0 | 74.0 |
 | Join three tables for one order | 13.2 | 14.8 | 64.8 | 73.1 |
 | Read a page of 1 000 rows | 14.1 | 15.8 | 72.7 | 75.5 |
 | Insert one row | 13.3 | 15.1 | 79.5 | 71.5 |
@@ -180,18 +187,20 @@ Milliseconds. Each query ran 20 times in a row with a 30 s deadline.
 | --- | ---: | ---: | ---: | ---: | ---: |
 | Revenue by country: orders joined to customers and items, grouped | 1 650 | 1 821 | 2 376 | 1 668 | 2.1 |
 | Top 10 products: items joined to products, grouped and sorted | 432 | 515 | 1 228 | 407 | 2.8 |
-| Count events by kind, from an index on 1 000 000 rows | 79 | 101 | 165 | 90 | 2.3 |
-| Count events by a JSON field, full scan of 1 000 000 rows | 363 | 405 | 572 | 398 | 2.5 |
+| Count events by kind, from an index | 79 | 101 | 165 | 90 | 2.3 |
+| Count events by a JSON field, full scan | 363 | 405 | 572 | 398 | 2.5 |
 
-The default deadline is 5 s per statement. All four fit in it at this scale.
+The aggregates ran after the write tests, which had added 3 000 orders and
+63 000 events. They covered 103 000 orders and 1 063 000 events. The default
+deadline is 5 s per statement, and all four fit in it at this scale.
 The [scale 4 run](#results-at-scale-4) shows what happens when they do not.
 
 ### Several connections at once
 
 Each thread has its own connection, opened and used once before the clock
 starts, and sends 750 requests. All threads are in one Python process, so
-the client limits what it can send. The first table shows that ceiling:
-the same threads calling `GET /health/live`.
+the client limits what it can send. The first table is a comparison: the
+same threads calling `GET /health/live`, a much cheaper route.
 
 `GET /health/live`:
 
@@ -223,12 +232,13 @@ Insert one row (a database has one writer, so inserts queue):
 | 8 | 6 000 | 199 | 26.5 | 102.0 | 252.4 | 280 |
 
 No request failed in any of these: no `sqlite_busy`, no `429`, no `503`.
-Reads level off near 350 to 380 requests a second on 16 connections, with
-the median latency close to three times the single-connection one. Inserts
-level off between 200 and 280 a second. Both are far below the
-`/health/live` ceiling, so the client was probably not the limit. Throughput
-moved a lot between the two runs (see the 2-connection read row), so treat
-these as the right order of magnitude and no more.
+On 16 connections reads ran at 354 and 382 requests a second in the two
+runs, with a median latency about three times the single-connection one.
+On 8 connections inserts ran at 199 and 280 a second. The runs do not show
+where throughput stops growing: 16 and 8 connections are only the highest
+counts tested, and the `/health/live` rates are not a ceiling for database
+requests. Throughput moved a lot between the two runs (see the 2-connection
+read row), so treat these as the right order of magnitude and no more.
 
 ### Loading data
 
@@ -297,7 +307,7 @@ Request latency, 3 000 interleaved rounds:
 | Credential check alone: `GET /v1/memoire/whoami` | 3 000 | 9.1 | 26.2 | 60.0 | 338.6 |
 | `SELECT 1` | 3 000 | 14.1 | 42.5 | 94.2 | 428.3 |
 | Read one row by primary key | 3 000 | 15.1 | 42.0 | 91.8 | 422.3 |
-| Read 20 rows through an index | 3 000 | 15.1 | 43.5 | 91.2 | 408.4 |
+| Read one customer's orders through an index | 3 000 | 15.1 | 43.5 | 91.2 | 408.4 |
 | Join three tables for one order | 3 000 | 15.3 | 44.1 | 99.4 | 408.6 |
 | Read a page of 1 000 rows | 3 000 | 16.4 | 44.0 | 93.0 | 363.2 |
 | Insert one row | 3 000 | 15.2 | 44.6 | 89.8 | 328.6 |
@@ -310,14 +320,17 @@ point read is still 1 ms. So this run was a slower stretch for the whole
 path, and nothing here shows indexed reads or small writes slowing down
 with four times the data.
 
-The aggregates do grow, and faster than the data:
+The aggregates take longer. With four times the data the two joins took
+about 7.5 times as long, and the two event queries 3.2 and 4.1 times. They
+covered 403 000 orders and 4 063 000 events. One run per size says nothing
+more about how they scale.
 
 | Query | min | p50 | max | Times the scale 1 p50 |
 | --- | ---: | ---: | ---: | ---: |
 | Revenue by country: orders joined to customers and items, grouped | 11 366 | 13 636 | 20 638 | 7.5 |
 | Top 10 products: items joined to products, grouped and sorted | 3 454 | 3 978 | 7 474 | 7.7 |
-| Count events by kind, from an index on 4 000 000 rows | 285 | 322 | 457 | 3.2 |
-| Count events by a JSON field, full scan of 4 000 000 rows | 1 479 | 1 665 | 2 418 | 4.1 |
+| Count events by kind, from an index | 285 | 322 | 457 | 3.2 |
+| Count events by a JSON field, full scan | 1 479 | 1 665 | 2 418 | 4.1 |
 
 The first query passes the 5 s default deadline at this size. The script
 asks for 30 s, the most a request may ask for, and the slowest run used
@@ -374,12 +387,11 @@ The script also checks three refusals: a write in `read` mode
 answered as the contract says in every run.
 
 About the `502`. The gateway refuses an oversized body as soon as it sees
-it is too large, while the client is still uploading. Through the proxy
-that race sometimes ends in `502 Bad Gateway` instead of `413 body_limit`.
-It happened once in the 15 oversized requests of the published runs, and
-more often in trial runs. Either way the request is refused and nothing
-runs. A client should read a `502` on an upload over 1 MiB as the same
-refusal.
+it is too large, while the client is still uploading. Through the proxy,
+one of the 15 oversized requests in the published runs came back as
+`502 Bad Gateway` instead of `413 body_limit`, and trial runs saw that more
+often. The script cannot see what happened behind a `502`. Its probe is a
+read, so these runs do not show whether anything ran in that case.
 
 ## What the numbers do not show
 
@@ -407,10 +419,10 @@ refusal.
   hours of load, a large write-ahead log or a database near the 1 GiB limit.
 - **Another workload.** Rows here are small, about 100 bytes or less. Large values,
   wide rows, full-text search and write-heavy mixes will behave differently.
-- **Other clients.** One Python process with threads. A faster client might
-  push more requests a second at the higher connection counts, though the
-  `/health/live` ceiling suggests the client was not the limit for
-  database requests.
+- **Other clients.** One Python process with threads. On the cheaper
+  `/health/live` route it sent several times more requests a second than
+  the database tests reached, but that does not prove the client was never
+  the limit.
 
 ## The same service from a home connection
 
@@ -428,11 +440,12 @@ does to the figures above.
 | Insert one row | 85.7 | 604.4 | 3 895.7 |
 
 The export of the 96.5 MB file took 260.6 s there. The gateway logs every
-request that takes a second or more, with its duration on the server. For
-that run it logged the export at 2.3 s, and otherwise only the aggregate
-queries, the large loading requests and the deliberate 1 s timeout. It
-logged no point read and no single insert. The multi-second tails in that
-table were the network. The raw output of that run is not in the
+request that takes a second or more on its side. For that run it logged
+the export at 2.3 s, and otherwise only the aggregate queries, the large
+loading requests and the deliberate 1 s timeout. It logged no point read
+and no single insert. So the seconds in those tails did not pass inside the
+gateway. They passed between the client and the gateway: on the network, in
+the proxy or in the client. The raw output of that run is not in the
 repository.
 
 ## Run it yourself
