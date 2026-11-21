@@ -39,14 +39,17 @@ DNS: an A record for `memoire.network` pointing at the Dokploy server, and `app.
 
 ## First owner
 
-Registration is closed, so only invited people join.
+Registration is `invite_only`: an account is only created by accepting an invitation, and `POST /v1/identity/registrations` answers `403`.
 
-1. Set `MEREZHA_MODULES__IDENTITY__REGISTRATION=open` and redeploy.
-2. `POST /v1/identity/registrations` with the owner's email and a throwaway password, header `Origin: https://app.memoire.network`. Do not keep the `merezha_verify` cookie.
-3. The owner opens the verification email in their own browser and confirms. Without the binding cookie, confirmation claims the account and clears the throwaway password. The web app then asks the owner to set their own password.
-4. Remove the variable and redeploy, then check that a registration answers `403`.
+1. Set `MEREZHA_MODULES__IDENTITY__REGISTRATION=open` on `memoire-gateway` and redeploy.
+2. The owner registers at `https://app.memoire.network/register` in their own browser, then opens the verification email in that same browser. Registering from the browser keeps the binding cookie, so the password chosen at registration stays. A registration made elsewhere (a script, another browser) is claimed by the confirmation and loses its password, and the web app cannot set one yet.
+3. Remove the variable and redeploy, then check that `POST /v1/identity/registrations` answers `403`.
 
-The owner then creates a team in the web app, invites members and mints machine keys with `memoire keys create`.
+The owner then creates a team in the web app and mints machine keys with `memoire keys create`. The web app has no invitation screens yet: invite members and accept invitations through identity's API (`docs/api.md`, "Identity routes the clients use").
+
+## Trusted proxies
+
+`trusted_proxies` lists all of Docker's private ranges, because the proxy's address on `dokploy-network` is not fixed. Every container on that network can then set the client address the gateway's rate limits see. Narrow it to the proxy's subnet or address (`docker network inspect dokploy-network` on the host) when that is known.
 
 ## Backups
 

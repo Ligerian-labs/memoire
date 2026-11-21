@@ -11,6 +11,9 @@ name = "memoire"
 listen = "0.0.0.0:8080"
 public = true
 # Dokploy's proxy reaches the container over Docker's private networks.
+# Broad on purpose for now: any container on those networks may set the
+# client address that rate limits see. Narrow it to the proxy's address on
+# dokploy-network once it is known from the host (docs/deploy/dokploy.md).
 trusted_proxies = ["10.0.0.0/8", "172.16.0.0/12"]
 
 [database]
@@ -28,9 +31,10 @@ path = "application.toml"
 [modules.identity]
 app_origin = "https://app.memoire.network"
 secret_key = { env = "MEMOIRE_IDENTITY_KEY" }
-# Invite-only: "open" only while the owner enrolls
-# (MEREZHA_MODULES__IDENTITY__REGISTRATION=open), then closed again.
-registration = "closed"
+# Invite-only: only an invitation creates an account ("closed" would refuse
+# invitees who have none). "open" only while the owner enrolls
+# (MEREZHA_MODULES__IDENTITY__REGISTRATION=open).
+registration = "invite_only"
 
 # The team roles hold memoire's seven permissions; API keys carry a subset.
 [modules.identity.rbac.builtin_grants]
