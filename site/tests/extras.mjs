@@ -54,7 +54,7 @@ for (const [name, query, options] of [
   const { context, page, shot } = await open(name, query, options);
   await page.waitForTimeout(1200);
   await shot("hero");
-  for (const id of ["life", "kinds", "access", "status"]) {
+  for (const id of ["life", "kinds", "access", "start", "status"]) {
     await page.evaluate((target) => document.getElementById(target)?.scrollIntoView(), id);
     await page.waitForTimeout(900);
     await shot(id);

@@ -1,6 +1,6 @@
 # memoire
 
-> SQLite databases on demand for agents, shared across teams and machines. Open source (Apache-2.0, Rust). Early: v1 is in progress.
+> SQLite databases on demand for agents, shared across teams and machines. Open source (Apache-2.0, Rust). Early: v1 is in progress. The hosted service at https://app.memoire.network is invite-only for now.
 
 One always-on gateway handles every request, and the SQLite files live on its host. Agents and people create databases with the `memoire` CLI and query them over an HTTP JSON API.
 
@@ -9,9 +9,58 @@ One always-on gateway handles every request, and the SQLite files live on its ho
 - Access is per team. Members sign in. Machines and agents use API keys (`mzk_…`) that can be narrowed, for example to read-only.
 - Limits: 1 GiB per database, 50 active databases per team.
 
+## Get started
+
+From nothing to a signed-in CLI. The hosted service at https://app.memoire.network is invite-only for now, so a person needs an invitation to get an account. Self-hosting is in the [deployment guide](https://github.com/ligerian-labs/memoire/blob/main/docs/deploy/dokploy.md).
+
+Steps 2 and 3 need a person in a browser. An agent that already has a key starts at step 4, or uses the two variables in step 6.
+
+1. Install the CLI. There are no release binaries yet, so Cargo builds the CLI from source. That needs Rust 1.98 or later. The binary is `memoire`.
+
+   ```sh
+   cargo install --locked --git https://github.com/ligerian-labs/memoire memoire-cli
+   ```
+
+2. Open https://app.memoire.network, sign in and create a team. Databases, machines and keys belong to it.
+
+3. Create a key for this machine. In the web app, open "Machines and API keys" and add a machine. The app then offers a key for it. Pick read-only access if the machine only needs to read. The app shows the key (`mzk_…`) once, so copy it now.
+
+4. Sign the CLI in. `login` asks for the key and does not echo it. Paste it at the prompt. The CLI checks the key with the service, then stores it in `~/.config/memoire/credentials.json` with mode 0600. Without a terminal, `login` reads the key from standard input or from `--key-file FILE`. Never pass a key as an argument.
+
+   ```sh
+   memoire login --server https://app.memoire.network
+   ```
+
+   Then check who the CLI is signed in as.
+
+   ```sh
+   memoire whoami
+   ```
+
+5. Teach your agents (optional). This installs the memoire skill, which teaches Claude Code and Codex the commands. It needs no login.
+
+   ```sh
+   memoire skill install --claude --codex
+   ```
+
+6. Agents and CI. An agent or a CI job skips `login` and reads two variables: `MEMOIRE_SERVER=https://app.memoire.network` and `MEMOIRE_API_KEY`, the machine's key from your secret store. Give each machine its own key.
+
+   Once signed in, a team owner or admin can mint those keys from the CLI. It asks for the person's email and password without echo and prints only the key, so the key goes straight to a file and never into an argument. The `umask` keeps that file readable by you alone.
+
+   ```sh
+   (umask 077 && memoire keys create --name ci-runner > ci-runner.key)
+   ```
+
+   Move the file to the new machine, store the key and remove the file.
+
+   ```sh
+   memoire login --server https://app.memoire.network --key-file ci-runner.key && rm ci-runner.key
+   ```
+
 ## Documentation
 
 - [Repository](https://github.com/ligerian-labs/memoire): source, README and status
+- [CLI](https://github.com/ligerian-labs/memoire/blob/main/docs/cli.md): every `memoire` command, its output and exit codes
 - [HTTP API](https://github.com/ligerian-labs/memoire/blob/main/docs/api.md): the contract between the gateway and its clients
 - [Architecture](https://github.com/ligerian-labs/memoire/blob/main/docs/architecture.md): contexts, data plane rules and limits
 - [Agent memory](https://github.com/ligerian-labs/memoire/blob/main/docs/memory.md): `memoire memory` keeps a shared memory for a fleet of agents in a memoire database; agents recall, record, confirm and dispute what they verified

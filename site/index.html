@@ -54,8 +54,8 @@
             with its team, and lets expire.
           </p>
           <div class="hero__actions">
-            <a class="btn btn--hot" href="https://github.com/ligerian-labs/memoire">View on GitHub</a>
-            <a class="btn" href="https://github.com/ligerian-labs/memoire/blob/main/docs/api.md">Read the API</a>
+            <a class="btn btn--hot" href="#start">Get started</a>
+            <a class="btn" href="https://github.com/ligerian-labs/memoire">View on GitHub</a>
           </div>
           <p class="hero__note">
             <span class="pill">v1 in progress</span>
@@ -362,14 +362,136 @@
             <div><dt>read-only</dt><dd>connections for <code>read</code> mode; a write fails</dd></div>
             <div><dt>refused</dt><dd><code>ATTACH</code>, <code>load_extension</code>, <code>VACUUM INTO</code></dd></div>
           </dl>
+          <div class="hero__actions">
+            <a class="btn" href="https://github.com/ligerian-labs/memoire/blob/main/docs/api.md">Read the API</a>
+          </div>
         </div>
+      </section>
+
+      <section class="start" id="start" aria-labelledby="start-title">
+        <div class="section-head">
+          <h2 id="start-title">Get started</h2>
+          <p>
+            From nothing to a signed-in CLI. The hosted service at
+            <a href="https://app.memoire.network">app.memoire.network</a> is invite-only for now, so
+            you need an invitation to get an account. You can also
+            <a href="https://github.com/ligerian-labs/memoire/blob/main/docs/deploy/dokploy.md">run your own gateway</a>.
+          </p>
+        </div>
+
+        <ol class="steps" role="list">
+          <li class="step">
+            <h3>Install the CLI</h3>
+            <p>
+              There are no release binaries yet, so Cargo builds the CLI from source. That needs
+              Rust 1.98 or later. The binary is <code>memoire</code>.
+            </p>
+            <figure class="code code--shell" data-copy>
+              <figcaption>
+                <span>your terminal</span>
+                <button type="button" class="copy" aria-label="Copy the install command" hidden>Copy</button>
+              </figcaption>
+              <p class="cmd"><code>cargo install <span class="w">--locked</span> <span class="w">--git</span> https://github.com/<wbr /><span class="w">ligerian-labs</span>/<wbr />memoire <span class="w">memoire-cli</span></code></p>
+            </figure>
+          </li>
+
+          <li class="step">
+            <h3>Sign in and create a team</h3>
+            <p>
+              Open <a href="https://app.memoire.network">app.memoire.network</a>, sign in and create
+              a team. Databases, machines and keys belong to it.
+            </p>
+          </li>
+
+          <li class="step">
+            <h3>Create a key for this machine</h3>
+            <p>
+              In the web app, open <b>Machines and API keys</b> and add a machine. The app then
+              offers a key for it. Pick read-only access if the machine only needs to read. The app
+              shows the key (<code>mzk_…</code>) once, so copy it now.
+            </p>
+          </li>
+
+          <li class="step">
+            <h3>Sign the CLI in</h3>
+            <p>
+              <code>login</code> asks for the key and does not echo it. Paste it at the prompt. The
+              CLI checks the key with the service, then stores it in
+              <code>~/.config/memoire/<wbr />credentials.json</code> with mode 0600.
+            </p>
+            <figure class="code code--shell" data-copy>
+              <figcaption>
+                <span>your terminal</span>
+                <button type="button" class="copy" aria-label="Copy the sign-in command" hidden>Copy</button>
+              </figcaption>
+              <p class="cmd"><code>memoire login <span class="w">--server</span> https://app.memoire.network</code></p>
+            </figure>
+            <p>Then check who the CLI is signed in as.</p>
+            <figure class="code code--shell" data-copy>
+              <figcaption>
+                <span>your terminal</span>
+                <button type="button" class="copy" aria-label="Copy the whoami command" hidden>Copy</button>
+              </figcaption>
+              <p class="cmd"><code>memoire whoami</code></p>
+            </figure>
+          </li>
+
+          <li class="step">
+            <h3>Teach your agents <small>optional</small></h3>
+            <p>
+              This installs the memoire skill, which teaches Claude Code and Codex the commands. It
+              needs no login.
+            </p>
+            <figure class="code code--shell" data-copy>
+              <figcaption>
+                <span>your terminal</span>
+                <button type="button" class="copy" aria-label="Copy the skill command" hidden>Copy</button>
+              </figcaption>
+              <p class="cmd"><code>memoire skill install <span class="w">--claude</span> <span class="w">--codex</span></code></p>
+            </figure>
+          </li>
+
+          <li class="step">
+            <h3>Agents and CI</h3>
+            <p>
+              An agent or a CI job skips <code>login</code> and reads two variables. Give each
+              machine its own key.
+            </p>
+            <dl class="vars">
+              <div><dt><code>MEMOIRE_SERVER</code></dt><dd><code>https://app.memoire.network</code></dd></div>
+              <div><dt><code>MEMOIRE_API_KEY</code></dt><dd>the machine's key, from your secret store</dd></div>
+            </dl>
+            <p>
+              Once signed in, a team owner or admin can mint those keys from the CLI. It asks for
+              your email and password without echo and prints only the key, so the key goes straight
+              to a file and never into an argument. The <code>umask</code> keeps that file readable
+              by you alone.
+            </p>
+            <figure class="code code--shell" data-copy>
+              <figcaption>
+                <span>a signed-in machine</span>
+                <button type="button" class="copy" aria-label="Copy the key command" hidden>Copy</button>
+              </figcaption>
+              <p class="cmd"><code>(umask 077 &amp;&amp; memoire keys create <span class="w">--name</span> <span class="w">ci-runner</span> &gt; <span class="w">ci-runner.key</span>)</code></p>
+            </figure>
+            <p>Move the file to the new machine, store the key and remove the file.</p>
+            <figure class="code code--shell" data-copy>
+              <figcaption>
+                <span>the new machine</span>
+                <button type="button" class="copy" aria-label="Copy the stored-key command" hidden>Copy</button>
+              </figcaption>
+              <p class="cmd"><code>memoire login <span class="w">--server</span> https://app.memoire.network <span class="w">--key-file</span> <span class="w">ci-runner.key</span> &amp;&amp; rm <span class="w">ci-runner.key</span></code></p>
+            </figure>
+          </li>
+        </ol>
+        <p class="sr-only" role="status" data-copy-status></p>
       </section>
 
       <section class="status" id="status" aria-labelledby="status-title">
         <h2 id="status-title">Early, and in the open</h2>
         <p>
-          v1 is in progress. The gateway host, the API contract and the CLI skeleton are in the
-          repository. The catalog, the data plane, the CLI commands and the web client land next.
+          v1 is in progress. The gateway, the CLI and the web client are in the repository. The
+          hosted service is invite-only, and the CLI has no release binaries yet.
         </p>
         <p class="status__meta">Rust, Apache-2.0. One always-on gateway; the SQLite files live on its host.</p>
         <div class="hero__actions">

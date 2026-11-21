@@ -131,6 +131,34 @@ try {
     assert.equal(await overflow(page), 0);
   });
 
+  const install = "cargo install --locked --git https://github.com/ligerian-labs/memoire memoire-cli";
+  const clipboard = { permissions: ["clipboard-read", "clipboard-write"] };
+  await check("phone: get started, copy a command", { ...phone, ...clipboard }, "?scale=0.5", async (page) => {
+    assert.equal(await page.getByRole("link", { name: "Get started" }).getAttribute("href"), "#start");
+    await scrollInto(page, "#start");
+    const copy = page.locator("#start .copy").first();
+    assert.equal(await copy.getAttribute("aria-label"), "Copy the install command");
+    await copy.tap();
+    assert.equal(await page.evaluate(() => navigator.clipboard.readText()), install);
+    assert.equal(await copy.textContent(), "Copied");
+    assert.equal(await copy.getAttribute("aria-label"), "Copied the install command");
+    assert.equal(await page.locator("[data-copy-status]").textContent(), "Copied the install command.");
+    await page.getByRole("button", { name: "Copy the sign-in command" }).tap();
+    assert.equal(
+      await page.evaluate(() => navigator.clipboard.readText()),
+      "memoire login --server https://app.memoire.network",
+    );
+    await page.getByRole("button", { name: "Copy the install command" }).waitFor();
+    assert.equal(await overflow(page), 0);
+  });
+
+  await check("phone, no scripts: steps readable, no dead buttons", { ...phone, javaScriptEnabled: false }, "", async (page) => {
+    assert.ok(await page.getByText(install).isVisible());
+    assert.equal(await page.locator("#start .copy").count(), 6);
+    for (const button of await page.locator("#start .copy").all()) assert.ok(await button.isHidden());
+    assert.equal(await overflow(page), 0);
+  });
+
   await check("phone, no WebGL: still readable", phone, "?nogl", async (page) => {
     assert.equal(await page.locator("html.no-gl").count(), 1);
     assert.ok(await page.getByRole("heading", { name: "The life of a database" }).isVisible());

@@ -988,6 +988,128 @@ h3 {
   color: var(--ink-2);
 }
 
+/* ---------- start ---------- */
+
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+}
+.start .section-head a,
+.step a {
+  color: var(--ink);
+}
+.steps {
+  max-width: 40rem;
+  counter-reset: step;
+  border-bottom: 1px solid var(--rule);
+}
+.step {
+  display: grid;
+  gap: 0.75rem;
+  min-width: 0;
+  padding: 1.4rem 0 1.6rem;
+  border-top: 1px solid var(--rule);
+  counter-increment: step;
+}
+.step::before {
+  content: counter(step, decimal-leading-zero);
+  font-family: var(--mono);
+  font-stretch: 80%;
+  font-size: 0.8125rem;
+  font-weight: 600;
+  color: var(--amber);
+}
+.step h3 small {
+  margin-left: 0.4rem;
+  font-size: 0.8125rem;
+  font-weight: 400;
+  font-stretch: 100%;
+  color: var(--ink-2);
+}
+.step > p {
+  color: var(--ink-2);
+  text-wrap: pretty;
+  text-shadow: 0 0 0.8rem rgb(6 5 26 / 0.9);
+}
+.step > p code,
+.step > p b {
+  color: var(--ink);
+}
+.step > p b {
+  font-weight: 600;
+}
+.code--shell figcaption {
+  display: flex;
+  align-items: stretch;
+  justify-content: space-between;
+  min-height: 2.75rem;
+  padding: 0 0 0 0.9rem;
+}
+.code--shell figcaption span {
+  align-self: center;
+}
+.code--shell .cmd {
+  margin: 0.2rem 0.9rem;
+  font-family: var(--mono);
+  font-stretch: 80%;
+  font-size: 0.78rem;
+  line-height: 1.55;
+  overflow-wrap: anywhere;
+}
+.code--shell figcaption + .cmd {
+  margin-top: 0.8rem;
+}
+.code--shell .cmd:last-child {
+  margin-bottom: 0.85rem;
+}
+.copy {
+  min-width: 5.25rem;
+  padding: 0 0.9rem;
+  border: 0;
+  border-left: 1px solid var(--rule);
+  border-radius: 0 3px 0 0;
+  background: none;
+  color: var(--ink);
+  font: inherit;
+  font-weight: 600;
+  cursor: pointer;
+  touch-action: manipulation;
+  transition:
+    background-color 0.2s ease,
+    color 0.2s ease;
+}
+.copy.is-done {
+  color: var(--amber);
+}
+@media (hover: hover) {
+  .copy:hover {
+    background: rgb(59 17 120 / 0.7);
+  }
+}
+.vars {
+  border-top: 1px solid var(--rule);
+}
+.vars > div {
+  display: grid;
+  gap: 0.15rem;
+  padding: 0.6rem 0;
+  border-bottom: 1px solid var(--rule);
+}
+.vars dt code {
+  color: var(--amber);
+}
+.vars dd {
+  color: var(--ink-2);
+  overflow-wrap: anywhere;
+}
+.vars dd code {
+  color: var(--ink);
+}
+
 /* ---------- status + foot ---------- */
 
 section.status {
@@ -1142,6 +1264,23 @@ section.status {
   .keycard {
     padding: 1.4rem;
   }
+  .step {
+    position: relative;
+    padding-left: 4rem;
+  }
+  .step::before {
+    position: absolute;
+    left: 0;
+    top: 1.75rem;
+  }
+  .code--shell .cmd {
+    font-size: 0.84rem;
+  }
+  .vars > div {
+    grid-template-columns: 11rem 1fr;
+    gap: 0.9rem;
+    align-items: baseline;
+  }
 }
 
 @media (min-width: 64rem) {
@@ -1167,8 +1306,20 @@ section.status {
     gap: 4.5rem;
     align-items: start;
   }
-  .access .section-head {
+  .access .section-head,
+  .start .section-head {
     margin-bottom: 0;
+  }
+  .start {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1.1fr);
+    gap: 4.5rem;
+    align-items: start;
+  }
+  /* The list is long: its heading stays beside it. */
+  .start .section-head {
+    position: sticky;
+    top: 6rem;
   }
   .limits > div {
     grid-template-columns: 11rem 1fr;
