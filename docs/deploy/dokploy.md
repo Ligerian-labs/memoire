@@ -9,6 +9,10 @@ One Dokploy project holds four services in one environment. Dokploy builds the t
 | `memoire-web` | Application | `infra/docker/web.Dockerfile`, context `.` | 8080 |
 | `memoire-site` | Application | `infra/docker/site.Dockerfile`, context `.` | 8080 |
 
+## Placement
+
+The Dokploy swarm has several nodes, and Dokploy builds images on the manager node only. Pin all four services to that node (`placementSwarm` constraint `node.hostname==<manager>`, as Casier does). Otherwise a task scheduled on another node fails with "No such image". The constraint also keeps `memoire-gateway`'s volume and `memoire-db`'s data on the node that holds them: a node-local volume does not follow a task to another node.
+
 ## Routes
 
 Dokploy's proxy terminates TLS and routes by host and path:
