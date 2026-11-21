@@ -471,6 +471,9 @@ The script creates a burstable database named `bench`, fills it, measures,
 writes the result file and deletes the database. If a database of that
 name already exists, the script replaces it only when it is burstable and
 holds nothing but `bench_` tables. Otherwise it stops without touching it.
+Keep that name for the benchmark alone while it runs: the API deletes by
+name, so a database another client or another run puts under the name
+during the run can be deleted with it.
 `--db NAME` picks another name, `--samples N` sets the requests per latency
 test (default 1 000) and `--keep` leaves the database in place. The output
 and the result file hold no id and no key.

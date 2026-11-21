@@ -13,9 +13,10 @@ synthetic data in tables prefixed `bench_`, measures, writes the results
 to FILE as JSON (default bench-result.json) and deletes the database.
 A database of that name that already exists is replaced only when it is
 burstable and holds nothing but `bench_` tables; otherwise the script
-refuses to run. --keep leaves the database in place at the end. The API
-deletes by name, so two runs on the same name at the same time can delete
-each other's database: give them different names with --db.
+refuses to run. --keep leaves the database in place at the end. Keep the
+name for the benchmark alone while it runs. The API deletes by name, so a
+database that another client or another run puts under that name during
+the run can be deleted with it.
 
 Every latency is measured at the client around one request and its whole
 response on a connection that is already open, so it includes the network
