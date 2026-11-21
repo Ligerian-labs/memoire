@@ -47,6 +47,8 @@ and nothing else. [docs/memory.md](docs/memory.md) is the reference.
 - [docs/memory.md](docs/memory.md): the shared agent memory.
 - [docs/architecture.md](docs/architecture.md): contexts, data plane rules
   and repository layout.
+- [docs/deploy/dokploy.md](docs/deploy/dokploy.md): the production images and
+  their deployment on Dokploy.
 
 ## Development
 
