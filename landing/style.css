@@ -1,0 +1,215 @@
+@font-face {font-family:Instrument;src:url(fonts/InstrumentSerif-Regular.ttf);font-display:swap}
+@font-face {font-family:Instrument;src:url(fonts/InstrumentSerif-Italic.ttf);font-style:italic;font-display:swap}
+@font-face {font-family:Barlow;src:url(fonts/BarlowCondensed-SemiBold.ttf);font-weight:600;font-display:swap}
+:root {--paper:#f5f1e7;--ink:#22201e;--red:#bf3020;--line:#b9b5a9;--mono:ui-monospace,monospace;--serif:Instrument,Georgia,serif}
+* {box-sizing:border-box}
+html {scroll-behavior:smooth}
+body {background:var(--paper);color:var(--ink);margin:0;font:1rem/1.5 system-ui,sans-serif}
+a {text-decoration:none;color:inherit}
+button {cursor:pointer;font:inherit}
+a:focus-visible,button:focus-visible,input:focus-visible {outline:3px solid #007197;outline-offset:4px}
+.wrap {width:min(92%,90rem);margin-inline:auto}
+.masthead,footer,nav,.brand,figcaption,.steps,.titlebar {display:flex;align-items:center}
+.masthead,footer,figcaption,.titlebar {justify-content:space-between}
+.masthead {border-bottom:1px solid var(--ink);height:5.5rem}
+.brand {gap:.25em;font:italic 2.55rem/.9 var(--serif);letter-spacing:-.065em;min-height:44px}
+nav {gap:1.4rem}
+nav a, .button, .eyebrow,figcaption,.titlebar,.steps {font:600 1rem/1.1 Barlow,sans-serif;letter-spacing:.065em;text-transform:uppercase}
+nav a {display:grid;place-items:center;min-height:44px}
+nav .repo {border:1px solid;padding-inline:1.1rem}
+.hero {display:grid;grid-template-columns:.9fr 1.1fr;align-items:center;gap:3vw;padding-block:2.1rem 3.2rem}
+.eyebrow {display:flex;align-items:center;gap:.65rem;color:var(--red);margin:0 0 1.2rem}
+.eyebrow::before {content:"";width:1.7em;border-top:2px solid}
+h1,h2,h3 {font:normal 6rem/.9 var(--serif);letter-spacing:-.055em;margin:0}
+h1 {font-size:clamp(6rem,10.7vw,11rem)}
+h1 em,h2 em {color:var(--red)}
+.intro,.section-copy p:last-child,.close p:not(.eyebrow),article p {max-width:36ch;margin:1.6rem 0;line-height:1.55}
+.button {display:inline-flex;align-items:center;gap:1.9rem;background:var(--ink);color:var(--paper);padding:1rem 1.15rem;min-height:48px;transition:background .2s}
+.button:hover {background:var(--red)}
+.stage {height:clamp(24rem,37vw,37rem);position:relative;overflow:hidden}
+canvas {width:100%;height:100%;display:block}
+input[type=range] {width:45%;height:44px;accent-color:var(--red);cursor:ew-resize}
+.section {padding-block:clamp(4.2rem,7vw,7.5rem);border-top:1px solid var(--ink)}
+.demo {display:grid;grid-template-columns:.9fr 1.1fr;align-items:center;gap:3vw}
+h2 {font-size:clamp(4rem,7vw,8rem)}
+.terminal {background:#24221f;color:#fff4df;min-width:0;box-shadow:6px 6px 0 #d6bfb0}
+.titlebar,.steps {gap:.5rem;padding:.45rem .8rem}
+.titlebar {border-bottom:1px solid #706557}
+.titlebar span:first-child {font-size:.65em;color:#ffa38a}
+.terminal button {background:transparent;color:inherit;border:0;min-height:44px;padding:.5em .75em}
+.console {font:1rem/1.6 var(--mono);padding:1.4rem;min-height:10rem;overflow-wrap:anywhere}
+pre {font:inherit;color:#ffb5a0;white-space:pre-wrap}
+.steps {border-top:1px solid #706557}
+.steps [aria-pressed=true] {background:#ffb5a0;color:#261e18}
+.cards {display:grid;grid-template-columns:1fr 1fr;gap:1rem;margin-top:2.4rem}
+article {padding:clamp(1.5rem,3vw,3rem);border:1px solid var(--line);background:#ebe6da}
+article h3 {font-size:3rem}
+.card-glyph {font:3rem/1 var(--serif);color:var(--red);margin-bottom:1rem}
+.close {background:var(--ink);color:var(--paper);width:100%;padding-inline:4%;text-align:center}
+.close .eyebrow {justify-content:center;color:#ffb5a0}
+.close em {color:#ffb5a0}
+.close p:not(.eyebrow) {margin-inline:auto}
+.close .button {background:var(--paper);color:var(--ink)}
+footer {min-height:6rem}
+@media(max-width:720px){
+ .masthead{height:4.3rem}.brand{font-size:2.1rem}nav{gap:.85rem}
+ .hero,.demo,.cards{grid-template-columns:1fr}.hero{padding:2rem 0;gap:1.7rem}
+ h1{font-size:clamp(4.6rem,17vw,7.3rem)}h1 br{display:none}h1 br::after{content:" "}
+ .intro{margin:.9rem 0 1.2rem}.hero .eyebrow{margin-bottom:.8rem}
+ .stage{height:clamp(16rem,69vw,26rem)}figcaption{min-height:2.8rem}
+ .demo{gap:1.2rem}.console{font-size:.88rem}
+}
+@media(prefers-reduced-motion:no-preference){
+ .hero-copy>*{animation:ink-in .85s cubic-bezier(.17,.85,.23,1) backwards}
+ .hero-copy h1{animation-delay:.08s}.hero-copy .intro{animation-delay:.17s}.hero-copy .button{animation-delay:.22s}
+ @keyframes ink-in{from{opacity:0;transform:translateY(16px) skewY(2deg);clip-path:inset(0 0 100%)}to{opacity:1;transform:none;clip-path:inset(0)}}
+ @supports(animation-timeline:view()){
+ .terminal,article{animation: ink-in linear both;animation-timeline:view();animation-range:entry 0% entry 55%}
+ }
+}
+@media(prefers-reduced-motion:reduce){html{scroll-behavior:auto}}
+.definitions {position:absolute;width:0;height:0;overflow:hidden}
+.mark {width:1.35em;height:.87em;fill:currentColor}
+.masthead {position:sticky;top:0;z-index:5;background:var(--paper);height:4.6rem}
+.masthead::after {content:"";position:absolute;inset:auto 0 -1px;height:3px;background:var(--red);transform:scaleX(var(--read,0));transform-origin:left}
+section[id] {scroll-margin-top:4.6rem}
+nav a[aria-current="location"] {color:var(--red)}
+.specimen {position:relative;margin:0}
+figcaption {display:flex;justify-content:center;gap:1rem;min-height:44px}
+figcaption label {font-size:.86rem;color:#6e4139}
+input[type=range] {width:min(32%,9rem)}
+.close {position:relative;isolation:isolate;overflow:hidden;text-align:left;padding-right:49%}
+.close .eyebrow {justify-content:flex-start}
+.close p:not(.eyebrow) {margin-inline:0}
+.afterimage {position:absolute;z-index:-1;right:2%;width:44%;inset-block:0;color:#ff7350;pointer-events:none}
+.afterimage svg {position:absolute;top:50%;left:50%;width:78%;overflow:visible;fill:transparent;stroke:currentColor;stroke-width:.4;transform:translate(-50%,-50%) rotate(calc(-24deg + var(--i)*3deg)) translateY(calc(var(--i)*-2px))}
+.afterimage svg:last-child {fill:var(--ink);stroke:#ffac85}
+@media(max-width:720px){
+ .masthead {height:3.9rem}nav{gap:.75rem}nav a{font-size:.83rem}nav .repo{padding-inline:.6rem}
+ .brand{font-size:1.85rem}.hero{gap:.5rem}.stage{height:clamp(14rem,62vw,24rem)}
+ .close{padding-right:4%;padding-bottom:15rem}.afterimage{inset:auto 4% -1rem auto;height:16rem;width:min(80%,31rem)}
+}
+@media(prefers-reduced-motion:no-preference){
+ @supports(animation-timeline:view()){
+  .section h2 em {display:inline-block;animation: italic-drift linear both;animation-timeline:view();animation-range:entry 0% cover 45%}
+  .cards article:nth-child(2){animation-range:entry 0% entry 85%}
+  .close{view-timeline-name:--impression}
+  .afterimage svg{animation:print-fan linear both;animation-timeline:--impression;animation-range:entry 0% cover 80%}
+  @keyframes italic-drift{from{transform:translateX(.25em) skewX(-9deg)}to{transform:none}}
+  @keyframes print-fan{from{transform:translate(-55%,-50%) rotate(-16deg)}to{transform:translate(-50%,-50%) rotate(calc(-52deg + var(--i)*9deg)) translateY(calc(var(--i)*-2px))}}
+ }
+}
+main {overflow-x:clip}
+.card-glyph {position:relative;width:5rem;height:3.5rem;margin-bottom:1.6rem}
+.card-glyph i {position:absolute;display:block;border:1px solid var(--red)}
+.burst i {width:3.3rem;height:.35rem;top:50%;left:.2rem;background:var(--red);transform:rotate(calc(var(--i)*22.5deg))}
+.persist i {width:3.2rem;height:.95rem;left:.2rem;bottom:calc(var(--i)*.24rem);background:#ebe6da;border-radius:50%}
+@media(prefers-reduced-motion:no-preference){
+ @supports(animation-timeline:view()){
+  .cards{view-timeline-name:--storage}
+  .card-glyph i {animation:spool linear both;animation-timeline:--storage;animation-range:entry 0% cover 65%}
+  .persist i {animation-name:stack}
+  @keyframes spool {from{transform:rotate(-42deg)}to{transform:rotate(calc(var(--i)*22.5deg))}}
+  @keyframes stack {from{transform:translateY(calc(var(--i)*.22rem))}to{transform:none}}
+ }
+}
+@media(max-width:360px){
+ .masthead .brand{font-size:1.54rem}
+ nav{gap:.4rem}nav .repo{padding-inline:.38rem}
+}
+
+:root {--header-height:4.6rem;--gutter:max(4vw,calc((100vw - 90rem)/2))}
+.deck-anchor {height:0;scroll-margin-top:var(--header-height)}
+main {isolation:isolate}
+main > .wrap {
+  position:relative;width:100%;margin:0;
+  min-height:calc(100svh - var(--header-height));
+  padding-inline:var(--gutter);background-color:var(--paper);
+}
+main .hero {
+  isolation:isolate;overflow:clip;display:flex;align-items:center;
+  padding-block:clamp(3rem,10vh,8rem) 7rem;
+}
+.hero .specimen {position:absolute;inset:0;z-index:-1;pointer-events:none}
+.hero .stage {position:absolute;inset:0;height:auto}
+.hero .stage::after {
+  content:"";position:absolute;inset:0;pointer-events:none;
+  background:linear-gradient(90deg,var(--paper) 2%,#f5f1e7f5 23%,#f5f1e7c2 36%,#f5f1e742 52%,transparent 69%);
+}
+.hero figcaption {position:absolute;bottom:1.5rem;right:var(--gutter);pointer-events:auto;min-width:13rem}
+.hero .hero-copy {max-width:42rem}
+.hero .intro {max-width:31ch}
+main .demo {background:#e8e1d2}
+main .storage {background:#f8f3eb;display:flex;flex-direction:column;justify-content:center}
+main .close {color:var(--paper);background:var(--ink);align-content:center;padding-right:49%}
+@media(prefers-reduced-motion:no-preference){
+  /* Later cards wait under the current one until their natural scroll position. */
+  main > section.wrap {
+    position:sticky;
+    bottom:calc(100svh - var(--header-height) - var(--card-height,100svh));
+  }
+  main > section:not(:last-child) {
+    border-radius:0 0 1.35rem 1.35rem;
+    box-shadow:0 .65rem 1.75rem #30231926;
+  }
+  main .hero {z-index:4}
+  main .demo {z-index:3}
+  main .storage {z-index:2}
+  main .close {z-index:1}
+}
+@media(max-width:720px){
+  :root {--header-height:3.9rem}
+  main .hero {align-items:flex-start;padding-top:clamp(3rem,10svh,7rem)}
+  .hero .stage::after {background:linear-gradient(150deg,#f5f1e7 2%,#f5f1e7f0 25%,#f5f1e7bb 42%,#f5f1e72b 61%,transparent 73%)}
+  .hero h1 {max-width:7ch}
+  .hero figcaption {bottom:1rem}
+  main .demo {align-content:center}
+  main .close {padding-right:var(--gutter)}
+  .hero .intro {max-width:27ch}
+}
+
+/* Keep the navigation on its own full-width strip above the sliding cards. */
+body {padding-top:var(--header-height)}
+.masthead {
+  position:fixed;inset:0 0 auto;height:var(--header-height);
+  padding-inline:var(--gutter);border:0;
+  box-shadow:0 1px 0 #30231924;z-index:10;
+}
+.masthead .brand {gap:.3em}
+.masthead .mark {color:var(--red)}
+.masthead [hidden] {display:none}
+@media(max-width:720px){
+  .masthead::after {display:none}
+  .masthead .brand {font-size:1.95rem}
+  .menu-toggle {
+    display:inline-flex;align-items:center;justify-content:center;gap:.65rem;
+    min-height:44px;padding:.3rem .85rem;
+    border:0;background:transparent;color:var(--ink);
+    font:600 1rem Barlow,sans-serif;letter-spacing:.06em;text-transform:uppercase;
+  }
+  .menu-icon {position:relative;width:1.15rem;height:.75rem}
+  .menu-icon::before,.menu-icon::after {
+    content:"";position:absolute;left:0;top:.16rem;width:100%;height:1.5px;background:currentColor;
+  }
+  .menu-icon::after {top:.51rem}
+  .menu-toggle[aria-expanded="true"] .menu-icon::before {transform:translateY(.175rem) rotate(45deg)}
+  .menu-toggle[aria-expanded="true"] .menu-icon::after {transform:translateY(-.175rem) rotate(-45deg)}
+  .menu-toggle:not([hidden]) + nav {
+    position:absolute;inset:100% 0 auto;display:grid;gap:0;
+    padding:.35rem var(--gutter) 1.1rem;background:var(--ink);color:var(--paper);
+    box-shadow:0 .75rem 1rem #27201833;max-height:calc(100dvh - var(--header-height));overflow:auto;
+  }
+  .menu-toggle:not([hidden]) + nav[hidden] {display:none}
+  #main-nav a {
+    justify-content:start;border:0;border-bottom:1px solid #ffffff30;
+    padding:.7rem .1rem;font:normal 2.1rem/1 var(--serif);
+    text-transform:none;letter-spacing:-.03em;
+  }
+  #main-nav a[aria-current="location"] {color:#ffae96;font-style:italic}
+  #main-nav a:last-child {border-bottom:0}
+  .menu-toggle[hidden] + nav a {font:600 .82rem Barlow,sans-serif;padding-inline:.25rem}
+}
+@media(prefers-reduced-motion:no-preference) and (max-width:720px){
+  .menu-toggle:not([hidden]) + nav:not([hidden]) {animation:open-menu .19s ease-out}
+  @keyframes open-menu {from{clip-path:inset(0 0 100%)}to{clip-path:inset(0)}}
+}

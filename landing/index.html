@@ -1,0 +1,78 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#f5f1e7">
+  <meta name="description" content="Mémoire gives agents SQLite databases they can share with their team.">
+  <title>Mémoire · SQLite on demand</title>
+  <link rel="stylesheet" href="style.css?v=8">
+  <script src="motion.js?v=8" defer></script>
+</head>
+<body id="top">
+  <svg class="definitions" aria-hidden="true" xmlns="http://www.w3.org/2000/svg"><symbol id="ligature" viewBox="-3 -9 129 77">
+      <path d="M1 58 L11 15 Q12 10 5 13 L4 11 Q17 2 26 7 L22 23 Q35 1 46 7 Q53 10 49 24 Q60 4 72 6 Q78 8 76 18 Q84 4 91 7 Q98 10 91 17 Q87 21 83 15 Q80 13 75 23 L67 58 L52 61 L62 20 Q65 6 55 18 Q48 26 45 39 L40 58 L25 61 L35 20 Q38 7 30 15 Q23 21 19 34 L13 58 Z"/>
+      <path fill-rule="evenodd" d="M73 40 C78 23 94 12 107 13 C125 14 116 35 86 41 C81 62 102 57 119 38 L121 40 C105 65 80 71 73 57 Q70 50 73 40 Z M87 36 Q104 30 107 19 Q108 13 102 16 Q93 21 87 36 Z"/>
+      <path d="M96 6 L106 -6 L119 -8 L100 6 Z"/>
+    </symbol></svg>
+  <header class="masthead">
+    <a href="#top" class="brand"><svg class="mark" aria-hidden="true" viewBox="-3 -9 129 77"><use href="#ligature"/></svg> mémoire</a>
+    <button class="menu-toggle" type="button" aria-expanded="false" aria-controls="main-nav" hidden>
+      <span class="menu-label">Menu</span><span class="menu-icon" aria-hidden="true"></span>
+    </button>
+    <nav id="main-nav" aria-label="Main"><a href="#demo">Terminal</a><a href="#storage">Storage</a><a href="https://github.com/Ligerian-labs/memoire" class="repo">GitHub</a></nav>
+  </header>
+  <main>
+    <section class="hero wrap">
+      <div class="hero-copy">
+        <p class="eyebrow">SQLITE ON DEMAND</p>
+        <h1>Memory<br> for <em>agents.</em></h1>
+        <p class="intro">Spin up a SQLite database from the CLI. Share it across agents, machines, and your team.</p>
+        <a class="button" href="#demo">Try the terminal <span aria-hidden="true">↘</span></a>
+      </div>
+      <figure class="specimen">
+        <div class="stage"><canvas id="field" role="img" aria-label="An m and r share a stem beside a looped e, folded into layers of red ink"></canvas></div>
+        <figcaption><label for="spread">Unfold the mark</label><input type="range" id="spread" min="0" max="100" value="18"></figcaption>
+      </figure>
+    </section>
+    <div class="deck-anchor" id="demo" aria-hidden="true"></div>
+    <section class="wrap demo section">
+      <div class="section-copy">
+        <p class="eyebrow"><span></span> INTERACTIVE DEMO</p>
+        <h2>From prompt<br>to <em>query.</em></h2>
+        <p>Create a scratch database or give it a longer life. Try the commands in this simulated session.</p>
+      </div>
+      <div class="terminal">
+        <div class="titlebar"><span aria-hidden="true">● ● ●</span><span>memoire / session</span><button id="copy" type="button" hidden>Copy</button></div>
+        <div class="console">
+          <div class="command"><span aria-hidden="true">$</span> <code id="command">memoire db create scratch --burstable</code></div>
+          <pre id="result" aria-live="polite">scratch created
+SQLite · burstable · 24h idle TTL</pre>
+        </div>
+        <div class="steps" aria-label="Demo commands">
+          <button type="button" data-step="0" aria-pressed="true">Scratch</button>
+          <button type="button" data-step="1" aria-pressed="false">Persistent</button>
+          <button type="button" data-step="2" aria-pressed="false">Query</button>
+        </div>
+      </div>
+    </section>
+    <div class="deck-anchor" id="storage" aria-hidden="true"></div>
+    <section class="wrap section storage">
+      <p class="eyebrow"><span></span> DATABASE LIFECYCLE</p>
+      <h2>Choose its <em>lifespan.</em></h2>
+      <div class="cards">
+        <article><div class="card-glyph burst" aria-hidden="true"><i style="--i:0"></i><i style="--i:1"></i><i style="--i:2"></i><i style="--i:3"></i><i style="--i:4"></i><i style="--i:5"></i><i style="--i:6"></i><i style="--i:7"></i></div><h3>Burstable</h3><p>Scratch space for an agent run or a one-off import. It expires after 24 hours of inactivity by default.</p></article>
+        <article><div class="card-glyph persist" aria-hidden="true"><i style="--i:0"></i><i style="--i:1"></i><i style="--i:2"></i><i style="--i:3"></i><i style="--i:4"></i><i style="--i:5"></i><i style="--i:6"></i><i style="--i:7"></i></div><h3>Persistent</h3><p>Keep a database until you delete it. Snapshots run every six hours and are kept for seven days.</p></article>
+      </div>
+    </section>
+    <section class="wrap section close">
+      <div class="afterimage" aria-hidden="true"><svg viewBox="-3 -9 129 77" style="--i:0"><use href="#ligature"/></svg><svg viewBox="-3 -9 129 77" style="--i:1"><use href="#ligature"/></svg><svg viewBox="-3 -9 129 77" style="--i:2"><use href="#ligature"/></svg><svg viewBox="-3 -9 129 77" style="--i:3"><use href="#ligature"/></svg><svg viewBox="-3 -9 129 77" style="--i:4"><use href="#ligature"/></svg><svg viewBox="-3 -9 129 77" style="--i:5"><use href="#ligature"/></svg><svg viewBox="-3 -9 129 77" style="--i:6"><use href="#ligature"/></svg><svg viewBox="-3 -9 129 77" style="--i:7"><use href="#ligature"/></svg><svg viewBox="-3 -9 129 77" style="--i:8"><use href="#ligature"/></svg></div>
+      <p class="eyebrow"><span></span> OPEN SOURCE · APACHE 2.0</p>
+      <h2>One database.<br><em>Any teammate.</em></h2>
+      <p>Agents use scoped API keys. People inspect the same data in the web debugger. Mémoire is in development.</p>
+      <a class="button" href="https://github.com/Ligerian-labs/memoire">Explore the repository</a>
+    </section>
+  </main>
+  <footer class="wrap"><a class="brand" href="#top"><svg class="mark" aria-hidden="true" viewBox="-3 -9 129 77"><use href="#ligature"/></svg> mémoire</a><span>By Ligerian Labs</span></footer>
+</body>
+</html>
