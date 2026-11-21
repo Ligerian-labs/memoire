@@ -3,3 +3,4 @@
 /guests/components/*.wasm
 /.memoire-dev
 __pycache__/
+/bench-result.json
