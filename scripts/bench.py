@@ -101,7 +101,10 @@ class Client:
     def close(self):
         self.connection.close()
 
-    def request(self, method, path, body=None, raw=None, authenticated=True):
+    def request(self, method, path, body=None, raw=None, authenticated=True, replay=None):
+        """`replay` says whether the request may be sent again when the
+        connection drops: by default only a GET."""
+        replay = method == "GET" if replay is None else replay
         data = raw if raw is not None else (json.dumps(body).encode() if body is not None else None)
         headers = {"Accept": "application/json"}
         if authenticated:
@@ -116,15 +119,16 @@ class Client:
                 payload = response.read()
                 break
             except (http.client.HTTPException, OSError):
-                # A dropped connection is retried once; the time of the
-                # failed attempt stays in the measurement. A write whose
-                # answer was lost may then apply twice. The result file
-                # counts these retries as `reconnects`.
+                # A dropped connection is retried once, and the time of the
+                # failed attempt stays in the measurement. The result file
+                # counts these retries as `reconnects`. A write is never
+                # sent twice: its first answer may have been lost after it
+                # applied, so the error stops the run instead.
                 self.connection.close()
                 self.connection = self._open()
-                self.reconnects += 1
-                if attempt:
+                if attempt or not replay:
                     raise
+                self.reconnects += 1
         elapsed_ms = (time.perf_counter() - started) * 1000
         return Response(response.status, parse(response, payload), elapsed_ms, len(payload))
 
@@ -148,7 +152,7 @@ class Client:
         body = {"mode": mode, "transaction": transaction, "statements": statements}
         if timeout_ms:
             body["timeout_ms"] = timeout_ms
-        return self.request("POST", f"{PREFIX}/databases/{db}/query", body)
+        return self.request("POST", f"{PREFIX}/databases/{db}/query", body, replay=mode == "read")
 
 
 def parse(response, payload):
@@ -215,7 +219,7 @@ class Bench:
             "tool": "scripts/bench.py",
             "format": 1,
             "started_at": utc_now(),
-            "server": f"{server.scheme}://{server.hostname}" + (f":{server.port}" if server.port else ""),
+            "server": f"{server.scheme}://{server.netloc}",
             "database": {"name": self.db, "kind": "burstable", "idle_ttl_seconds": args.ttl},
             "scale": args.scale,
             "samples": args.samples,
@@ -257,8 +261,8 @@ class Bench:
         Each connection is opened and used once before the clock starts.
         Returns (latencies of 200s, {status or error code: count}, seconds).
         """
-        latencies, errors, lock = [], {}, threading.Lock()
-        barrier = threading.Barrier(threads + 1)
+        latencies, errors, lock, started = [], {}, threading.Lock(), []
+        barrier = threading.Barrier(threads + 1, action=lambda: started.append(time.perf_counter()))
 
         def work(index):
             client, rng = Client(self.server, self.key), random.Random(SEED + 1 + index)
@@ -296,10 +300,9 @@ class Bench:
             barrier.wait(timeout=60)
         except threading.BrokenBarrierError:
             pass
-        started = time.perf_counter()
         for worker in workers:
             worker.join()
-        return latencies, errors, time.perf_counter() - started
+        return latencies, errors, time.perf_counter() - (started[0] if started else time.perf_counter())
 
     def concurrency(self, section, name, levels, per_thread, call):
         rows = []
@@ -357,9 +360,12 @@ class Bench:
         try:
             client = Client(self.server, self.key)
             current = client.request("GET", self.path())
-            if current.status == 200 and current.body.get("id") != self.created_id:
-                # Another run took the name: that database is not ours.
-                print(f"database {self.db!r} was replaced during the run; leaving it", file=sys.stderr)
+            if current.status == 404:
+                print(f"database {self.db!r} is already gone")
+                return
+            if current.status != 200 or not self.created_id or current.body.get("id") != self.created_id:
+                # Another run took the name, or the lookup failed: not ours to delete.
+                print(f"database {self.db!r} is not the one this run created; leaving it", file=sys.stderr)
                 return
             deleted = client.request("DELETE", self.path())
         except (http.client.HTTPException, OSError):

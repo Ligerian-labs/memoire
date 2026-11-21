@@ -76,11 +76,14 @@ It excludes opening the connection (TCP and TLS, measured
 [separately](#opening-a-connection)), building the request body and parsing
 the response in Python.
 
-The script keeps each connection open and reuses it. In a separate check,
-3 000 requests on one connection never made the server close it. When a
-request fails on a dropped connection, the script opens a new one and
-retries once. That request's time then includes the new connection, and the
-result file counts it under `reconnects`: 0, 0 and 1 in the three runs.
+The script keeps each connection open and reuses it. When a read fails on
+a dropped connection, the script opens a new one and sends it again once.
+That request's time then includes the new connection, and the result file
+counts it under `reconnects`: 0, 0 and 1 in the three runs. Python would
+also reopen a connection the server closed after an answer, inside the next
+request's time and without counting it. A separate check of 3 000 requests
+on one connection saw the server do that zero times, but the runs
+themselves did not count it.
 
 `GET /health/live` needs no key and touches no database. It is the round
 trip through the proxy to the gateway and back, and nothing else, so the
@@ -359,7 +362,8 @@ Loading and export:
 | Export of the 395.9 MB file, three times | 41.7, 24.6 and 24.1 s (9 to 16 MB/s) |
 
 One keep-alive connection dropped during this run. The script reconnected
-and retried that request once, and its time is in the figures.
+and sent that request again once, and its time is in the figures. The
+result file does not say which request it was.
 
 ## Limits
 
@@ -479,6 +483,15 @@ export MEMOIRE_SERVER=http://127.0.0.1:28960
 export MEMOIRE_API_KEY=$(jq -r .api_key .memoire-dev/owner.json)
 scripts/bench.py --scale 0.1 --samples 100
 ```
+
+The script in the repository differs from the one that produced the result
+files in four ways, all from review after the runs. It no longer sends a
+write again when a connection drops, and stops instead; the two scale 1
+runs had no retry at all. It starts the throughput clock at the instant the
+threads are released, where the earlier clock started 0.2 to 0.7 ms later
+in a check, under 0.1% of the shortest test. It checks that the database is
+still the one it created before deleting it. It refuses a server URL that
+carries credentials.
 
 Your numbers will differ from these. The round trip in your own result
 file tells you by how much the network alone moves them.
