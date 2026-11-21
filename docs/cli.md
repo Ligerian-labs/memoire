@@ -4,9 +4,17 @@
 gateway, over the HTTP API in [api.md](api.md). It prints tables for people
 and JSON with `--json` for scripts and agents.
 
+There are no release binaries yet, so Cargo builds the CLI from source. That
+needs Rust 1.98 or later. The binary is `memoire`.
+
 ```sh
-cargo install --locked --path crates/memoire-cli   # installs `memoire`
+cargo install --locked --git https://github.com/ligerian-labs/memoire memoire-cli
+cargo install --locked --path crates/memoire-cli   # the same, from a checkout
 ```
+
+The README's [Get started](../README.md#get-started) section goes from this
+install to a signed-in CLI on the hosted service, whose URL is
+`https://app.memoire.network`.
 
 ## Signing in
 
@@ -110,14 +118,24 @@ agent on it can use the memory and nothing else, see
 refuses those permissions with `unknown_permission`. Creating machines and assigning roles takes a team admin or
 owner; a plain member cannot run it. It prints
 the key once and signs the temporary session out. The team is `--team`,
-else the stored key's team. `--expires` is at most `365d`, identity's limit. The `--server` URL must be the gateway's
-application origin, because the sign-in carries it as `Origin`.
+else the stored key's team. `--expires` is at most `365d`, identity's limit.
+
+`keys create` has no `--server` flag. It uses `MEMOIRE_SERVER`, else the
+server that `login` stored. That URL must be the gateway's application
+origin, because the sign-in carries it as `Origin`.
 
 Without `--json` the key is the only thing on standard output, so it can go
 straight to a file:
 
 ```sh
 memoire keys create --name ci-runner > ci-runner.key
+```
+
+Before the first `login` there is no stored server or team, so name both.
+`memoire whoami` on a signed-in machine prints the team's id.
+
+```sh
+MEMOIRE_SERVER=https://memoire.example memoire keys create --team org_… --name ci-runner > ci-runner.key
 ```
 
 ### Memory

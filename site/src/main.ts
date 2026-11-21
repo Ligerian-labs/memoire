@@ -7,6 +7,7 @@ import { createKinds } from "./kinds";
 import { createLife, createStillLife } from "./life";
 import { Pointer } from "./pointer";
 import { must, type Env, type Scene } from "./scene";
+import { createStart } from "./start";
 
 const root = document.documentElement;
 const reduced = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
@@ -22,6 +23,7 @@ const scenes: Scene[] = [
   (reduced ? createStillLife : createLife)(must<HTMLElement>(document, "#life")),
   createKinds(must<HTMLElement>(document, "#kinds"), reduced, field !== null),
   createAccess(must<HTMLElement>(document, "#access")),
+  createStart(must<HTMLElement>(document, "#start")),
   createEmber(must<HTMLElement>(document, "#status")),
   ...(reduced ? [] : [createHeadings(must<HTMLElement>(document, "#main"))]),
 ];

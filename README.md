@@ -17,9 +17,73 @@ memoire is built on [Merezha](https://github.com/MartianGreed/merezha): the
 gateway is a Merezha host with its identity block, a native module for the
 data plane, and a WASM guest for the database lifecycle rules.
 
-> Status: the gateway is complete for v1: the catalog, the data plane,
-> the sweeper, snapshots with restore, export, import and the startup
-> reconciler are live. The CLI commands and the web client land next.
+> Status: v1 is in progress. The gateway, the CLI and the web client work
+> today. A hosted service runs at <https://app.memoire.network>, by invitation
+> only for now. The CLI has no release binaries yet.
+
+## Get started
+
+From nothing to a signed-in CLI. The hosted service at
+<https://app.memoire.network> is invite-only for now, so you need an
+invitation to get an account. You can also run your own gateway:
+[docs/deploy/dokploy.md](docs/deploy/dokploy.md).
+
+1. Install the CLI. There are no release binaries yet, so Cargo builds the
+   CLI from source. That needs Rust 1.98 or later. The binary is `memoire`.
+
+   ```sh
+   cargo install --locked --git https://github.com/ligerian-labs/memoire memoire-cli
+   ```
+
+2. Open <https://app.memoire.network>, sign in and create a team. Databases,
+   machines and keys belong to it.
+
+3. Create a key for this machine. In the web app, open **Machines and API
+   keys** and add a machine. The app then offers a key for it. Pick read-only
+   access if the machine only needs to read. The app shows the key (`mzk_…`)
+   once, so copy it now.
+
+4. Sign the CLI in. `login` asks for the key and does not echo it. Paste it
+   at the prompt. The CLI checks the key with the service, then stores it in
+   `~/.config/memoire/` with mode 0600.
+
+   ```sh
+   memoire login --server https://app.memoire.network
+   ```
+
+   Then check who the CLI is signed in as.
+
+   ```sh
+   memoire whoami
+   ```
+
+5. Teach your agents (optional). This installs the memoire skill, which
+   teaches Claude Code and Codex the commands. It needs no login.
+
+   ```sh
+   memoire skill install --claude --codex
+   ```
+
+6. Agents and CI. An agent or a CI job skips `login` and reads two
+   variables: `MEMOIRE_SERVER=https://app.memoire.network` and
+   `MEMOIRE_API_KEY`, the machine's key from your secret store. Give each
+   machine its own key.
+
+   Once signed in, a team owner or admin can mint those keys from the CLI. It
+   asks for your email and password without echo and prints only the key, so
+   the key goes straight to a file and never into an argument.
+
+   ```sh
+   memoire keys create --name ci-runner > ci-runner.key
+   ```
+
+   Move the file to the new machine, store the key and remove the file.
+
+   ```sh
+   memoire login --server https://app.memoire.network < ci-runner.key && rm ci-runner.key
+   ```
+
+[docs/cli.md](docs/cli.md) covers every command.
 
 ## Agent memory
 

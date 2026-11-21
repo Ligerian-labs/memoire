@@ -51,7 +51,7 @@ It binds loopback. Exposure beyond the host is the operator's choice.
 | `src/style.css` | Styles, mobile first |
 | `src/main.ts` | Frame loop: wakes on input, sleeps when the field has settled |
 | `src/heat/` | The heat field (WebGL2), its source painter and the color ramp |
-| `src/hero.ts`, `life.ts`, `kinds.ts`, `access.ts`, `ember.ts`, `headings.ts` | One scene per part of the page |
+| `src/hero.ts`, `life.ts`, `kinds.ts`, `access.ts`, `start.ts`, `ember.ts`, `headings.ts` | One scene per part of the page |
 | `src/fonts/` | Anybody and Martian Mono, self-hosted (SIL Open Font License) |
 | `public/` | `robots.txt`, `llms.txt` and the font licenses, copied as they are |
 | `tests/` | Smoke test and screenshot scripts |
@@ -60,5 +60,7 @@ Two query parameters help when testing: `?scale=1` pins the drawing-buffer
 scale (the page otherwise lowers it when frames run long), and `?nogl` turns
 the heat field off.
 
-Facts on the page come from `README.md`, `docs/architecture.md` and
-`docs/api.md` at the repository root. When those change, change the page.
+Facts on the page come from `README.md`, `docs/architecture.md`,
+`docs/api.md` and `docs/cli.md` at the repository root. When those change,
+change the page. The "Get started" section, `public/llms.txt` and the
+README's "Get started" section give the same steps: change them together.
