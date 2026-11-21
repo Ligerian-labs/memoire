@@ -13,7 +13,9 @@ synthetic data in tables prefixed `bench_`, measures, writes the results
 to FILE as JSON (default bench-result.json) and deletes the database.
 A database of that name that already exists is replaced only when it is
 burstable and holds nothing but `bench_` tables; otherwise the script
-refuses to run. --keep leaves the database in place at the end.
+refuses to run. --keep leaves the database in place at the end. The API
+deletes by name, so two runs on the same name at the same time can delete
+each other's database: give them different names with --db.
 
 Every latency is measured at the client around one request and its whole
 response on a connection that is already open, so it includes the network
@@ -812,7 +814,8 @@ def main():
     if not key:
         sys.exit("MEMOIRE_API_KEY is not set")
     server = urllib.parse.urlsplit(os.environ.get("MEMOIRE_SERVER", "https://app.memoire.network"))
-    if server.scheme not in ("http", "https") or not server.hostname or server.username or server.password:
+    credentials = server.username is not None or server.password is not None
+    if server.scheme not in ("http", "https") or not server.hostname or credentials:
         sys.exit("MEMOIRE_SERVER must be an http or https URL without credentials")
 
     bench, status = Bench(args, server, key), 0
